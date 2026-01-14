@@ -13,7 +13,9 @@ singular value decomposition
 bundle adjustment
 reprojection error
 photometric error
-perspective n-point (PnP)
+
+### Perspective n-Point (PnP)
+Given 3D points in the world frame, their corresponding 2D projections in the image plane and known camera intrinsics, estimate the camera pose (rotation and translation) that best projects the 3D points to the 2D image points.
 
 ### Keypoint Extraction
 - SIFT expensive but robust (invariant to image scaling, rotation, and translation)
@@ -32,7 +34,7 @@ By calculating disparity for numerous points and using the known camera geometry
 the 3D position of those points can be determined through a process called triangulation.
 
 
-Structure from motion (SfM): 
+### Structure from motion (SfM)
 - given a set of overlapping images of a static scene, estimate camera poses and 3D points from 2D image points
 - Goal: Find camera poses (position/orientation) and a sparse 3D structure.
 - Input: A set of overlapping images.
@@ -50,13 +52,25 @@ Photogrametry pipeline
 - SfM is used to determine the camera parameters (position, rotation, etc.) and a sparse 3D reconstruction, while MVS takes these known parameters as input to generate a dense 3D model
 - App: construct 3D model of buildings from a set of images
 
+### Bundle Adjustment
+Non-linear least squares optimization to refine camera poses and 3D point positions to minimize reprojection error.
+
+Inputs: 
+ - 3D Points (Point Cloud): Unrefined, sparse 3D coordinates (X, Y, Z) of features identified across multiple images, often from SfM.
+ - 2D Image Points (Observations): Corresponding pixel coordinates (u, v) of those 3D points as seen in each image.
+ - Camera Poses (Extrinsics): Initial estimates of camera positions (translation) and orientations (rotation) for each image.
+ - Camera Intrinsics: Focal length, principal point, and distortion parameters for each camera.
+ - Constraints (Optional): Additional data like Ground Control Points (GCPs) or loop closure information for more accuracy. 
+
+Outputs:
+ - Refined 3D Points: More accurate 3D coordinates for the sparse point cloud, minimizing overall error.
+ - Optimized Camera Poses: Precise camera positions and orientations, creating a more accurate camera trajectory.
+ - Calibrated Camera Intrinsics: Improved internal camera parameters (like focal length).
+ - Reprojection Error Statistics: Metrics (like Root Mean Square Error - RMSE) quantifying the final accuracy of the adjustment. 
+
+
 ### View Graph
 Assuming you have multiple images of the same object from different angles, you can create a view graph to represent the relationships between the images. 
 Each node in the graph represents an image, and each edge represents the overlap between two images. 
 The weight of the edge can represent the amount of overlap or the quality of the match between the two images. 
 The view graph can be used to guide the image matching process and to estimate the camera poses.
-
-
-Estimation: 
-- of camera poses (extrinsics)
-- 3D points

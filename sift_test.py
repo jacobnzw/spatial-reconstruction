@@ -9,6 +9,7 @@ with app.setup:
     import cv2 as cv
     from pathlib import Path
     import matplotlib.pyplot as plt
+    from collections import defaultdict
 
 
 @app.cell
@@ -19,6 +20,9 @@ def _():
     Estimate the intrinsic parameters using checkerboard pattern.
 
     TODO: principles how the method actually works
+    - the checkerboard corners are equidistantly spaced grid of points in the world frame and we know all their coordinates because we choose frame (origin+axes orientation) to be the same as the checkerboard grid. Thus they have trivial coordinates (0,0,0), (0, 1, 0)... (one coordinate is always 0 because checkerboard is a plane; two principal axes of the world frame are aligned with it)
+    - these corners need to be first detected in the calibration images in order to determine the respective pixel coordinates of the checkerboard points
+    - from the pairs of points, ie. a 3D world points (corners) and their corresponding 2D pixel coordinates, one can determine the homography transformation relating these. The camera intrinsic matrix can be derived from this.
     """)
     return
 
@@ -116,6 +120,88 @@ def _():
 def _():
     mo.md(r"""
     ## Step 1: 2-view SfM
+
+
+    ### Matching Keypoint Descriptors
+    They are **not** symmetrical by default. This is a very common point of confusion because, intuitively, if Point A looks most like Point B, we assume Point B must look most like Point A.
+
+    In the world of high-dimensional feature matching (like SIFT's 128-D descriptors), this isn't always true.
+
+    #### 1. The Nearest Neighbor "Love Triangle"
+
+    Matching is a **Nearest Neighbor** search. The logic goes: *"For this specific point in Image 1, which point in Image 2 has the smallest mathematical distance?"*
+
+    Consider three points:
+
+    * **Point** $A_1$ (Image 1)
+    * **Point** $B_1$ (Image 2)
+    * **Point** $A_2$ (Image 1)
+
+    It is entirely possible that:
+
+    1. $A_1$’s closest neighbor in Image 2 is $B_1$.
+    2. But $B_1$’s closest neighbor in Image 1 is $A_2$ (perhaps because $A_2$ is even more similar to $B_1$ than $A_1$ was).
+
+    In this case, a "Forward Match" $(A \to B)$  gives you $(A_1, B_1)$ , but a "Backward Match" $(B\to A)$ gives you $(B_1, A_2)$. The match is **asymmetrical**.
+
+    ---
+
+    #### 2. How OpenCV Handles This
+
+    OpenCV’s `BFMatcher` (Brute Force Matcher) has a specific flag for this called **`crossCheck`**.
+
+    * **`crossCheck = False` (Your current code):** It only does a one-way search (Query  Train). If  likes , it’s a match, even if  prefers someone else. This is faster but noisier.
+    * **`crossCheck = True`:** It performs the search in both directions  and . It only returns the match if they both "pick each other." This is a powerful way to remove outliers.
+
+    #### 3. The Ratio Test vs. Symmetry
+
+    You’ve been using **Lowe's Ratio Test** (`knnMatch` with `k=2`).
+
+    There is a catch: **You cannot use `crossCheck=True` and `knnMatch` together** in standard OpenCV.
+
+    * `crossCheck` requires finding the *single* best match.
+    * Lowe's Ratio Test requires finding the *two* best matches to compare their distances.
+
+    **Which is better?**
+    For Structure from Motion (SfM), Lowe's Ratio Test is generally considered superior to simple cross-checking because it filters out **ambiguous** points (like the identical holes in your LEGO or the rings on your vase) rather than just "unrequited" ones.
+
+    #### 4. Why Symmetry Matters for SfM
+
+    If you have asymmetrical matches, you might end up with "Many-to-One" mappings (multiple points in Image 1 trying to triangulate to the same single point in Image 2).
+
+    This creates "noise spikes" in your 3D point cloud. RANSAC usually cleans this up, but it makes the Essential Matrix calculation much harder.
+
+    ---
+
+    #### Summary Table
+
+    | Feature | Symmetrical? | Purpose |
+    | --- | --- | --- |
+    | **Simple Match** | No | Basic "best guess" |
+    | **Cross-Check Match** | **Yes** | Forces mutual agreement; very robust |
+    | **kNN Match (Ratio Test)** | No | Discards ambiguous/repetitive textures |
+
+    ### Query Set vs. Train Set
+    In OpenCV terminology, the "Query" and "Train" sets are simply the labels for the "Searcher" and the "Database."
+    In keypoint matching, the names describe the direction of the search:
+
+    - **Query Set** (des0): These are the "active" features. For every single feature in this set, the algorithm asks: "Where is my best match in the other image?"
+
+    - **Train Set** (des1): This is the "reference" library. The matcher "trains" (indexes) these descriptors so it can search through them efficiently (especially when using high-speed matchers like FLANN).
+
+    Analogy: If you are looking for a specific face in a crowd, the photo of the face in your hand is the Query, and the crowd of people is the Train set.
+
+    Each match is a `DMatch` object.
+    When you use `knnMatch(k=2)`, OpenCV returns a list of lists. Each inner list contains two `DMatch` objects: `m` (the best) and `n` (the runner-up).
+
+    **DMatch** attributes:
+    - `queryIdx`: The row index of the keypoint in your first image (kp0).
+    - `trainIdx`: The row index of the keypoint in your second image (kp1).
+    - `distance`: The "cost" of the match. Lower is better (0.0 would be a perfect pixel-for-pixel match).
+    - `imgIdx`: Used only if you are matching one image against a large folder of images. In your case, it's always 0.
+
+    **Lowe's ratio test**:
+    accepts only the best matches that significantly surpass their second-best competitor. If the best one is only marginally better, it is rejected alltogether.
     """)
     return
 
@@ -136,7 +222,7 @@ def _(extract_sift, img_list):
     matches = bf.knnMatch(des0, des1, k=2)
 
     print(f"# Matches before filtering {len(matches)}")
-    # TODO: understand the match filtering logic: Lowe's ratio test 
+    # Lowe's ratio test: the best match (m), second-best match (n)
     matches = [m for m, n in matches if m.distance < 0.75 * n.distance]
     print(f"# Matches after filtering {len(matches)}")
     return img0, img1, kp0, kp1, matches
@@ -162,6 +248,7 @@ def _(img0, img1, kp0, kp1, matches):
 @app.cell
 def _(K, kp0, kp1, matches):
     # extract corresponding pixel coordinates
+    # TODO: understand query and train indices?
     pts1 = np.float32([kp0[m.queryIdx].pt for m in matches])
     pts2 = np.float32([kp1[m.trainIdx].pt for m in matches])
 
@@ -189,17 +276,17 @@ def _(K, kp0, kp1, matches):
     inliers = mask_pose.ravel() > 0
     if np.all(inliers==False):
         print("No inliers detected! Can't triangulate 3D points.")
-    pts1_in = pts1[inliers].T
-    pts2_in = pts2[inliers].T
+    pts1_in = pts1[inliers]
+    pts2_in = pts2[inliers]
     print(f"# inliers: {len(inliers)}")
 
     # Triangulate
-    points_4d = cv.triangulatePoints(P0, P1, pts1.T, pts2.T)
+    points_4d = cv.triangulatePoints(P0, P1, pts1_in.T, pts2_in.T)
 
     # Homogeneous → Euclidean
     points_3d = (points_4d[:3] / points_4d[3]).T
 
-    return (points_3d,)
+    return points_3d, pts1_in
 
 
 @app.cell
@@ -263,28 +350,28 @@ def _(fig):
 
 
 @app.cell
-def _():
+def _(df_filtered, img0, pts1_in, px):
     # 1. Get colors from the first image at the inlier locations
     # pts1_in are (x, y) coordinates. We need to cast to int to index the image.
-    # colors = []
-    # for pt in pts1_in:
-    #     x, y = int(pt[0]), int(pt[1])
-    #     # OpenCV uses BGR, Plotly/Matplotlib use RGB
-    #     b, g, r = img0[y, x] 
-    #     colors.append(f'rgb({r},{g},{b})')
+    colors = []
+    for pt in pts1_in:
+        x, y = int(pt[0]), int(pt[1])
+        # OpenCV uses BGR, Plotly/Matplotlib use RGB
+        b, g, r = img0[y, x] 
+        colors.append(f'rgb({r},{g},{b})')
 
-    # # 2. Plot with real colors
-    # fig = px.scatter_3d(
-    #     df_filtered, x='x', y='y', z='z',
-    # )
+    # 2. Plot with real colors
+    fig_color = px.scatter_3d(
+        df_filtered, x='x', y='y', z='z',
+    )
 
-    # fig.update_traces(
-    #     marker=dict(
-    #         size=1.5,
-    #         color=colors  # Pass the list of RGB strings
-    #     )
-    # )
-    # fig.show()
+    fig_color.update_traces(
+        marker=dict(
+            size=1.5,
+            color=colors  # Pass the list of RGB strings
+        )
+    )
+    fig_color.show()
     return
 
 
@@ -293,14 +380,31 @@ def _():
     mo.md(r"""
     ## Step 2: n-view SfM
 
-    - build view graph to know which images overlap each other
-    - S.D. Prince: with n-images intrinsics can be estimated (auto-calibration)
+    - extract KPs and descriptors from each image
+    - build view graph to know which images overlap each other; matches stored for each overlapping image pair
+    - create initial 2-view 3D point estimates (essential mat estimation, pose recovery via decomp, triangulation, project)
+        - create tracks for 3D points: "this 3D point (track #1) has KP_344 from image_0 and KP_12 from image_1"
+    - examine view graph to determine which image pair to process next
+        - some of the matching KPs between image_1 and the new image_2 will have already been used to triangulate points; ignore these; use only the KPs from image_2 (matched to image_1 KPs, that have not yet been used (ie. don't yet have a track)
+    - `cv.solvePnP` to estimate the next image's camera pose + combine with `K` to get proj mats
+    - `cv.triangulate` using the pair of proj mats and KPs
+
+    **Bundle adjustment**: given N images of a scene, it solves a non-linear least squares optimization to refine camera poses and 3D point positions to minimize reprojection error.
+
+
+    **Implementation of Track Management**
+    I need the data structure to answer a question: _"Given a 2D point (kp_u, kp_v), is there a track for it?"_
+
+    - `(image_id, kp_u, kp_v) --> track_id`
+    - `track_id --> (x, y, z)`
+
+    S.D. Prince: with n-images intrinsics can be estimated (auto-calibration)
     """)
     return
 
 
 @app.cell
-def _(K, des, images, kp):
+def _(K, compute_baseline_estimate, extract_sift, img_list):
     def has_overlap(kp1, des1, kp2, des2, K,
                     min_inliers=50):
 
@@ -314,11 +418,12 @@ def _(K, des, images, kp):
                 good.append(m)
 
         if len(good) < min_inliers:
-            return False, None
+            return False, None, None
 
+        # geometric validation: rejects matches that cannot arise from a rigid 3D scene
         pts1 = np.float32([kp1[m.queryIdx].pt for m in good])
         pts2 = np.float32([kp2[m.trainIdx].pt for m in good])
-
+    
         E, mask = cv.findEssentialMat(
             pts1, pts2, K,
             method=cv.RANSAC,
@@ -326,30 +431,115 @@ def _(K, des, images, kp):
         )
 
         if E is None:
-            return False, None
+            return False, None, None
 
         inliers = int(mask.sum())
         if inliers < min_inliers:
-            return False, None
+            return False, None, None
 
-        return True, inliers
+        return True, inliers, good
 
-    def construct_view_graph():
-        # View graph construction
-        view_graph = {}
-        N = len(images)
+    from collections import defaultdict
+    from dataclasses import dataclass
+
+    @dataclass
+    class ViewEdge:
+        i: int
+        j: int
+        inliers_ij: int   # matches i -> j
+        inliers_ji: int   # matches j -> i
+
+        @property
+        def weight(self):
+            # symmetric weight used for ranking
+            return min(self.inliers_ij, self.inliers_ji)
+            # alternatives:
+            # return (self.inliers_ij + self.inliers_ji) // 2
+            # return max(self.inliers_ij, self.inliers_ji)
+
+    class ViewGraph:
+        """
+        Undirected weighted view graph with asymmetric match support.
+        """
+
+        def __init__(self):
+            self.adj = defaultdict(dict)   # adj[i][j] = ViewEdge
+            self.edges = []                # list of ViewEdge (global access)
+
+        def add_edge(self, i, j, inliers_ij, inliers_ji):
+            """
+            Add or update an undirected edge between image i and j.
+            """
+            if i == j:
+                return
+
+            edge = ViewEdge(i, j, inliers_ij, inliers_ji)
+
+            self.adj[i][j] = edge
+            self.adj[j][i] = edge
+            self.edges.append(edge)
+
+        def neighbors(self, i) -> dict[int, ViewEdge]:
+            """
+            Return neighbors of image i with weights.
+            """
+            return self.adj[i]
+
+        def best_edge(self) -> ViewEdge:
+            """
+            Return the edge with maximum symmetric weight.
+            """
+            return max(self.edges, key=lambda e: e.weight, default=None)
+
+
+    def construct_view_graph(kp: list, des: list):
+        view_graph = ViewGraph()
+        assert len(kp) == len(des)
+        N = len(kp)
         for i in range(N):
-            for j in range(i + 1, N):
-                ok, inliers = has_overlap(
+            for j in range(i+1, N):
+                ok_ij, inliers_ij, _ = has_overlap(
                     kp[i], des[i],
                     kp[j], des[j],
                     K
                 )
-                if ok:
-                    view_graph.setdefault(i, []).append(j)
-                    view_graph.setdefault(j, []).append(i)
+                ok_ji, inliers_ji, _ = has_overlap(
+                    kp[j], des[j],
+                    kp[i], des[i],
+                    K
+                )
+            if ok_ij and ok_ji:
+                view_graph.add_edge(i, j, inliers_ij, inliers_ji)
 
+        return view_graph
 
+    # load all images & extract features
+    keypoints, descriptors, images = [], [], []
+    for path in img_list:
+        kp, des, img = extract_sift(path)
+        keypoints.append(kp)
+        descriptors.append(des)
+        images.append(img)
+
+    view_graph = construct_view_graph(keypoints, descriptors)
+
+    # Pick strongest baseline:
+    # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
+    best_edge = view_graph.best_edge()
+    compute_baseline_estimate(best_edge)
+    # - for each edge in view graph sorted by weight from best to worst
+    #   - compute KP matches
+    #   - if neither node has poses: estimate E -> R, t, triang. 3d pts
+    #   - else if either node has a pose: 
+    #     - solvePnP to estimate R,t using KPs that have tracks (3d pts)
+    #     - triangulate remaining new trackless KPs, create tracks for them
+
+    # WHATIF: edge list ordering doesn't respect graph connectivity; ie. edge[0] connects nodes 1 and 2, edge[1] connects 3 and 4; WHATIF graph has several components
+    # NEED: make sure the next edge being processed shares a node with the previously processed edge, ensures growing the 
+
+    # Compute initial reconstruction using the baseline images
+    # - create tracks for 3d pts (ie. note involved kps)
+    # Determine next image to process by examining the view graph
     return
 
 
