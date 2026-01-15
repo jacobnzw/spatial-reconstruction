@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.18.4"
+__generated_with = "0.19.2"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -10,6 +10,7 @@ with app.setup:
     from pathlib import Path
     import matplotlib.pyplot as plt
     from collections import defaultdict
+    from dataclasses import dataclass
 
 
 @app.cell
@@ -31,30 +32,30 @@ def _():
 def _():
     def calibrate_camera(img_dir: Path = Path("data/calibration")):
         """Compute camera intrinsics given a sample of checkerboard photos."""
-    
+
         # Checkerboard parameters
         CHECKERBOARD = (8, 6)        # inner corners (width, height)
         SQUARE_SIZE = 0.025          # meters (example)
-    
+
         # Prepare object points (0,0,0), (1,0,0), ...
         objp = np.zeros((CHECKERBOARD[0] * CHECKERBOARD[1], 3), np.float32)
         objp[:, :2] = np.mgrid[0:CHECKERBOARD[0], 0:CHECKERBOARD[1]].T.reshape(-1, 2)
         objp *= SQUARE_SIZE
-    
+
         objpoints = []  # 3D points
         imgpoints = []  # 2D points
-    
+
         images = list(img_dir.glob("*.jpg"))
-    
+
         for fname in images:
             img = cv.imread(str(fname))
             gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-    
+
             ret, corners = cv.findChessboardCorners(
                 gray, CHECKERBOARD,
                 flags=cv.CALIB_CB_ADAPTIVE_THRESH + cv.CALIB_CB_NORMALIZE_IMAGE
             )
-    
+
             if ret:
                 corners_refined = cv.cornerSubPix(
                     gray, corners,
@@ -65,10 +66,10 @@ def _():
                         30, 0.001
                     )
                 )
-    
+
                 objpoints.append(objp)
                 imgpoints.append(corners_refined)
-    
+
         # Camera calibration
         ret, K, dist, rvecs, tvecs = cv.calibrateCamera(
             objpoints, imgpoints, gray.shape[::-1], None, None
@@ -80,8 +81,7 @@ def _():
 
     print("Camera matrix K:\n", K)
     print("Distortion coefficients:\n", dist)
-
-    return (K,)
+    return K, dist
 
 
 @app.cell
@@ -100,10 +100,10 @@ def _():
         img = cv.imread(img_path)
         # img = cv.resize(img, (800, 600))
         gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-    
+
         sift = cv.SIFT_create()
         kp, des = sift.detectAndCompute(gray, None)
-    
+
         return kp, des, img
 
 
@@ -210,7 +210,7 @@ def _():
 def _():
     img_dir = Path("data") / "raw" / "statue"
     img_list = sorted(list(img_dir.glob("*.jpg")))
-    return (img_list,)
+    return img_dir, img_list
 
 
 @app.cell
@@ -248,7 +248,6 @@ def _(img0, img1, kp0, kp1, matches):
 @app.cell
 def _(K, kp0, kp1, matches):
     # extract corresponding pixel coordinates
-    # TODO: understand query and train indices?
     pts1 = np.float32([kp0[m.queryIdx].pt for m in matches])
     pts2 = np.float32([kp1[m.trainIdx].pt for m in matches])
 
@@ -263,30 +262,33 @@ def _(K, kp0, kp1, matches):
     )
 
     # camera pose
-    # TODO: what is mask_pose?
-    ret, R, t, mask_pose = cv.recoverPose(E, pts1, pts2, K)
-    # ret, R, t, points_3d = cv.recoverPose(E, pts1, pts2, K, mask=mask)
-    # print(f"recoverPose: {ret= }\n{R= }\n{t= }\n{mask_pose= }")
+    retval, R, t, mask, points_4d = cv.recoverPose(
+        E=E,
+        points1=pts1,
+        points2=pts2,
+        cameraMatrix=K,
+        distanceThresh=50.0, # mandatory for triangulation
+    )
 
-    # Projection matrices: from 3D world to each camera 2D image plane
-    P0 = K @ np.hstack((np.eye(3), np.zeros((3, 1))))
-    P1 = K @ np.hstack((R, t))
+    # ret, R, t, mask_pose = cv.recoverPose(E, pts1, pts2, K)
+    # # Projection matrices: from 3D world to each camera 2D image plane
+    # P0 = K @ np.hstack((np.eye(3), np.zeros((3, 1))))
+    # P1 = K @ np.hstack((R, t))
 
-    # Inliers only
-    inliers = mask_pose.ravel() > 0
-    if np.all(inliers==False):
-        print("No inliers detected! Can't triangulate 3D points.")
-    pts1_in = pts1[inliers]
-    pts2_in = pts2[inliers]
-    print(f"# inliers: {len(inliers)}")
+    # # Inliers only
+    # inliers = mask_pose.ravel() > 0
+    # if np.all(inliers==False):
+    #     print("No inliers detected! Can't triangulate 3D points.")
+    # pts1_in = pts1[inliers]
+    # pts2_in = pts2[inliers]
+    # print(f"# inliers: {len(inliers)}")
 
-    # Triangulate
-    points_4d = cv.triangulatePoints(P0, P1, pts1_in.T, pts2_in.T)
+    # # Triangulate
+    # points_4d = cv.triangulatePoints(P0, P1, pts1_in.T, pts2_in.T)
 
     # Homogeneous → Euclidean
     points_3d = (points_4d[:3] / points_4d[3]).T
-
-    return points_3d, pts1_in
+    return (points_3d,)
 
 
 @app.cell
@@ -404,10 +406,63 @@ def _():
 
 
 @app.cell
-def _(K, compute_baseline_estimate, extract_sift, img_list):
-    def has_overlap(kp1, des1, kp2, des2, K,
-                    min_inliers=50):
+def _(extract_sift, img_dir, self):
+    @dataclass
+    class ImageData:
+        idx: int
+        path: Path
+        img: np.ndarray
+        kp: list[cv.KeyPoint]
+        des: np.ndarray
+        R: np.ndarray | None = None
+        t: np.ndarray | None = None
 
+        # @property
+        # def stamped_keypoints():
+        #     return [(idx, p.)]
+    
+    class FeatureStore:
+
+        def __init__(self, img_dir: Path):
+            self._store: list[ImageData] = []
+            self._load_dir(img_dir)
+
+        def _load_dir(self, img_dir: Path, ext: str = "jpg"):
+            img_paths = sorted(list(img_dir.glob(f"*.{ext}")))
+        
+            if not img_paths:
+                raise ValueError(f"No *.{ext} images found in {img_dir}")
+            
+            for idx, filepath in enumerate(img_paths):
+                kp, des, img = extract_sift(filepath)
+                self._store.append(ImageData(idx, filepath, img, kp, des))
+
+        @property
+        def size():
+            return len(self._store)
+
+        def __getitem__(self, img_idx: int):
+            return self._store[img_idx]
+
+        def set_pose(img_idx: int, R, t):
+            self._store[img_idx].R = R
+            self._store[img_idx].t = t
+        
+    
+        def keypoints(self):
+            yield from (item.kp for item in self._store)
+
+        def descriptors(self):
+            yield from (item.des for item in self._store)
+        
+    # load all images & extract features
+    store = FeatureStore(img_dir)
+    return ImageData, store
+
+
+@app.cell
+def _(K, store):
+    def has_overlap(kp1, des1, kp2, des2, K, min_inliers=50):
         bf = cv.BFMatcher(cv.NORM_L2)
         matches = bf.knnMatch(des1, des2, k=2)
 
@@ -423,11 +478,9 @@ def _(K, compute_baseline_estimate, extract_sift, img_list):
         # geometric validation: rejects matches that cannot arise from a rigid 3D scene
         pts1 = np.float32([kp1[m.queryIdx].pt for m in good])
         pts2 = np.float32([kp2[m.trainIdx].pt for m in good])
-    
+
         E, mask = cv.findEssentialMat(
-            pts1, pts2, K,
-            method=cv.RANSAC,
-            threshold=1.0
+            pts1, pts2, K, method=cv.RANSAC, threshold=1.0
         )
 
         if E is None:
@@ -439,23 +492,18 @@ def _(K, compute_baseline_estimate, extract_sift, img_list):
 
         return True, inliers, good
 
-    from collections import defaultdict
-    from dataclasses import dataclass
 
     @dataclass
     class ViewEdge:
         i: int
         j: int
-        inliers_ij: int   # matches i -> j
-        inliers_ji: int   # matches j -> i
+        inliers_ij: int  # matches i -> j
+        inliers_ji: int  # matches j -> i
 
         @property
         def weight(self):
             # symmetric weight used for ranking
             return min(self.inliers_ij, self.inliers_ji)
-            # alternatives:
-            # return (self.inliers_ij + self.inliers_ji) // 2
-            # return max(self.inliers_ij, self.inliers_ji)
 
     class ViewGraph:
         """
@@ -463,8 +511,8 @@ def _(K, compute_baseline_estimate, extract_sift, img_list):
         """
 
         def __init__(self):
-            self.adj = defaultdict(dict)   # adj[i][j] = ViewEdge
-            self.edges = []                # list of ViewEdge (global access)
+            self.adj = defaultdict(dict)  # adj[i][j] = ViewEdge
+            self.edges = []  # list of ViewEdge (global access)
 
         def add_edge(self, i, j, inliers_ij, inliers_ji):
             """
@@ -497,50 +545,187 @@ def _(K, compute_baseline_estimate, extract_sift, img_list):
         assert len(kp) == len(des)
         N = len(kp)
         for i in range(N):
-            for j in range(i+1, N):
-                ok_ij, inliers_ij, _ = has_overlap(
-                    kp[i], des[i],
-                    kp[j], des[j],
-                    K
-                )
-                ok_ji, inliers_ji, _ = has_overlap(
-                    kp[j], des[j],
-                    kp[i], des[i],
-                    K
-                )
+            for j in range(i + 1, N):
+                ok_ij, inliers_ij, _ = has_overlap(kp[i], des[i], kp[j], des[j], K)
+                ok_ji, inliers_ji, _ = has_overlap(kp[j], des[j], kp[i], des[i], K)
+                # ASK: why the matches should not be preserved ???
             if ok_ij and ok_ji:
                 view_graph.add_edge(i, j, inliers_ij, inliers_ji)
 
         return view_graph
 
-    # load all images & extract features
-    keypoints, descriptors, images = [], [], []
-    for path in img_list:
-        kp, des, img = extract_sift(path)
-        keypoints.append(kp)
-        descriptors.append(des)
-        images.append(img)
+    # keypoints, descriptors, images = [], [], []
+    # for path in img_list:
+    #     kp, des, img = extract_sift(path)
+    #     keypoints.append(kp)
+    #     descriptors.append(des)
+    #     images.append(img)
 
-    view_graph = construct_view_graph(keypoints, descriptors)
+    # TODO: change store to SOA layout? need materialized lists for view graph anyway
+    kp_list, des_list = list(store.keypoints()), list(store.descriptors())
+    view_graph = construct_view_graph(kp_list, des_list)
+
+    return (view_graph,)
+
+
+@app.cell
+def _(ImageData, K, dist, images, mask_pose, store, track_manager, view_graph):
+    def compute_baseline_estimate(
+        img_0: ImageData, img_1: ImageData, track_manager
+    ):
+        """Computes two-view baseline estimate of 3D points and poses
+
+        First image is at the origin.
+        """
+
+        # Match key points
+        # TODO: extract into function
+        bf = cv.BFMatcher(cv.NORM_L2, crossCheck=False)
+        matches = bf.knnMatch(img_0.des, img_1.des, k=2)
+        # Lowe's ratio filtering
+        matches = [m for m, n in matches if m.distance < 0.75 * n.distance]
+
+        # extract corresponding pixel coordinates
+        pts0 = np.float32([img_0.kp[m.queryIdx].pt for m in matches])
+        pts1 = np.float32([img_1.kp[m.trainIdx].pt for m in matches])
+
+        # compute Essential matrix using camera intrinsics
+        E, mask = cv.findEssentialMat(
+            pts0, pts1, K, method=cv.RANSAC, prob=0.999, threshold=1.0
+        )
+
+        # estimate camera pose & triangulate 3D points
+        # TODO: mask tells us which pairs of 2D points were successfully triangulated to 3D?
+        retval, R, t, mask, points_4d = cv.recoverPose(
+            E=E,
+            points1=pts0,
+            points2=pts1,
+            cameraMatrix=K,
+            distanceThresh=50.0,  # mandatory for triangulation
+        )
+
+        # Homogeneous --> Euclidean
+        points_3d = (points_4d[:3] / points_4d[3]).T
+
+        # TODO: TrackManager records tracked object points
+
+        # Update image data structs w/ new estimates
+        img_0.R, img_0.t = np.eye(3), np.zeros(3)
+        img_1.R, img_1.t = R, t
+
+        return R, t, points_3d
+
+
+    def add_view(img_new: ImageData, img_ref: ImageData, track_manager):
+        """Adds 3D points from new view using PnP and triangulation.
+
+        img_ref is reference image for which we already have 2D-3D pt correspondence in track_manager
+        """
+        # Compute KP matches from ref image to new image
+        bf = cv.BFMatcher(cv.NORM_L2, crossCheck=False)
+        # TODO: match in new -> ref or ref -> new
+        # Matching from new to ref image: Where does tracked ref img KP match to in new img?
+        matches = bf.knnMatch(img_ref.des, img_new.des, k=2)
+        matches = [m for m, n in matches if m.distance < 0.75 * n.distance]
+    
+        # pts_ref[i] matched to pts_new[i]
+        pts_ref = np.float32([img_ref.kp[m.queryIdx].pt for m in matches])
+        pts_new = np.float32([img_new.kp[m.trainIdx].pt for m in matches])
+
+        # add new img KPs, that are matched to by tracked ref img KPs, to current tracks (3D pts)
+        # TODO: what args do I need here? 
+        tracked_kps, untracked_kps, tracks = track_manager.update_tracks(img_new, img_ref, matches)
+        # Only use tracked KPs for reconstruction; tracked == "have 3D point"
+        # TODO: as if TM should store the 3D pts; thiking PointCloud should be managed separately, TM should index into it; PointCloud.export(),plot_colored(),plot_depth()?
+        object_points = track_manager.get_object_points(tracks)
+    
+        # Estimate pose of new image camera
+        # PnP needs tracked KPs from new image (2D) and matching 3D pts
+        pnp_ok, R, t, inliers = cv.solvePnPRansac(object_points, tracked_kps, K, dist)
+        if not pnp_ok:
+            raise ValueError("solvePnPRansac failed to estimate pose.")
+        img_new.R, img_new.t = R, t
+    
+        # Inliers only
+        inliers = mask_pose.ravel() > 0
+        if np.all(inliers==False):
+            print("No inliers detected! Can't triangulate 3D points.")
+        pts_ref = pts_ref[inliers]
+        pts_new = pts_new[inliers]
+        print(f"# inliers: {len(inliers)}")
+    
+        # Projection matrices: from 3D world to each camera 2D image plane
+        P_ref = K @ np.hstack((img_ref.R, img_ref.t))
+        P_new = K @ np.hstack((img_new.R, img_new.t))
+
+        # Triangulate
+        points_4d = cv.triangulatePoints(P_ref, P_new, pts_ref.T, pts_new.T)
+
+        # TODO: TrackManager add tracks for newly triangulated points
+
+        return R, t, points_4d[:3] / points_4d[3]
+
 
     # Pick strongest baseline:
     # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
     best_edge = view_graph.best_edge()
-    compute_baseline_estimate(best_edge)
+    img_0, img_1 = store[best_edge.i], store[best_edge.j]
+    # TODO: managed PointCloud; .add_points()?
+    # matches -> E -> pose -> triangulation
+    _, _, points_3d = compute_baseline_estimate(img_0, img_1)
+
+    R = set((best_edge.i, best_edge.j))
+    U = set(range(len(images)))
+    U.difference_update(R)
+
+    while True:
+        # find unregistered images connected to the registered ones
+        # "connected" == "sharing matched keypoints"
+        candidate_edges = [
+            e
+            for e in view_graph.edges
+            if (e.i in R and e.j in U) or (e.j in R and e.i in U)
+        ]
+
+        if not candidate_edges:
+            # TODO: U could still be non-empty (disconnected graph)
+            break
+
+        best_edge = max(candidate_edges, key=lambda e: e.weight)
+        idx_ref, idx_new = (
+            (best_edge.i, best_edge.j)
+            if best_edge.i in R
+            else (best_edge.j, best_edge.i)
+        )
+        img_ref, img_new = store[idx_ref], store[idx_new]
+
+        # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
+        _, _, points_3d = add_view(img_new, img_ref, track_manager)
+
+        # move currently processed image/node index from U to R
+        if best_edge.i in R:
+            R.add(best_edge.j)
+            U.remove(best_edge.j)
+        else:
+            R.add(best_edge.i)
+            U.remove(best_edge.i)
+
+
+    # - given baseline estimate (two poses + 3d points)
     # - for each edge in view graph sorted by weight from best to worst
     #   - compute KP matches
     #   - if neither node has poses: estimate E -> R, t, triang. 3d pts
-    #   - else if either node has a pose: 
+    #   - else if either node has a pose:
     #     - solvePnP to estimate R,t using KPs that have tracks (3d pts)
     #     - triangulate remaining new trackless KPs, create tracks for them
 
     # WHATIF: edge list ordering doesn't respect graph connectivity; ie. edge[0] connects nodes 1 and 2, edge[1] connects 3 and 4; WHATIF graph has several components
-    # NEED: make sure the next edge being processed shares a node with the previously processed edge, ensures growing the 
+    # NEED: make sure the next edge being processed shares a node with the previously processed edge, ensures growing the
 
     # Compute initial reconstruction using the baseline images
     # - create tracks for 3d pts (ie. note involved kps)
     # Determine next image to process by examining the view graph
-    return
+    return (points_3d,)
 
 
 if __name__ == "__main__":
