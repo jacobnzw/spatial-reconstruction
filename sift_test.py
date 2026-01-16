@@ -248,6 +248,7 @@ def _(img0, img1, kp0, kp1, matches):
 @app.cell
 def _(K, kp0, kp1, matches):
     # extract corresponding pixel coordinates
+    # not all KPs match each other, thus len(kp0) > len(pts1)
     pts1 = np.float32([kp0[m.queryIdx].pt for m in matches])
     pts2 = np.float32([kp1[m.trainIdx].pt for m in matches])
 
@@ -262,6 +263,7 @@ def _(K, kp0, kp1, matches):
     )
 
     # camera pose
+    # TODO: mask tells us which pairs of 2D points were successfully triangulated to 3D?
     retval, R, t, mask, points_4d = cv.recoverPose(
         E=E,
         points1=pts1,
@@ -636,6 +638,7 @@ def _(ImageData, K, dist, images, mask_pose, store, track_manager, view_graph):
         # TODO: what args do I need here? 
         tracked_kps, untracked_kps, tracks = track_manager.update_tracks(img_new, img_ref, matches)
         # Only use tracked KPs for reconstruction; tracked == "have 3D point"
+    
         # TODO: as if TM should store the 3D pts; thiking PointCloud should be managed separately, TM should index into it; PointCloud.export(),plot_colored(),plot_depth()?
         object_points = track_manager.get_object_points(tracks)
     
