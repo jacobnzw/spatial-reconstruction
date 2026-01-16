@@ -217,8 +217,8 @@ class TrackManager:
         self.kp_to_track[kp_key] = track_id
         self.track_to_kps.setdefault(track_id, []).append(kp_key)
 
-    def get_track(self, img_id, kp_idx):
-        return self.kp_to_track.get((img_id, kp_idx), None)
+    def get_track(self, kp_key: KPKey):
+        return self.kp_to_track.get(kp_key, None)
 
     def add_new_tracks(self, kp_obs: list[tuple[int, int]]):
         """Create new track for every given KP observation."""
@@ -234,7 +234,6 @@ class TrackManager:
         Some of the KPs in img_ref have tracks, some don't. The KPs in img_new that match the tracked KPs in img_ref
         are added to those tracks. The KPs in img_new that match the untracked KPs in img_ref are added to new tracks.
         """
-        # TODO: technically I only need the img_new.idx, img_ref.idx so far
         # for each match, if ref KP has a track, add new img KP to track; else create new track
         kp_idx_new_tracked, matches_untracked = [], []
         # I wanna add the new KPs (that have matches to tracked ref KPs) to current tracks
@@ -243,9 +242,10 @@ class TrackManager:
             # if ref KP has a track, add the matching new KP to the same track
             # this means the same 3D object point is now observed by a new 2D KP
             kp_key_new = (img_idx_new, kp_idx_new)
-            if track_id := self.get_track(img_idx_ref, kp_idx_ref) is not None:
-                self._register_keypoint_track(kp_key_new, track_id)
+            kp_key_ref = (img_idx_ref, kp_idx_ref)
+            if track_id := self.get_track(kp_key_ref) is not None:
                 kp_idx_new_tracked.append(kp_idx_new)
+                self._register_keypoint_track(kp_key_new, track_id)
             else:  # ref KP is untracked and therefore so is its matching KP from img_new
                 matches_untracked.append(m)
                 # create new tracks for untracked KPs
@@ -254,8 +254,7 @@ class TrackManager:
                 # -> postpone creating new tracks until after triangulation
                 # next_track_id will start at point_cloud.size
                 # BUT: the self.next_track_id will already be set to point_cloud.size provided TM is used properly
-                tid = self.next_track_id
-                self._register_keypoint_track(kp_key_new, tid)
+                self._register_keypoint_track(kp_key_new, self.next_track_id)
                 self.next_track_id += 1
 
         # return tracked KPs in new img and ref2new matches for untracked KPs for triangulation
@@ -298,6 +297,7 @@ def compute_baseline_estimate(img_0: ImageData, img_1: ImageData, K, track_manag
     points_3d = (points_4d[:3] / points_4d[3]).T
 
     # Create new tracks for the triangulated 3D object points
+    # TODO: check this, likely need only masked points used for reconstruction
     track_manager.add_new_tracks([(img_0.idx, m.queryIdx) for m in matches])
 
     # Update image data structs w/ new estimates
@@ -340,10 +340,10 @@ def add_view(
     img_new.R, img_new.t = R, t
 
     # Triangulate untracked KPs in the new image
-    # TODO: may not need this
     # pts_ref[i] matched to pts_new[i]
     pts_ref = np.float32([img_ref.kp[m.queryIdx].pt for m in matches_untracked])
     pts_new = np.float32([img_new.kp[m.trainIdx].pt for m in matches_untracked])
+    # TODO: inliers relate to tracked points from PnP pose estimation so irrelevant for untracked KPs!
     # inliers = inliers.ravel() > 0
     # if np.all(not inliers):
     #     print("No inliers detected! Can't triangulate 3D points.")
@@ -352,6 +352,7 @@ def add_view(
     # print(f"# inliers: {len(inliers)}")
 
     # Projection matrices: from 3D world to each camera 2D image plane
+    # TODO: do np.hstack((img_ref.R, img_ref.t)) in ImageData property?
     P_ref = K @ np.hstack((img_ref.R, img_ref.t))
     P_new = K @ np.hstack((img_new.R, img_new.t))
 
@@ -359,6 +360,7 @@ def add_view(
     points_4d = cv.triangulatePoints(P_ref, P_new, pts_ref.T, pts_new.T)
 
     # TODO: TrackManager add tracks for newly triangulated points from untracked_kps
+    # not needed if we accept current else branch in update_tracks()
     # track_manager.add_tracks(kp_idx_new_untracked)
 
     points_3d = points_4d[:3] / points_4d[3]
