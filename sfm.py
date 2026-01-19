@@ -10,7 +10,15 @@ from numpy.typing import NDArray
 
 def calibrate_camera(img_dir: Path = Path("data/calibration")):
     """Compute camera intrinsics given a sample of checkerboard photos."""
+    # Try to load cached calibration parameters
+    CALIBRATION_FILENAME = "calibration_params.npz"
+    CALIBRATION_PATH = img_dir / CALIBRATION_FILENAME
+    if CALIBRATION_PATH.exists():
+        print(f"Loading cached calibration parameters from: {CALIBRATION_PATH}")
+        with np.load(CALIBRATION_PATH) as data:
+            return data["K"], data["dist"]
 
+    print("Calibrating camera...")
     # Checkerboard parameters
     CHECKERBOARD = (8, 6)  # inner corners (width, height)
     SQUARE_SIZE = 0.025  # meters (example)
@@ -48,7 +56,10 @@ def calibrate_camera(img_dir: Path = Path("data/calibration")):
             imgpoints.append(corners_refined)
 
     # Camera calibration
-    ret, K, dist, rvecs, tvecs = cv.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None)  # ty:ignore[no-matching-overload]
+    ret, K, dist, _, _ = cv.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None)  # ty:ignore[no-matching-overload]
+
+    # Cache the calibration parameters
+    np.savez(CALIBRATION_PATH, K=K, dist=dist)
 
     return K, dist
 
@@ -64,6 +75,7 @@ def extract_sift(img_path: Path):
     return kp, des, img
 
 
+@dataclass
 class ImageData:
     idx: int
     path: Path
@@ -79,7 +91,7 @@ class ImageData:
 
     @property
     def pose_matrix(self) -> NDArray[np.float32]:
-        return np.hstack((self.R, self.t))  # ty:ignore[no-matching-overload]
+        return np.hstack((self.R, self.t))
 
 
 class FeatureStore:
@@ -197,7 +209,7 @@ def has_overlap(kp1, des1, kp2, des2, K, min_inliers=50):
     return True, inliers, good
 
 
-def construct_view_graph(kp: list, des: list):
+def construct_view_graph(kp: list, des: list, K):
     view_graph = ViewGraph()
     assert len(kp) == len(des)
     N = len(kp)
@@ -220,6 +232,10 @@ class PointCloud:
     def __init__(self):
         self._data: dict[int, Point3D] = {}  # track_id -> np.array([x, y, z])
 
+    @property
+    def size(self):
+        return len(self._data)
+
     def add_points(self, track_ids: list[int], xyz: NDArray[Any]) -> None:
         assert len(track_ids) == xyz.shape[0], "Number of track_ids must match number of 3D points"
         for track_id, pt in zip(track_ids, xyz):
@@ -238,7 +254,42 @@ class PointCloud:
     def iter_points(self) -> Iterable[Point3D]:
         yield from self._data.values()
 
-    # TODO: .export(), plot_colored(), plot_depth()?
+    def save_ply(self, filename: Path = Path("point_cloud.ply")):
+        import pandas as pd
+
+        # Convert to DataFrame
+        df = pd.DataFrame(self._data.values(), columns=["x", "y", "z"])
+
+        # --- OUTLIER REMOVAL ---
+        # Calculate the distance from the median to find the "main cluster"
+        median = df.median()
+        distance = np.sqrt(((df - median) ** 2).sum(axis=1))
+
+        # Keep only points within the 95th percentile of distance
+        # This removes the "points at infinity" that squash your visualization
+        df_filtered = df[distance < distance.quantile(0.95)]
+
+        # --- DEBUG --- sanity checks
+        print()
+        print(f"{df.shape = }")
+        print(f"# nans: {df.isna().sum().sum()}")
+        print(f"# infs: {np.isinf(df.values).sum()}")
+        norms = np.linalg.norm(df.values, axis=1)
+        print(f"{norms.min() = }\n{norms.max() = }")
+        print()
+        print(f"{df_filtered.shape = }")
+
+        print(f"Writing {len(df_filtered)} points to {filename}")
+        with open(filename, "w") as f:
+            f.write("ply\n")
+            f.write("format ascii 1.0\n")
+            f.write(f"element vertex {self.size}\n")
+            f.write("property float x\n")
+            f.write("property float y\n")
+            f.write("property float z\n")
+            f.write("end_header\n")
+            for x, y, z in df_filtered.values:
+                f.write(f"{x} {y} {z}\n")
 
 
 class TrackManager:
@@ -266,7 +317,7 @@ class TrackManager:
             self.next_track_id += 1
         return added_track_ids
 
-    def update_tracks(self, img_idx_new: int, img_idx_ref: int, ref2new_matches):
+    def update_tracks(self, img_idx_new: int, img_idx_ref: int, ref2new_matches: list[cv.DMatch]):
         """Update tracks with new KP observations from img_new.
 
         img_ref is the reference image for which we already have 2D-3D pt correspondence in track_manager.
@@ -277,7 +328,7 @@ class TrackManager:
         kp_idx_new_tracked, track_ids_tracked = [], []
         track_ids_added, matches_untracked = [], []
         # I wanna add the new KPs (that have matches to tracked ref KPs) to current tracks
-        for m, _ in ref2new_matches:
+        for m in ref2new_matches:
             kp_idx_ref, kp_idx_new = m.queryIdx, m.trainIdx
             # if ref KP has a track, add the matching new KP to the same track
             # this means the same 3D object point is now observed by a new 2D KP
@@ -303,7 +354,9 @@ class TrackManager:
         return track_ids_tracked, kp_idx_new_tracked, track_ids_added, matches_untracked
 
 
-def compute_baseline_estimate(img_0: ImageData, img_1: ImageData, K, track_manager, point_cloud):
+def compute_baseline_estimate(
+    img_0: ImageData, img_1: ImageData, K, track_manager: TrackManager, point_cloud: PointCloud
+):
     """Computes two-view baseline estimate of 3D points and poses
 
     First image is at the origin.
@@ -313,8 +366,8 @@ def compute_baseline_estimate(img_0: ImageData, img_1: ImageData, K, track_manag
     matches = compute_matches(img_0.des, img_1.des, lowe_ratio=0.75)
 
     # extract corresponding pixel coordinates
-    pts0 = np.ndarray([img_0.kp[m.queryIdx].pt for m in matches]).astype(np.float32)
-    pts1 = np.ndarray([img_1.kp[m.trainIdx].pt for m in matches]).astype(np.float32)
+    pts0 = np.array([img_0.kp[m.queryIdx].pt for m in matches]).astype(np.float32)
+    pts1 = np.array([img_1.kp[m.trainIdx].pt for m in matches]).astype(np.float32)
 
     # compute Essential matrix using camera intrinsics
     E, mask = cv.findEssentialMat(pts0, pts1, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
@@ -347,7 +400,7 @@ def compute_baseline_estimate(img_0: ImageData, img_1: ImageData, K, track_manag
     return R, t, points_3d
 
 
-def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager, point_cloud):
+def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: TrackManager, point_cloud: PointCloud):
     """Adds 3D points from new view using PnP and triangulation.
 
     img_ref is reference image for which we already have 2D-3D pt correspondence in track_manager
@@ -359,7 +412,7 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager, poi
     # add new img KPs, that are matched to from tracked ref img KPs, to current tracks (3D pts)
     # returns track_ids and (un)tracked KPs in the new image; track_ids used as indices to point cloud
     track_ids_tracked, kp_idx_new_tracked, track_ids_added, matches_untracked = track_manager.update_tracks(
-        img_new, img_ref, matches
+        img_new.idx, img_ref.idx, matches
     )
 
     # Estimate pose of new image
@@ -368,16 +421,21 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager, poi
     # PnP needs tracked KPs from new image (2D) and matching 3D object pts
     # In other words, new 2D points that observe the same 3D object points as the tracked KPs in the ref image
     # img_new_pts_tracked: NDArray[np.float32] = np.float32([img_new.kp[i].pt for i in kp_idx_new_tracked])
-    img_new_pts_tracked = np.ndarray([img_new.kp[i].pt for i in kp_idx_new_tracked]).astype(np.float32)
-    pnp_ok, R, t, inliers = cv.solvePnPRansac(object_points, img_new_pts_tracked, K, dist)
+    img_new_pts_tracked = np.array([img_new.kp[i].pt for i in kp_idx_new_tracked]).astype(np.float32)
+
+    print(f"Attempting PnP with {len(object_points)} 3D points and {len(img_new_pts_tracked)} 2D points...")
+    # FIXME: pnp via ransac will drop the 3rd image... using solvePnP leads to sus outliers
+    # pnp_ok, R, t, inliers = cv.solvePnPRansac(object_points, img_new_pts_tracked, K, dist)
+    pnp_ok, rvec, tvec = cv.solvePnP(object_points, img_new_pts_tracked, K, dist)
+    R = cv.Rodrigues(rvec)[0]
     if not pnp_ok:
         raise ValueError("solvePnPRansac failed to estimate pose.")
-    img_new.set_pose(R, t)
+    img_new.set_pose(R, tvec)
 
     # Triangulate untracked KPs in the new image
     # pts_ref[i] matched to pts_new[i]
-    pts_ref = np.ndarray([img_ref.kp[m.queryIdx].pt for m in matches_untracked]).astype(np.float32)
-    pts_new = np.ndarray([img_new.kp[m.trainIdx].pt for m in matches_untracked]).astype(np.float32)
+    pts_ref = np.array([img_ref.kp[m.queryIdx].pt for m in matches_untracked]).astype(np.float32)
+    pts_new = np.array([img_new.kp[m.trainIdx].pt for m in matches_untracked]).astype(np.float32)
 
     # Projection matrices: from 3D world to each camera 2D image plane
     P_ref = K @ img_ref.pose_matrix
@@ -385,11 +443,11 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager, poi
 
     # Triangulate the untracked KPs in the new image
     points_4d = cv.triangulatePoints(P_ref, P_new, pts_ref.T, pts_new.T)
-    points_3d = points_4d[:3] / points_4d[3]
+    points_3d = (points_4d[:3] / points_4d[3]).T
 
     point_cloud.add_points(track_ids_added, points_3d)
 
-    return R, t, points_3d
+    return R, tvec, points_3d
 
 
 def main():
@@ -403,17 +461,19 @@ def main():
 
     # TODO: change store to SOA layout? need materialized lists for view graph anyway
     kp_list, des_list = list(store.keypoints()), list(store.descriptors())
-    view_graph = construct_view_graph(kp_list, des_list)
+    view_graph = construct_view_graph(kp_list, des_list, K)
 
     # Pick strongest baseline:
     # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
     best_edge = view_graph.best_edge()
     img_0, img_1 = store[best_edge.i], store[best_edge.j]
+    print(f"Establishing baseline from: {img_0.path.name} and {img_1.path.name}")
+
     # matches -> E -> pose -> triangulation
     _, _, points_3d = compute_baseline_estimate(img_0, img_1, K, track_manager, point_cloud)
 
     R = set((best_edge.i, best_edge.j))
-    U = set(range(len(store.size)))
+    U = set(range(store.size))
     U.difference_update(R)
 
     while True:
@@ -428,6 +488,7 @@ def main():
         best_edge = max(candidate_edges, key=lambda e: e.weight)
         idx_ref, idx_new = (best_edge.i, best_edge.j) if best_edge.i in R else (best_edge.j, best_edge.i)
         img_ref, img_new = store[idx_ref], store[idx_new]
+        print(f"Adding view: {img_new.path.name} (matches: {best_edge.weight}) w/ ref: {img_ref.path.name}")
 
         # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
         _, _, points_3d = add_view(img_new, img_ref, K, dist, track_manager, point_cloud)
@@ -439,3 +500,16 @@ def main():
         else:
             R.add(best_edge.i)
             U.remove(best_edge.i)
+
+    print(f"Final point cloud size: {point_cloud.size}")
+    point_cloud.save_ply()
+
+    # import open3d as o3d
+
+    # pcd = o3d.geometry.PointCloud()
+    # pcd.points = o3d.utility.Vector3dVector(points_3d)
+    # o3d.visualization.draw_geometries([pcd])
+
+
+if __name__ == "__main__":
+    main()
