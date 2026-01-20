@@ -218,8 +218,8 @@ def construct_view_graph(kp: list, des: list, K):
             ok_ij, inliers_ij, _ = has_overlap(kp[i], des[i], kp[j], des[j], K)
             ok_ji, inliers_ji, _ = has_overlap(kp[j], des[j], kp[i], des[i], K)
             # ASK: why the matches should not be preserved ???
-        if ok_ij and ok_ji:
-            view_graph.add_edge(i, j, inliers_ij, inliers_ji)
+            if ok_ij and ok_ji:
+                view_graph.add_edge(i, j, inliers_ij, inliers_ji)
 
     return view_graph
 
@@ -280,6 +280,7 @@ class PointCloud:
         print(f"{df_filtered.shape = }")
 
         print(f"Writing {len(df_filtered)} points to {filename}")
+        filename.parent.mkdir(exist_ok=True, parents=True)
         with open(filename, "w") as f:
             f.write("ply\n")
             f.write("format ascii 1.0\n")
@@ -363,6 +364,7 @@ def compute_baseline_estimate(
     """
 
     # Match key points (via descriptors)
+    print(f"baseline: Computing matches from {img_0.idx}:{img_0.path.name} to {img_1.idx}:{img_1.path.name}")
     matches = compute_matches(img_0.des, img_1.des, lowe_ratio=0.75)
 
     # extract corresponding pixel coordinates
@@ -379,10 +381,12 @@ def compute_baseline_estimate(
         points2=pts1,
         cameraMatrix=K,
         distanceThresh=50.0,  # mandatory for triangulation
+        mask=mask,
     )
 
     # mask tells us which pairs of 2D points were successfully triangulated to 3D?
     # TODO: should I filter points_4d using mask?? inliers = mask > 0
+    # This should preserve indices so that matches[i] corresponds to points_4d[:, i]
 
     # Homogeneous --> Euclidean
     points_3d = (points_4d[:3] / points_4d[3]).T
@@ -407,6 +411,8 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
     """
     # Compute KP matches from ref image to new image
     # Matching from new to ref image: Where does ref img tracked KP match to in new img?
+    # TODO: is PnP failing because the matches are in reverse?
+    print(f"add_view: Computing matches from {img_ref.idx}:{img_ref.path.name} to {img_new.idx}:{img_new.path.name}")
     matches = compute_matches(img_ref.des, img_new.des, lowe_ratio=0.75)
 
     # add new img KPs, that are matched to from tracked ref img KPs, to current tracks (3D pts)
@@ -423,13 +429,22 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
     # img_new_pts_tracked: NDArray[np.float32] = np.float32([img_new.kp[i].pt for i in kp_idx_new_tracked])
     img_new_pts_tracked = np.array([img_new.kp[i].pt for i in kp_idx_new_tracked]).astype(np.float32)
 
-    print(f"Attempting PnP with {len(object_points)} 3D points and {len(img_new_pts_tracked)} 2D points...")
+    print(f"Estimating pose of {img_new.idx}:{img_new.path.name} with {len(object_points)} 3D-2D correspondences...")
     # FIXME: pnp via ransac will drop the 3rd image... using solvePnP leads to sus outliers
-    # pnp_ok, R, t, inliers = cv.solvePnPRansac(object_points, img_new_pts_tracked, K, dist)
-    pnp_ok, rvec, tvec = cv.solvePnP(object_points, img_new_pts_tracked, K, dist)
-    R = cv.Rodrigues(rvec)[0]
+    pnp_ok, rvec, tvec, inliers = cv.solvePnPRansac(
+        object_points,
+        img_new_pts_tracked,
+        K,
+        dist,
+        flags=cv.SOLVEPNP_EPNP,
+        reprojectionError=12.0,
+        iterationsCount=2000,
+    )
+    # pnp_ok, rvec, tvec = cv.solvePnP(object_points, img_new_pts_tracked, K, dist)
     if not pnp_ok:
-        raise ValueError("solvePnPRansac failed to estimate pose.")
+        raise ValueError("solvePnP failed to estimate pose.")
+    print(f"Pose estimation succeeded with {len(inliers)} inliers")
+    R = cv.Rodrigues(rvec)[0]
     img_new.set_pose(R, tvec)
 
     # Triangulate untracked KPs in the new image
@@ -454,6 +469,7 @@ def main():
     K, dist = calibrate_camera()
 
     img_dir = Path("data") / "raw" / "statue"
+    out_dir = Path("data") / "out" / img_dir.name
     # load all images & extract features
     store = FeatureStore(img_dir)
     track_manager = TrackManager()
@@ -467,7 +483,7 @@ def main():
     # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
     best_edge = view_graph.best_edge()
     img_0, img_1 = store[best_edge.i], store[best_edge.j]
-    print(f"Establishing baseline from: {img_0.path.name} and {img_1.path.name}")
+    print(f"Establishing baseline from: {img_0.idx}:{img_0.path.name} and {img_1.idx}:{img_1.path.name}")
 
     # matches -> E -> pose -> triangulation
     _, _, points_3d = compute_baseline_estimate(img_0, img_1, K, track_manager, point_cloud)
@@ -488,21 +504,28 @@ def main():
         best_edge = max(candidate_edges, key=lambda e: e.weight)
         idx_ref, idx_new = (best_edge.i, best_edge.j) if best_edge.i in R else (best_edge.j, best_edge.i)
         img_ref, img_new = store[idx_ref], store[idx_new]
-        print(f"Adding view: {img_new.path.name} (matches: {best_edge.weight}) w/ ref: {img_ref.path.name}")
-
-        # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
-        _, _, points_3d = add_view(img_new, img_ref, K, dist, track_manager, point_cloud)
+        print(
+            (
+                f"\nAdding view {img_new.idx}:{img_new.path.name} w/ ref {img_ref.idx}:{img_ref.path.name}"
+                f"(matches: {best_edge.weight})"
+            )
+        )
+        try:
+            # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
+            _, _, points_3d = add_view(img_new, img_ref, K, dist, track_manager, point_cloud)
+        except ValueError as e:
+            U.remove(idx_new)  # remove failed image from unregistered set
+            print(
+                f"Failed to add view: {img_new.idx}:{img_new.path.name} with ref: {img_ref.idx}:{img_ref.path.name} due to {e}"
+            )
+            continue
 
         # move currently processed image/node index from U to R
-        if best_edge.i in R:
-            R.add(best_edge.j)
-            U.remove(best_edge.j)
-        else:
-            R.add(best_edge.i)
-            U.remove(best_edge.i)
+        R.add(idx_new)
+        U.remove(idx_new)
 
     print(f"Final point cloud size: {point_cloud.size}")
-    point_cloud.save_ply()
+    point_cloud.save_ply(filename=out_dir / f"{img_dir.name}.ply")
 
     # import open3d as o3d
 
