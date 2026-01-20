@@ -327,7 +327,7 @@ class TrackManager:
         """
         # for each match, if ref KP has a track, add new img KP to track; else create new track
         kp_idx_new_tracked, track_ids_tracked = [], []
-        track_ids_added, matches_untracked = [], []
+        kp_keys_pending, matches_untracked = [], []
         # I wanna add the new KPs (that have matches to tracked ref KPs) to current tracks
         for m in ref2new_matches:
             kp_idx_ref, kp_idx_new = m.queryIdx, m.trainIdx
@@ -335,24 +335,17 @@ class TrackManager:
             # this means the same 3D object point is now observed by a new 2D KP
             kp_key_new = (img_idx_new, kp_idx_new)
             kp_key_ref = (img_idx_ref, kp_idx_ref)
-            if track_id := self.get_track(kp_key_ref) is not None:
+            if (track_id := self.get_track(kp_key_ref)) is not None:
                 track_ids_tracked.append(track_id)
                 kp_idx_new_tracked.append(kp_idx_new)
                 self._register_keypoint_track(kp_key_new, track_id)
-            else:  # ref KP is untracked and therefore so is its matching KP from img_new
+            else:  # ref KP is untracked and therefore its matching KP from img_new is also untracked
                 matches_untracked.append(m)
-                # create new tracks for untracked KPs
-                # FIXME: problem: new object points haven't been triangulated yet
-                # so I can't yet know their indexes in 3d point cloud, ie. track_ids
-                # -> postpone creating new tracks until after triangulation
-                # next_track_id will start at point_cloud.size
-                # BUT: the self.next_track_id will already be set to point_cloud.size provided TM is used properly
-                self._register_keypoint_track(kp_key_new, self.next_track_id)
-                track_ids_added.append(self.next_track_id)
-                self.next_track_id += 1
+                # postpone creating new tracks until after triangulation; return the pending KPs to be added later
+                kp_keys_pending.append(kp_key_new)
 
         # return tracked KPs in new img and ref2new matches for untracked KPs for triangulation
-        return track_ids_tracked, kp_idx_new_tracked, track_ids_added, matches_untracked
+        return track_ids_tracked, kp_idx_new_tracked, kp_keys_pending, matches_untracked
 
 
 def compute_baseline_estimate(
@@ -371,36 +364,37 @@ def compute_baseline_estimate(
     pts0 = np.array([img_0.kp[m.queryIdx].pt for m in matches]).astype(np.float32)
     pts1 = np.array([img_1.kp[m.trainIdx].pt for m in matches]).astype(np.float32)
 
-    # compute Essential matrix using camera intrinsics
+    # compute Essential matrix using camera intrinsics; mask indicates inliers
     E, mask = cv.findEssentialMat(pts0, pts1, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
 
-    # estimate camera pose & triangulate 3D points
+    # estimate camera pose & triangulate 3D points; mask refined to include only triangulatable points
     retval, R, t, mask, points_4d = cv.recoverPose(
         E=E,
         points1=pts0,
         points2=pts1,
         cameraMatrix=K,
         distanceThresh=50.0,  # mandatory for triangulation
-        mask=mask,
+        mask=mask,  # input mask selects 2D points to include in triangulation
     )
 
-    # mask tells us which pairs of 2D points were successfully triangulated to 3D?
-    # TODO: should I filter points_4d using mask?? inliers = mask > 0
-    # This should preserve indices so that matches[i] corresponds to points_4d[:, i]
-
-    # Homogeneous --> Euclidean
-    points_3d = (points_4d[:3] / points_4d[3]).T
+    # Homogeneous --> Euclidean; filter out outliers
+    inliers = mask.ravel() > 0
+    points_3d = (points_4d[:3, inliers] / points_4d[3, inliers]).T
+    matches = [m for m, inlier in zip(matches, inliers) if inlier]
 
     # Create new tracks for the triangulated 3D object points
-    # first create tracks for KPs in img_0, then update with KPs in img_1 that match to KPs in img_0
+    # first create tracks for KPs in img_0, then add KPs in img_1 that match to KPs in img_0
     track_ids_added = track_manager.add_new_tracks([(img_0.idx, m.queryIdx) for m in matches])
-    track_manager.update_tracks(img_1.idx, img_0.idx, matches)
+    _, _, _, matches_untracked = track_manager.update_tracks(img_1.idx, img_0.idx, matches)
+    assert len(matches_untracked) == 0, "No additional tracks should be created by now."
+
     point_cloud.add_points(track_ids_added, points_3d)
 
     # Update image data structs w/ new estimates: img_0 is at origin, img_1 is at (R, t)
-    img_0.set_pose(np.eye(3), np.zeros(3))
+    img_0.set_pose(np.eye(3), np.zeros((3, 1)))
     img_1.set_pose(R, t)
 
+    print(f"Baseline constructed with {len(points_3d)} 3D points.")
     return R, t, points_3d
 
 
@@ -417,7 +411,7 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
 
     # add new img KPs, that are matched to from tracked ref img KPs, to current tracks (3D pts)
     # returns track_ids and (un)tracked KPs in the new image; track_ids used as indices to point cloud
-    track_ids_tracked, kp_idx_new_tracked, track_ids_added, matches_untracked = track_manager.update_tracks(
+    track_ids_tracked, kp_idx_new_tracked, kp_keys_pending, matches_untracked = track_manager.update_tracks(
         img_new.idx, img_ref.idx, matches
     )
 
@@ -426,26 +420,28 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
     object_points = point_cloud.get_points_as_array(track_ids_tracked)
     # PnP needs tracked KPs from new image (2D) and matching 3D object pts
     # In other words, new 2D points that observe the same 3D object points as the tracked KPs in the ref image
-    # img_new_pts_tracked: NDArray[np.float32] = np.float32([img_new.kp[i].pt for i in kp_idx_new_tracked])
     img_new_pts_tracked = np.array([img_new.kp[i].pt for i in kp_idx_new_tracked]).astype(np.float32)
 
+    assert len(object_points) == len(img_new_pts_tracked), "Number of 3D points must match number of 2D points"
+    assert np.isfinite(object_points).all(), "Object points must be finite"
+    assert np.isfinite(img_new_pts_tracked).all(), "Image points must be finite"
+
     print(f"Estimating pose of {img_new.idx}:{img_new.path.name} with {len(object_points)} 3D-2D correspondences...")
-    # FIXME: pnp via ransac will drop the 3rd image... using solvePnP leads to sus outliers
     pnp_ok, rvec, tvec, inliers = cv.solvePnPRansac(
         object_points,
         img_new_pts_tracked,
         K,
         dist,
         flags=cv.SOLVEPNP_EPNP,
-        reprojectionError=12.0,
-        iterationsCount=2000,
     )
-    # pnp_ok, rvec, tvec = cv.solvePnP(object_points, img_new_pts_tracked, K, dist)
     if not pnp_ok:
         raise ValueError("solvePnP failed to estimate pose.")
     print(f"Pose estimation succeeded with {len(inliers)} inliers")
+    # TODO: estimate pose relative to reference image (not necessarily to world origin); needs composition?
     R = cv.Rodrigues(rvec)[0]
     img_new.set_pose(R, tvec)
+
+    # TODO: optionally add reprojection error based KP filtering, followed by PnP re-estimation
 
     # Triangulate untracked KPs in the new image
     # pts_ref[i] matched to pts_new[i]
@@ -460,6 +456,7 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
     points_4d = cv.triangulatePoints(P_ref, P_new, pts_ref.T, pts_new.T)
     points_3d = (points_4d[:3] / points_4d[3]).T
 
+    track_ids_added = track_manager.add_new_tracks(kp_keys_pending)
     point_cloud.add_points(track_ids_added, points_3d)
 
     return R, tvec, points_3d
