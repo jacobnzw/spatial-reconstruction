@@ -457,14 +457,94 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
 
     track_ids_added = track_manager.add_new_tracks(kp_keys_pending)
     point_cloud.add_points(track_ids_added, points_3d)
+    print(f"Added {len(points_3d)} 3D points.")
 
-    return R, tvec, points_3d
+
+def process_graph_component(
+    K,
+    dist,
+    edges: list[ViewEdge],
+    store: FeatureStore,
+    track_manager: TrackManager,
+    point_cloud: PointCloud,
+) -> tuple[list[ViewEdge], set[int]]:
+    def pick_best_image_pair(
+        edges: list[ViewEdge], store: FeatureStore, R: set[int] | None = None
+    ) -> tuple[ImageData, ImageData, ViewEdge]:
+        """Pick best image pair from list of edges.
+
+        Assumption: ImageData.idx matches the node indexes, which it shoulf if the graph was constructed correctly.
+        """
+        best_edge = max(edges, key=lambda e: e.weight)
+        if R:  # if R is not None or not empty
+            idx_ref, idx_new = (best_edge.i, best_edge.j) if best_edge.i in R else (best_edge.j, best_edge.i)
+            return store[idx_ref], store[idx_new], best_edge
+        return store[best_edge.i], store[best_edge.j], best_edge
+
+    # Pick strongest baseline:
+    # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
+    img_0, img_1, best_edge = pick_best_image_pair(edges, store)
+    print(
+        f"Establishing baseline ({best_edge.weight} matches) from: {img_0.idx}:{img_0.path.name} and {img_1.idx}:{img_1.path.name}"
+    )
+
+    # matches -> E -> pose -> triangulation
+    compute_baseline_estimate(img_0, img_1, K, track_manager, point_cloud)
+
+    R = set((img_0.idx, img_1.idx))
+    U = {node for e in edges for node in (e.i, e.j)}
+    U.difference_update(R)
+    leftover_edges = edges.copy()
+    leftover_edges.remove(best_edge)
+
+    while True:
+        # find unregistered images connected to the registered ones
+        # "connected" == "sharing matched keypoints"
+        candidate_edges = [e for e in edges if (e.i in R and e.j in U) or (e.j in R and e.i in U)]
+
+        if not candidate_edges:
+            # U could still be non-empty (disconnected graph)
+            print(f"No more candidate edges. Exiting. {len(U)} images left.")
+            break
+
+        img_ref, img_new, best_edge = pick_best_image_pair(candidate_edges, store, R)
+        print(
+            (
+                f"\nAdding view {img_new.idx}:{img_new.path.name} w/ ref {img_ref.idx}:{img_ref.path.name}"
+                f"(matches: {best_edge.weight})"
+            )
+        )
+        try:
+            # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
+            add_view(img_new, img_ref, K, dist, track_manager, point_cloud)
+        except ValueError as e:
+            # failed to add new view: indicate the (img_ref, img_new) pair as bad and move on
+            # best_edge was the best chance to add img_new (don't consider next best edge w/ img_new)
+            U.remove(img_new.idx)
+            leftover_edges.remove(best_edge)
+            print(
+                f"Failed to add view: {img_new.idx}:{img_new.path.name} with ref: {img_ref.idx}:{img_ref.path.name} due to {e}"
+            )
+            continue
+
+        # move currently processed image/node index from U to R
+        R.add(img_new.idx)
+        U.remove(img_new.idx)
+        leftover_edges.remove(best_edge)
+
+    # No use for edges involving views that were already registered (ie. in R)
+    leftover_edges = [e for e in leftover_edges if not (e.i in R or e.j in R)]
+    print(f"{R = }\n{U = }")
+    print(f"leftover_edges {[(e.i, e.j) for e in leftover_edges]}")
+
+    return leftover_edges, U
 
 
+# TODO: nice logging by levels
 def main():
     K, dist = calibrate_camera()
 
-    img_dir = Path("data") / "raw" / "statue"
+    img_dir = Path("data") / "raw" / "statue_orbit"
     out_dir = Path("data") / "out" / img_dir.name
     # load all images & extract features
     store = FeatureStore(img_dir)
@@ -475,59 +555,14 @@ def main():
     kp_list, des_list = list(store.keypoints()), list(store.descriptors())
     view_graph = construct_view_graph(kp_list, des_list, K)
 
-    # Pick strongest baseline:
-    # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
-    best_edge = view_graph.best_edge()
-    img_0, img_1 = store[best_edge.i], store[best_edge.j]
-    print(f"Establishing baseline from: {img_0.idx}:{img_0.path.name} and {img_1.idx}:{img_1.path.name}")
-
-    # matches -> E -> pose -> triangulation
-    _, _, points_3d = compute_baseline_estimate(img_0, img_1, K, track_manager, point_cloud)
-
-    R = set((best_edge.i, best_edge.j))
-    U = set(range(store.size))
-    U.difference_update(R)
-
+    leftover_edges = view_graph.edges.copy()
     while True:
-        # find unregistered images connected to the registered ones
-        # "connected" == "sharing matched keypoints"
-        candidate_edges = [e for e in view_graph.edges if (e.i in R and e.j in U) or (e.j in R and e.i in U)]
-
-        if not candidate_edges:
-            # TODO: U could still be non-empty (disconnected graph)
+        leftover_edges, U = process_graph_component(K, dist, leftover_edges, store, track_manager, point_cloud)
+        if not U:
             break
-
-        best_edge = max(candidate_edges, key=lambda e: e.weight)
-        idx_ref, idx_new = (best_edge.i, best_edge.j) if best_edge.i in R else (best_edge.j, best_edge.i)
-        img_ref, img_new = store[idx_ref], store[idx_new]
-        print(
-            (
-                f"\nAdding view {img_new.idx}:{img_new.path.name} w/ ref {img_ref.idx}:{img_ref.path.name}"
-                f"(matches: {best_edge.weight})"
-            )
-        )
-        try:
-            # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
-            _, _, points_3d = add_view(img_new, img_ref, K, dist, track_manager, point_cloud)
-        except ValueError as e:
-            U.remove(idx_new)  # remove failed image from unregistered set
-            print(
-                f"Failed to add view: {img_new.idx}:{img_new.path.name} with ref: {img_ref.idx}:{img_ref.path.name} due to {e}"
-            )
-            continue
-
-        # move currently processed image/node index from U to R
-        R.add(idx_new)
-        U.remove(idx_new)
 
     print(f"Final point cloud size: {point_cloud.size}")
     point_cloud.save_ply(filename=out_dir / f"{img_dir.name}.ply")
-
-    # import open3d as o3d
-
-    # pcd = o3d.geometry.PointCloud()
-    # pcd.points = o3d.utility.Vector3dVector(points_3d)
-    # o3d.visualization.draw_geometries([pcd])
 
 
 if __name__ == "__main__":
