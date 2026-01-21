@@ -32,9 +32,8 @@ The view graph can be used to guide the image matching process and to estimate t
 ## 🚧 Multi-view Stereo (MVS) Pipeline
 = dense reconstruction from sparse 3D points and images
 
-## 🚧 Links
-- real SfM systems (COLMAP, OpenMVG, VisualSfM)
-- bundle adjustment libs (ceres, g2o, or pyceres)
-
 ## Reading List
+S.D. Prince, Computer Vision: Models, Learning and Inference
+SuperPoint
+SuperGlue
 TODO: list papers to read

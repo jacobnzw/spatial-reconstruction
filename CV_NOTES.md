@@ -1,10 +1,15 @@
 # Research Notes on 3D Computer Vision Fundamentals
 
 
+## Data Structures
 KDTree
 Vocabulary-tree matching
+Pose graph
+View graph
+Factor graph
 
 Pinhole Camera Model
+Other used camera models: Brown-Conrady model (fisheye), Kannala-Brandt model (fisheye), Dual Quaternion model (SfM), Catadioptric model (mirror+lens), Omnidirectional model (fish-eye+mirror)
 homography
 Homography Estimation
 ## Multi-View Geometry: 
@@ -15,13 +20,28 @@ singular value decomposition
 bundle adjustment
 reprojection error
 photometric error
+Sampson error for epipolar geometry
+Sim(3)
+SLAM
+Factor graph optimization is a generalization of bundle adjustment?
+Umeyama algorithm for rigid transformation estimation with known correspondences
+
 
 ### Perspective n-Point (PnP)
 Given 3D points in the world frame, their corresponding 2D projections in the image plane and known camera intrinsics, estimate the camera pose (rotation and translation) that best projects the 3D points to the 2D image points.
 
+**EPnP** estimates camera pose using n 3D-to-2D point correspondences by representing the 3D points as a weighted sum of four virtual control points, enabling linear-time computation (O(n)). Non-iterative, closed-form solution. 
+Possibly followed by iterative refinement (Gauss-Newton, Levenberg-Marquardt).
+
+
 ### Keypoint Extraction
-- SIFT expensive but robust (invariant to image scaling, rotation, and translation)
+- SIFT expensive but robust (invariant to image scaling, rotation, and translation; doesn't work well with changes in lighting or illumination, doesn't work with color; CSIFT addresses this)
 - ORB fast but less robust (real-time)
+- AKAZE is a faster and more accurate alternative to SIFT, also invariant to illumination changes and point of view.
+- DISK is a modern, deep learning-based local feature detector and descriptor designed for robust image matching.  It is particularly effective for outdoor scenes and performs exceptionally well when combined with the LightGlue matcher, as shown in the IMC2021 benchmark.
+- LoFTR: A detector-free, transformer-based model that works best for indoor scenes.
+
+
 
 ### Keypoint Matching
 FLANN, Brute Force
@@ -76,3 +96,8 @@ Assuming you have multiple images of the same object from different angles, you 
 Each node in the graph represents an image, and each edge represents the overlap between two images. 
 The weight of the edge can represent the amount of overlap or the quality of the match between the two images. 
 The view graph can be used to guide the image matching process and to estimate the camera poses.
+
+## 🚧 Links
+- real SfM systems (COLMAP, OpenMVG, VisualSfM)
+- bundle adjustment libs (ceres, g2o, or pyceres)
+- Kornia: A PyTorch-based library that integrates DISK, SIFT, LoFTR, and other feature detection/matching tools.

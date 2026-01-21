@@ -404,7 +404,6 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
     """
     # Compute KP matches from ref image to new image
     # Matching from new to ref image: Where does ref img tracked KP match to in new img?
-    # TODO: is PnP failing because the matches are in reverse?
     print(f"add_view: Computing matches from {img_ref.idx}:{img_ref.path.name} to {img_new.idx}:{img_new.path.name}")
     matches = compute_matches(img_ref.des, img_new.des, lowe_ratio=0.75)
 
@@ -436,7 +435,7 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
     if not pnp_ok:
         raise ValueError("solvePnP failed to estimate pose.")
     print(f"Pose estimation succeeded with {len(inliers)} inliers")
-    # TODO: estimate pose relative to reference image (not necessarily to world origin); needs composition?
+    # Estimated pose is relative to 3D point frame (i.e. the world frame); no pose composition required
     R = cv.Rodrigues(rvec)[0]
     img_new.set_pose(R, tvec)
 
