@@ -69,7 +69,7 @@ def extract_sift(img_path: Path):
     # img = cv.resize(img, (800, 600))
     gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
 
-    sift = cv.SIFT_create()
+    sift = cv.SIFT_create(nfeatures=10_000)
     kp, des = sift.detectAndCompute(gray, None)
 
     return kp, des, img
@@ -135,7 +135,7 @@ class ViewEdge:
     inliers_ji: int  # matches j -> i
 
     @property
-    def weight(self):
+    def weight(self) -> int:
         # symmetric weight used for ranking
         return min(self.inliers_ij, self.inliers_ji)
 
@@ -168,7 +168,7 @@ class ViewGraph:
         """
         return self.adj[i]
 
-    def best_edge(self) -> ViewEdge:
+    def best_edge(self) -> ViewEdge | None:
         """
         Return the edge with maximum symmetric weight.
         """
@@ -395,7 +395,6 @@ def compute_baseline_estimate(
     img_1.set_pose(R, t)
 
     print(f"Baseline constructed with {len(points_3d)} 3D points.")
-    return R, t, points_3d
 
 
 def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: TrackManager, point_cloud: PointCloud):
