@@ -116,15 +116,13 @@ class FeatureStore:
     def __getitem__(self, img_idx: int):
         return self._store[img_idx]
 
-    def set_pose(self, img_idx: int, R, t):
-        self._store[img_idx].R = R
-        self._store[img_idx].t = t
+    def get_keypoints(self) -> list[list[cv.KeyPoint]]:
+        """Get keypoints of all images."""
+        return [img_data.kp for img_data in self._store]
 
-    def keypoints(self):
-        yield from (item.kp for item in self._store)
-
-    def descriptors(self):
-        yield from (item.des for item in self._store)
+    def get_descriptors(self) -> list[NDArray[np.floating[Any]]]:
+        """Get descriptors of all images."""
+        return [img_data.des for img_data in self._store]
 
 
 @dataclass
@@ -459,6 +457,20 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
     print(f"Added {len(points_3d)} 3D points.")
 
 
+def pick_best_image_pair(
+    edges: list[ViewEdge], store: FeatureStore, R: set[int] | None = None
+) -> tuple[ImageData, ImageData, ViewEdge]:
+    """Pick best image pair from list of edges.
+
+    Assumption: ImageData.idx matches the node indexes, which it should if the graph was constructed correctly.
+    """
+    best_edge = max(edges, key=lambda e: e.weight)
+    if R:  # if R is not None or not empty
+        idx_ref, idx_new = (best_edge.i, best_edge.j) if best_edge.i in R else (best_edge.j, best_edge.i)
+        return store[idx_ref], store[idx_new], best_edge
+    return store[best_edge.i], store[best_edge.j], best_edge
+
+
 def process_graph_component(
     K,
     dist,
@@ -467,19 +479,6 @@ def process_graph_component(
     track_manager: TrackManager,
     point_cloud: PointCloud,
 ) -> tuple[list[ViewEdge], set[int]]:
-    def pick_best_image_pair(
-        edges: list[ViewEdge], store: FeatureStore, R: set[int] | None = None
-    ) -> tuple[ImageData, ImageData, ViewEdge]:
-        """Pick best image pair from list of edges.
-
-        Assumption: ImageData.idx matches the node indexes, which it shoulf if the graph was constructed correctly.
-        """
-        best_edge = max(edges, key=lambda e: e.weight)
-        if R:  # if R is not None or not empty
-            idx_ref, idx_new = (best_edge.i, best_edge.j) if best_edge.i in R else (best_edge.j, best_edge.i)
-            return store[idx_ref], store[idx_new], best_edge
-        return store[best_edge.i], store[best_edge.j], best_edge
-
     # Pick strongest baseline:
     # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
     img_0, img_1, best_edge = pick_best_image_pair(edges, store)
@@ -550,10 +549,15 @@ def main():
     track_manager = TrackManager()
     point_cloud = PointCloud()
 
-    # TODO: change store to SOA layout? need materialized lists for view graph anyway
-    kp_list, des_list = list(store.keypoints()), list(store.descriptors())
+    kp_list, des_list = store.get_keypoints(), store.get_descriptors()
     view_graph = construct_view_graph(kp_list, des_list, K)
 
+    # Process the first component
+    # process_graph_component(K, dist, view_graph.edges.copy(), store, track_manager, point_cloud)
+
+    # Process all connected components of the view graph
+    # Each component will lead to a point cloud with its own reference frame
+    # and thus appear disconnected from the others
     leftover_edges = view_graph.edges.copy()
     while True:
         leftover_edges, U = process_graph_component(K, dist, leftover_edges, store, track_manager, point_cloud)
