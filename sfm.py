@@ -5,6 +5,7 @@ from typing import Annotated, Any, Iterable, Literal
 
 import cv2 as cv
 import numpy as np
+import pyceres
 from numpy.typing import NDArray
 
 
@@ -90,8 +91,16 @@ class ImageData:
         self.t = t
 
     @property
+    def has_pose(self) -> bool:
+        return self.R is not None and self.t is not None
+
+    @property
     def pose_matrix(self) -> NDArray[np.float32]:
         return np.hstack((self.R, self.t))
+
+    @property
+    def rvec(self) -> NDArray[np.float32]:
+        return cv.Rodrigues(self.R)[0].ravel()
 
 
 class FeatureStore:
@@ -110,10 +119,10 @@ class FeatureStore:
             self._store.append(ImageData(idx, filepath, img, kp, des))
 
     @property
-    def size(self):
+    def size(self) -> int:
         return len(self._store)
 
-    def __getitem__(self, img_idx: int):
+    def __getitem__(self, img_idx: int) -> ImageData:
         return self._store[img_idx]
 
     def get_keypoints(self) -> list[list[cv.KeyPoint]]:
@@ -123,6 +132,10 @@ class FeatureStore:
     def get_descriptors(self) -> list[NDArray[np.floating[Any]]]:
         """Get descriptors of all images."""
         return [img_data.des for img_data in self._store]
+
+    def iter_images_with_pose(self) -> Iterable[ImageData]:
+        """Yield images for which we have a pose estimate."""
+        yield from (img_data for img_data in self._store if img_data.has_pose)
 
 
 @dataclass
@@ -239,6 +252,9 @@ class PointCloud:
         for track_id, pt in zip(track_ids, xyz):
             self._data[track_id] = pt
 
+    def set_point(self, track_id: int, xyz: Point3D):
+        self._data[track_id] = xyz
+
     def get_point(self, track_id: int) -> Point3D | None:
         return self._data.get(track_id, None)
 
@@ -249,8 +265,8 @@ class PointCloud:
         """
         return np.array([self._data.get(track_id, np.nan) for track_id in track_ids])
 
-    def iter_points(self) -> Iterable[Point3D]:
-        yield from self._data.values()
+    def items(self) -> Iterable[tuple[int, Point3D]]:
+        yield from self._data.items()
 
     def save_ply(self, filename: Path = Path("point_cloud.ply")):
         import pandas as pd
@@ -538,34 +554,188 @@ def process_graph_component(
     return leftover_edges, U
 
 
+# class ReprojectionError(pyceres.CostFunction):
+#     """Cost function for bundle adjustment."""
+
+#     def __init__(self, observed_pt_2d: NDArray[np.float32], K: NDArray[np.float32]):
+#         super().__init__()
+#         self.p_observed = observed_pt_2d.astype(np.float64)
+#         self.K = K.astype(np.float64)
+
+#         # Define the cost function signature:
+#         # - 2 residuals (x and y reprojection error)
+#         # - 3 parameter blocks: rvec (3), tvec (3), point_3d (3)
+#         self.set_num_residuals(2)
+#         self.set_parameter_block_sizes([3, 3, 3])
+
+#     def Evaluate(self, parameters, residuals, jacobians):
+#         """
+#         parameters: list of parameter blocks [camera_rotation, camera_translation, point_3d]
+#         residuals: output 2D reprojection error
+#         jacobians: optional output for derivatives (can ignore for now, Ceres will use numeric differentiation)
+#         """
+#         camera_rotation = parameters[0]
+#         camera_translation = parameters[1]
+#         point_3d = parameters[2]
+
+#         # Convert rotation vector to rotation matrix
+#         R = cv.Rodrigues(camera_rotation)[0]
+
+#         # Transform 3D point to camera coordinates
+#         p_cam = R @ point_3d + camera_translation.ravel()
+
+#         # Apply intrinsics
+#         p_projected = self.K @ p_cam
+#         p_projected[:2] /= p_projected[2]  # perspective division [x, y, z] -> [x/z, y/z, 1]
+
+#         # Compute residuals; [:] modifies the array in-place
+#         residuals[:] = p_projected[:2] - self.p_observed
+
+#         return True
+
+
+class ReprojectionError:
+    """Cost function for bundle adjustment."""
+
+    def __init__(self, observed_pt_2d: NDArray[np.float32], K: NDArray[np.float32]):
+        self.observed = np.array(observed_pt_2d, dtype=np.float64)
+        self.K = K.astype(np.float64)
+
+    def __call__(self, camera_rotation, camera_translation, point_3d):
+        """
+        Returns residuals as a numpy array.
+        PyCeres will automatically compute Jacobians.
+        """
+        # Convert rotation vector to rotation matrix
+        R = cv.Rodrigues(camera_rotation)[0]
+
+        # Transform 3D point to camera coordinates
+        p_cam = R @ point_3d + camera_translation.ravel()
+
+        # Apply intrinsics
+        p_projected = self.K @ p_cam
+        p_projected_2d = p_projected[:2] / p_projected[2]
+
+        # Compute residuals
+        residuals = p_projected_2d - self.observed
+
+        return residuals
+
+
+def bundle_adjustment(
+    images: FeatureStore,
+    point_cloud: PointCloud,
+    K: NDArray[np.float32],
+    track_manager: TrackManager,
+    fix_first_camera: bool = True,
+):
+    """Run bundle adjustment on all cameras and 3D points."""
+
+    print("Running bundle adjustment...")
+
+    # Prepare camera parameters (rotation vectors + translation vectors)
+    camera_params = {}
+    for img in images.iter_images_with_pose():
+        camera_params[img.idx] = {"rvec": img.rvec.copy(), "tvec": img.t.copy()}
+
+    # Prepare 3D points
+    point_params = {track_id: xyz.copy() for track_id, xyz in point_cloud.items()}
+
+    # Build the optimization problem
+    problem = pyceres.Problem()
+    loss = pyceres.TrivialLoss()  # or pyceres.HuberLoss(1.0) for robustness
+
+    # Add residual blocks for each observation
+    for track_id, kp_keys in track_manager.track_to_kps.items():
+        point_3d = point_params[track_id].astype(np.float64)
+        # if point_3d is None:
+        #     continue
+
+        for img_idx, kp_idx in kp_keys:
+            if not images[img_idx].has_pose:
+                continue
+
+            # Get observed 2D point
+            observed_pt_2d = np.array(images[img_idx].kp[kp_idx].pt, dtype=np.float64)
+
+            # Create cost function (instantiate directly, no CreateCostFunction)
+            # cost = ReprojectionError(observed_pt_2d, K.astype(np.float64))
+            # Create cost function with automatic differentiation
+            cost = pyceres.AutoDiffCostFunction(
+                ReprojectionError(observed_pt_2d, K.astype(np.float64)),
+                residual_size=2,  # 2D reprojection error
+                parameter_sizes=[3, 3, 3],  # rvec (3), tvec (3), point_3d (3)
+            )
+
+            # Add residual block with the parameter blocks to optimize
+            problem.add_residual_block(
+                cost,
+                loss,
+                [
+                    camera_params[img_idx]["rvec"].astype(np.float64),
+                    camera_params[img_idx]["tvec"].astype(np.float64),
+                    point_3d,
+                ],
+            )
+
+    # Fix the first camera (to avoid gauge freedom)
+    if fix_first_camera:
+        first_img_idx = min(camera_params.keys())
+        problem.set_parameter_block_constant(camera_params[first_img_idx]["rvec"].astype(np.float64))
+        problem.set_parameter_block_constant(camera_params[first_img_idx]["tvec"].astype(np.float64))
+
+    # Configure solver
+    options = pyceres.SolverOptions()
+    options.linear_solver_type = pyceres.LinearSolverType.SPARSE_SCHUR
+    options.minimizer_progress_to_stdout = True
+    options.max_num_iterations = 100
+
+    # Solve
+    summary = pyceres.SolverSummary()
+    pyceres.solve(options, problem, summary)
+    print(summary.BriefReport())
+
+    # Update camera poses and 3D points with optimized values
+    for img_idx, params in camera_params.items():
+        R = cv.Rodrigues(params["rvec"])[0]
+        images[img_idx].set_pose(R, params["tvec"])
+
+    for track_id, point_3d in point_params.items():
+        point_cloud.set_point(track_id, point_3d)
+
+    print("Bundle adjustment complete.")
+
+
 # TODO: nice logging by levels
 def main():
     K, dist = calibrate_camera()
 
-    img_dir = Path("data") / "raw" / "statue_orbit"
+    img_dir = Path("data") / "raw" / "statue"
     out_dir = Path("data") / "out" / img_dir.name
     # load all images & extract features
-    store = FeatureStore(img_dir)
+    image_store = FeatureStore(img_dir)
     track_manager = TrackManager()
     point_cloud = PointCloud()
 
-    kp_list, des_list = store.get_keypoints(), store.get_descriptors()
+    kp_list, des_list = image_store.get_keypoints(), image_store.get_descriptors()
     view_graph = construct_view_graph(kp_list, des_list, K)
 
     # Process the first component
-    # process_graph_component(K, dist, view_graph.edges.copy(), store, track_manager, point_cloud)
+    process_graph_component(K, dist, view_graph.edges.copy(), image_store, track_manager, point_cloud)
 
     # Process all connected components of the view graph
     # Each component will lead to a point cloud with its own reference frame
     # and thus appear disconnected from the others
-    leftover_edges = view_graph.edges.copy()
-    while True:
-        leftover_edges, U = process_graph_component(K, dist, leftover_edges, store, track_manager, point_cloud)
-        if not U:
-            break
+    # leftover_edges = view_graph.edges.copy()
+    # while True:
+    #     leftover_edges, U = process_graph_component(K, dist, leftover_edges, image_store, track_manager, point_cloud)
+    #     if not U:
+    #         break
+
+    bundle_adjustment(image_store, point_cloud, K, track_manager, fix_first_camera=False)
 
     print(f"Final point cloud size: {point_cloud.size}")
-    point_cloud.save_ply(filename=out_dir / f"{img_dir.name}.ply")
+    point_cloud.save_ply(filename=out_dir / f"{img_dir.name}_ba.ply")
 
 
 if __name__ == "__main__":

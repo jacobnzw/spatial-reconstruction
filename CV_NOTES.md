@@ -17,11 +17,10 @@ Homography Estimation
 [Fundamental matrix](https://en.wikipedia.org/wiki/Fundamental_matrix_(computer_vision)),
 [Epipolar Geometry](https://docs.opencv.org/4.x/da/de9/tutorial_py_epipolar_geometry.html)
 singular value decomposition
-bundle adjustment
+bundle adjustment (gauge ambiguity; Sim(3))
 reprojection error
 photometric error
 Sampson error for epipolar geometry
-Sim(3)
 SLAM
 Factor graph optimization is a generalization of bundle adjustment?
 Umeyama algorithm for rigid transformation estimation with known correspondences
