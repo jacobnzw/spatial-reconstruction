@@ -1180,6 +1180,25 @@ wheels = [
 ]
 
 [[package]]
+name = "pycolmap"
+version = "3.13.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5b/a5/adeec1cbf9881b7c7259c33111408f618ff849b6474cd73652ff628a6ef6/pycolmap-3.13.0-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:6ea432f1f9b1dab0e805678d5280d55fbe034a12c3a5fa5bd3c85792d523b27a", size = 14541939, upload-time = "2025-11-07T17:00:21.677Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/c2/73bdc187c4b8c819b4a0d13523d98b8a72ce18fb689d613c3554fd14b5ab/pycolmap-3.13.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:fd1b676c2f8ecf7f18e5a9240347ad4946ccd0c83bc92f5fdc39a498ae6c998b", size = 20337524, upload-time = "2025-11-07T17:00:23.973Z" },
+    { url = "https://files.pythonhosted.org/packages/48/64/31018a15af2ad0da922946a4f28c31de2ead79ad8f08a5cd0961a1d87fda/pycolmap-3.13.0-cp312-cp312-win_amd64.whl", hash = "sha256:070e7554cfb9f0443876a055153547a4b54addbec77519f10269b4601dde63b1", size = 18661604, upload-time = "2025-11-07T17:00:26.851Z" },
+    { url = "https://files.pythonhosted.org/packages/66/49/c3eb91b2b25b3ebbb32c95a9777a3cb9ea0fbb4318dab54bd050bf7891a0/pycolmap-3.13.0-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:46d2108eaa1191584796a63f17a5f0204d59e30ec5f2778489ce44e19fff6ac2", size = 14542168, upload-time = "2025-11-07T17:00:30.052Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/aa/342ae17a3f22beffe3fd01ffff7afd28d66dcb57c306ef4991dfc738255a/pycolmap-3.13.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:dc749231ef310d867ad33db56feb9656c9223dd5db8bd816007b8cfdf7f1b0cc", size = 20337637, upload-time = "2025-11-07T17:00:33.269Z" },
+    { url = "https://files.pythonhosted.org/packages/53/54/e85329ec5768bd3d13b0e0217e3b07c215003df487e5c95bb6df43768c7d/pycolmap-3.13.0-cp313-cp313-win_amd64.whl", hash = "sha256:906511975ec614d9dd4f7566f38e17523106002f69b65adca3b13b1ed261088c", size = 18661874, upload-time = "2025-11-07T17:00:35.6Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/4d/563867c2e69a82b4acea836e17b6cb6a2702c24ef4b855ee83458daa2b16/pycolmap-3.13.0-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:d00ba606751167e03463135f2f61e4c7dfae3c3b08256b44cd5fcd0ba674e7f2", size = 14550539, upload-time = "2025-11-07T17:00:37.723Z" },
+    { url = "https://files.pythonhosted.org/packages/84/4b/a0f4adf8629af2b65a310f3ccd66a281168ddbbd1d1df69d042599bc1649/pycolmap-3.13.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:202d73147c8e5c98255b212aec5059cbd325b7e7f0b2f73ec94d7d0da1c98e0a", size = 20343926, upload-time = "2025-11-07T17:00:39.941Z" },
+    { url = "https://files.pythonhosted.org/packages/a9/62/447722f1b54e0e9a04029e36665352328535c93b26a08ccc9bd146392db9/pycolmap-3.13.0-cp314-cp314-win_amd64.whl", hash = "sha256:9617616fa8d6fed75990a226da18604f1313e30c768027de1bfa834532b7d261", size = 19263952, upload-time = "2025-11-07T17:00:42.615Z" },
+]
+
+[[package]]
 name = "pygments"
 version = "2.19.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1607,6 +1626,7 @@ dependencies = [
     { name = "pandas" },
     { name = "plotly" },
     { name = "pyceres" },
+    { name = "pycolmap" },
 ]
 
 [package.metadata]
@@ -1619,6 +1639,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "plotly", specifier = ">=6.5.1" },
     { name = "pyceres", specifier = ">=2.6" },
+    { name = "pycolmap", specifier = ">=3.13.0" },
 ]
 
 [[package]]
