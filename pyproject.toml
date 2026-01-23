@@ -18,3 +18,8 @@ dependencies = [
 
 [tool.ruff]
 line-length = 120 # Increase from default 88
+
+[dependency-groups]
+dev = [
+    "ipython>=9.9.0",
+]
