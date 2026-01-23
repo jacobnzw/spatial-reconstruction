@@ -752,7 +752,8 @@ def bundle_adjustment(
         # 2. Add the point to reconstruction
         # add_point3D returns the internal ID (which matches your track_id)
         # FIXME: here tracks of length < 2 are rejected; why are they even in track_manager in the first place?
-        reconstruction.add_point3D(xyz, track, [128, 128, 128])  # [r, g, b]
+        if len(track.elements) >= 2:
+            reconstruction.add_point3D(xyz, track, [128, 128, 128])  # [r, g, b]
 
     # 4. Run the Bundle Adjustment
     # Now that the graph is linked, you can run the optimization.
@@ -770,8 +771,8 @@ def bundle_adjustment(
 
     for image_id, image in reconstruction.images.items():
         # Extract optimized R and t
-        opt_R = image.cam_from_world.rotation.matrix()
-        opt_t = image.cam_from_world.translation
+        opt_R = image.cam_from_world().rotation.matrix()
+        opt_t = image.cam_from_world().translation
         feature_store[image_id].set_pose(opt_R, opt_t)
 
 
