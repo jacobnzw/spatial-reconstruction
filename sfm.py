@@ -325,12 +325,13 @@ class TrackManager:
         return self.kp_to_track.get(kp_key, None)
 
     # TODO: probably remove; nonsense to create a track just for one observation because track = 3d point which is only possible to obtain from at least 2 KPs
-    def add_new_tracks(self, kp_obs: list[KPKey]):
-        """Create new track for every given KP observation."""
+    def add_new_tracks(self, kp_pairs: list[tuple[KPKey, KPKey]]):
+        """Create new track for every given pair of KP observations."""
         added_track_ids = []
-        for kp_key in kp_obs:  # kp_key = (img_idx, kp_idx)
+        for kp_key_pair in kp_pairs:  # kp_key = (img_idx, kp_idx)
             tid = self.next_track_id
-            self._register_keypoint_track(kp_key, tid)
+            self._register_keypoint_track(kp_key_pair[0], tid)
+            self._register_keypoint_track(kp_key_pair[1], tid)
             added_track_ids.append(tid)
             self.next_track_id += 1
         return added_track_ids
@@ -344,7 +345,7 @@ class TrackManager:
         """
         # for each match, if ref KP has a track, add new img KP to track; else create new track
         kp_idx_new_tracked, track_ids_tracked = [], []
-        kp_keys_pending, matches_untracked = [], []
+        matches_untracked = []
         # I wanna add the new KPs (that have matches to tracked ref KPs) to current tracks
         for m in ref2new_matches:
             kp_idx_ref, kp_idx_new = m.queryIdx, m.trainIdx
@@ -360,10 +361,10 @@ class TrackManager:
                 matches_untracked.append(m)
                 # postpone creating new tracks until after triangulation; return the pending KPs to be added later
                 # FIXME: this is bogus; only need matches_untracked: m.queryIdx, m.trainIdx
-                kp_keys_pending.append(kp_key_new)
+                # kp_keys_pending.append(kp_key_new)
 
         # return tracked KPs in new img and ref2new matches for untracked KPs for triangulation
-        return track_ids_tracked, kp_idx_new_tracked, kp_keys_pending, matches_untracked
+        return track_ids_tracked, kp_idx_new_tracked, matches_untracked
 
 
 def compute_baseline_estimate(
@@ -402,9 +403,8 @@ def compute_baseline_estimate(
 
     # Create new tracks for the triangulated 3D object points
     # first create tracks for KPs in img_0, then add KPs in img_1 that match to KPs in img_0
-    track_ids_added = track_manager.add_new_tracks([(img_0.idx, m.queryIdx) for m in matches])
-    _, _, _, matches_untracked = track_manager.update_tracks(img_1.idx, img_0.idx, matches)
-    assert len(matches_untracked) == 0, "No additional tracks should be created by now."
+    kp_key_pairs = [((img_0.idx, m.queryIdx), (img_1.idx, m.trainIdx)) for m in matches]
+    track_ids_added = track_manager.add_new_tracks(kp_key_pairs)
 
     point_cloud.add_points(track_ids_added, points_3d)
 
@@ -427,7 +427,7 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
 
     # add new img KPs, that are matched to from tracked ref img KPs, to current tracks (3D pts)
     # returns track_ids and (un)tracked KPs in the new image; track_ids used as indices to point cloud
-    track_ids_tracked, kp_idx_new_tracked, kp_keys_pending, matches_untracked = track_manager.update_tracks(
+    track_ids_tracked, kp_idx_new_tracked, matches_untracked = track_manager.update_tracks(
         img_new.idx, img_ref.idx, matches
     )
 
@@ -472,8 +472,9 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
     points_4d = cv.triangulatePoints(P_ref, P_new, pts_ref.T, pts_new.T)
     points_3d = (points_4d[:3] / points_4d[3]).T
 
-    # FIXME: here is something weird; tracks of length 1 get created, why not adding kp indexes from matches_untracked?
-    track_ids_added = track_manager.add_new_tracks(kp_keys_pending)
+    # Create track for each pair of KPs (ref, new) that were triangulated to a 3D point
+    kp_key_pairs = [((img_ref.idx, m.queryIdx), (img_new.idx, m.trainIdx)) for m in matches_untracked]
+    track_ids_added = track_manager.add_new_tracks(kp_key_pairs)
     point_cloud.add_points(track_ids_added, points_3d)
     print(f"Added {len(points_3d)} 3D points.")
 
@@ -751,9 +752,7 @@ def bundle_adjustment(
 
         # 2. Add the point to reconstruction
         # add_point3D returns the internal ID (which matches your track_id)
-        # FIXME: here tracks of length < 2 are rejected; why are they even in track_manager in the first place?
-        if len(track.elements) >= 2:
-            reconstruction.add_point3D(xyz, track, [128, 128, 128])  # [r, g, b]
+        reconstruction.add_point3D(xyz, track, [128, 128, 128])  # [r, g, b]
 
     # 4. Run the Bundle Adjustment
     # Now that the graph is linked, you can run the optimization.
