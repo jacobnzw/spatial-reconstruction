@@ -8,6 +8,7 @@ from utils import (
     FeatureStore,
     ImageData,
     PointCloud,
+    ReconExporter,
     TrackManager,
     ViewEdge,
     calibrate_camera,
@@ -213,7 +214,7 @@ def process_graph_component(
 def main():
     K, dist = calibrate_camera()
 
-    img_dir = Path("data") / "raw" / "statue_orbit"
+    img_dir = Path("data") / "raw" / "statue"
     out_dir = Path("data") / "out" / img_dir.name
     # load all images & extract features
     image_store = FeatureStore(img_dir)
@@ -238,7 +239,7 @@ def main():
     bundle_adjustment(image_store, point_cloud, K, dist, track_manager, fix_first_camera=False)
 
     print(f"Final point cloud size: {point_cloud.size}")
-    point_cloud.save_ply(filename=out_dir / f"{img_dir.name}_ba.ply")
+    ReconExporter(point_cloud, image_store).save_ply(filename=out_dir / f"{img_dir.name}_ba.ply")
 
 
 if __name__ == "__main__":

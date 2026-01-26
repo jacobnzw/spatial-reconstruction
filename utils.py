@@ -80,8 +80,10 @@ class ImageData:
     idx: int
     path: Path
     img: NDArray[Any]
+    # Extracted keypoints and descriptors
     kp: list[cv.KeyPoint]
     des: NDArray[np.floating[Any]]
+    # Estimated pose
     R: NDArray[np.floating[Any]] | None = None
     t: NDArray[np.floating[Any]] | None = None
 
@@ -234,78 +236,6 @@ def construct_view_graph(kp: list, des: list, K):
     return view_graph
 
 
-# Type alias for 3D points in Euclidean space
-Point3D = Annotated[NDArray[np.floating[Any]], Literal[3]]
-
-
-class PointCloud:
-    def __init__(self):
-        self._data: dict[int, Point3D] = {}  # track_id -> np.array([x, y, z])
-
-    @property
-    def size(self):
-        return len(self._data)
-
-    def add_points(self, track_ids: list[int], xyz: NDArray[Any]) -> None:
-        assert len(track_ids) == xyz.shape[0], "Number of track_ids must match number of 3D points"
-        for track_id, pt in zip(track_ids, xyz):
-            self._data[track_id] = pt
-
-    def set_point(self, track_id: int, xyz: Point3D):
-        self._data[track_id] = xyz
-
-    def get_point(self, track_id: int) -> Point3D | None:
-        return self._data.get(track_id, None)
-
-    def get_points_as_array(self, track_ids: list[int]) -> NDArray[np.floating[Any]]:
-        """Returns array of 3D points corresponding to the given track_ids.
-
-        Missing points are returned as np.nan.
-        """
-        return np.array([self._data.get(track_id, np.nan) for track_id in track_ids])
-
-    def items(self) -> Iterable[tuple[int, Point3D]]:
-        yield from self._data.items()
-
-    def save_ply(self, filename: Path = Path("point_cloud.ply")):
-        import pandas as pd
-
-        # Convert to DataFrame
-        df = pd.DataFrame(self._data.values(), columns=["x", "y", "z"])
-
-        # --- OUTLIER REMOVAL ---
-        # Calculate the distance from the median to find the "main cluster"
-        median = df.median()
-        distance = np.sqrt(((df - median) ** 2).sum(axis=1))
-
-        # Keep only points within the 95th percentile of distance
-        # This removes the "points at infinity" that squash your visualization
-        df_filtered = df[distance < distance.quantile(0.95)]
-
-        # --- DEBUG --- sanity checks
-        print()
-        print(f"{df.shape = }")
-        print(f"# nans: {df.isna().sum().sum()}")
-        print(f"# infs: {np.isinf(df.values).sum()}")
-        norms = np.linalg.norm(df.values, axis=1)
-        print(f"{norms.min() = }\n{norms.max() = }")
-        print()
-        print(f"{df_filtered.shape = }")
-
-        print(f"Writing {len(df_filtered)} points to {filename}")
-        filename.parent.mkdir(exist_ok=True, parents=True)
-        with open(filename, "w") as f:
-            f.write("ply\n")
-            f.write("format ascii 1.0\n")
-            f.write(f"element vertex {self.size}\n")
-            f.write("property float x\n")
-            f.write("property float y\n")
-            f.write("property float z\n")
-            f.write("end_header\n")
-            for x, y, z in df_filtered.values:
-                f.write(f"{x} {y} {z}\n")
-
-
 class TrackManager:
     KPKey = tuple[int, int]  # (img_id, kp_idx)
 
@@ -358,3 +288,171 @@ class TrackManager:
 
         # return tracked KPs in new img and ref2new matches for untracked KPs for triangulation
         return track_ids_tracked, kp_idx_new_tracked, matches_untracked
+
+
+# Type alias for 3D points in Euclidean space
+Point3D = Annotated[NDArray[np.floating[Any]], Literal[3]]
+
+
+class PointCloud:
+    def __init__(self):
+        self._data: dict[int, Point3D] = {}  # track_id -> np.array([x, y, z])
+
+    @property
+    def size(self):
+        return len(self._data)
+
+    def add_points(self, track_ids: list[int], xyz: NDArray[Any]) -> None:
+        assert len(track_ids) == xyz.shape[0], "Number of track_ids must match number of 3D points"
+        for track_id, pt in zip(track_ids, xyz):
+            self._data[track_id] = pt
+
+    def set_point(self, track_id: int, xyz: Point3D):
+        self._data[track_id] = xyz
+
+    def get_point(self, track_id: int) -> Point3D | None:
+        return self._data.get(track_id, None)
+
+    def get_points_as_array(self, track_ids: list[int] | None = None) -> NDArray[np.floating[Any]]:
+        """Returns array of 3D points corresponding to the given track_ids.
+
+        Missing points are returned as np.nan.
+        """
+        if track_ids is None:
+            return np.array(list(self._data.values()))
+        return np.array([self._data.get(track_id, np.nan) for track_id in track_ids])
+
+    def items(self) -> Iterable[tuple[int, Point3D]]:
+        yield from self._data.items()
+
+
+class ReconExporter:
+    """Exports a reconstruction to a PLY file."""
+
+    Vertex = tuple[float, float, float]  # (x, y, z)
+    Edge = tuple[int, int]  # (v1, v2)
+
+    def __init__(self, point_cloud: PointCloud, images: FeatureStore):
+        self.xyz = point_cloud.get_points_as_array()
+        self.images = images
+
+    @staticmethod
+    def _camera_frustum_points(R: NDArray[np.float32], t: NDArray[np.float32], scale: float = 0.1) -> list:
+        """
+        Returns 5 world-space points for a tiny camera frustum
+        """
+        # World --> Camera:   Xc = R Xw + t
+        # Camera --> World:   Xw = Rᵀ (Xc − t)
+        # Camera center in world coordinates: Xc=0 --> Xw = Rᵀ (0 − t) = -Rᵀ t
+        C = -R.T @ t  # R.T @ (-t)
+
+        # Camera axes in world frame
+        right = R.T @ np.array([1, 0, 0])
+        up = R.T @ np.array([0, 1, 0])
+        forward = R.T @ np.array([0, 0, 1])
+
+        # Image plane center
+        P = C + scale * forward
+
+        # Image plane corners
+        s = scale * 0.5
+        corners = [
+            P + s * (right + up),
+            P + s * (right - up),
+            P + s * (-right - up),
+            P + s * (-right + up),
+        ]
+
+        return [C] + corners
+
+    def _add_camera_frustum(
+        self,
+        vertices: list[Vertex],
+        edges: list[Edge],
+        R: NDArray[np.float32],
+        t: NDArray[np.float32],
+        scale: float = 0.1,
+    ):
+        base_idx = len(vertices)
+
+        pts = self._camera_frustum_points(R, t, scale)
+        for p in pts:
+            vertices.append((p[0], p[1], p[2]))
+
+        # center → corners
+        for i in range(1, 5):
+            edges.append((base_idx, base_idx + i))
+
+        # square around image plane
+        edges += [
+            (base_idx + 1, base_idx + 2),
+            (base_idx + 2, base_idx + 3),
+            (base_idx + 3, base_idx + 4),
+            (base_idx + 4, base_idx + 1),
+        ]
+
+    def save_ply(self, filename: Path = Path("point_cloud.ply")):
+        import pandas as pd
+
+        # Convert to DataFrame
+        df = pd.DataFrame(self.xyz, columns=["x", "y", "z"])
+
+        # --- OUTLIER REMOVAL ---
+        # Calculate the distance from the median to find the "main cluster"
+        median = df.median()
+        distance = np.sqrt(((df - median) ** 2).sum(axis=1))
+
+        # Keep only points within the 95th percentile of distance
+        # This removes the "points at infinity" that squash your visualization
+        df_filtered = df[distance < distance.quantile(0.95)]
+
+        # Add camera frustums
+        vertices = []
+        edges = []
+        for img in self.images.iter_images_with_pose():
+            self._add_camera_frustum(vertices, edges, img.R, img.t)
+        # edge indices offset by number of 3D points
+        camera_vertex_offset = len(df_filtered)
+        edges = [(e[0] + camera_vertex_offset, e[1] + camera_vertex_offset) for e in edges]
+
+        num_vertices = len(df_filtered) + len(vertices)
+        num_edges = len(edges)
+        # --- DEBUG --- sanity checks
+        # TODO: nicer stats
+        print()
+        print(f"{df.shape = }")
+        print(f"# nans: {df.isna().sum().sum()}")
+        print(f"# infs: {np.isinf(df.values).sum()}")
+        norms = np.linalg.norm(df.values, axis=1)
+        print(f"{norms.min() = }\n{norms.max() = }")
+        print()
+        print(f"{df_filtered.shape = }")
+
+        print(f"Writing {len(df_filtered)} points to {filename}")
+        filename.parent.mkdir(exist_ok=True, parents=True)
+        with open(filename, "w") as f:
+            f.write("ply\n")
+            f.write("format ascii 1.0\n")
+            # camera frustums: colored vertices + edges
+            f.write(f"element vertex {num_vertices}\n")
+            f.write("property float x\n")
+            f.write("property float y\n")
+            f.write("property float z\n")
+            f.write("property uchar red\n")
+            f.write("property uchar green\n")
+            f.write("property uchar blue\n")
+            f.write(f"element edge {num_edges}\n")
+            f.write("property int vertex1\n")
+            f.write("property int vertex2\n")
+            f.write("property uchar red\n")
+            f.write("property uchar green\n")
+            f.write("property uchar blue\n")
+            f.write("end_header\n")
+            # point cloud as white points
+            for x, y, z in df_filtered.values:
+                f.write(f"{x} {y} {z} 255 255 255\n")
+            # camera frustums: red vertices + edges
+            for v in vertices:
+                f.write(f"{v[0]} {v[1]} {v[2]} 255 0 0\n")
+            for e in edges:
+                f.write(f"{e[0]} {e[1]} 255 0 0\n")
