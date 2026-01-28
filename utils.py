@@ -1,7 +1,7 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Iterable, Literal
+from typing import Annotated, Any, Callable, Iterable, Literal
 
 import cv2 as cv
 import kornia as K
@@ -73,33 +73,6 @@ def calibrate_camera(img_dir: Path = Path("data/calibration")):
     return K, dist
 
 
-def extract_sift(img_path: Path):
-    img = cv.imread(img_path)  # ty:ignore[no-matching-overload]
-    # img = cv.resize(img, (800, 600))
-    gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-
-    sift = cv.SIFT_create(nfeatures=10_000)  # ty:ignore[unresolved-attribute]
-    kp, des = sift.detectAndCompute(gray, None)
-
-    return kp, des, img
-
-
-def extract_disk(img_dir: Path, num_features: int = 2048) -> tuple[list[KF.DISKFeatures], torch.Tensor]:
-    """Extract DISK features from all images in img_dir."""
-    # Load all images
-    # TODO: generalize to processing batch_size images at a time if img_dir has > batch_size images
-    img_files = list(img_dir.glob("*.jpg"))
-    imgs = []
-    for img_path in img_files:
-        imgs.append(K.io.load_image(img_path, K.io.ImageLoadType.RGB32, device=device)[None, ...])
-    imgs = torch.cat(imgs, dim=0)
-
-    # Extract features
-    disk = KF.DISK.from_pretrained("depth").to(device)
-    features = disk(imgs, num_features, pad_if_not_divisible=True)
-    return features, imgs
-
-
 @dataclass
 class ImageData:
     idx: int
@@ -131,38 +104,57 @@ class ImageData:
 
 
 class FeatureStore:
-    def __init__(self, img_dir: Path, method: Literal["sift", "disk"] = "sift"):
+    def __init__(self, img_dir: Path, method: Literal["sift", "disk"] = "sift", num_features: int = 2048):
         self._store: list[ImageData] = []
-        if method == "sift":
-            self._load_dir_sift(img_dir)
-        else:
-            self._load_dir_disk(img_dir)
+        self._disk_model = None  # Lazy load DISK model
+        self._load_dir(img_dir, method=method, num_features=num_features)
 
-    def _load_dir_sift(self, img_dir: Path, ext: str = "jpg"):
+    def _extract_sift(self, img_path: Path, num_features: int) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
+        """Extract SIFT features from a single image."""
+        img = cv.imread(str(img_path))
+        gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)  # ty:ignore[no-matching-overload]
+
+        sift = cv.SIFT_create(nfeatures=num_features)  # ty:ignore[unresolved-attribute]
+        kps, des = sift.detectAndCompute(gray, None)
+
+        # Convert list[cv.KeyPoint] to NDArray (N, 2)
+        kp = np.array([kp.pt for kp in kps], dtype=np.float32)
+
+        return kp, des, img
+
+    def _extract_disk(self, img_path: Path, num_features: int) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
+        """Extract DISK features from a single image."""
+        # Lazy load DISK model
+        if self._disk_model is None:
+            self._disk_model = KF.DISK.from_pretrained("depth").to(device)
+
+        # Load image
+        img_tensor = K.io.load_image(img_path, K.io.ImageLoadType.RGB32, device=device)[None, ...]
+
+        # Extract features
+        with torch.inference_mode():
+            features = self._disk_model(img_tensor, num_features, pad_if_not_divisible=True)[0]
+
+        kp = features.keypoints.cpu().numpy()  # (N, 2)
+        des = features.descriptors.cpu().numpy()  # (N, D)
+        img = img_tensor[0].cpu().numpy()  # (C, H, W) -> convert to numpy
+
+        return kp, des, img
+
+    def _load_dir(self, img_dir: Path, method: Literal["sift", "disk"], num_features: int, ext: str = "jpg"):
+        """Load all images from directory and extract features using specified method."""
         img_paths = sorted(list(img_dir.glob(f"*.{ext}")))
 
         if not img_paths:
             raise ValueError(f"No *.{ext} images found in {img_dir}")
 
         for idx, filepath in enumerate(img_paths):
-            # TODO: use SIFT from kornia to match better with DISK
-            kps, des, img = extract_sift(filepath)
-            kp = np.array([kp.pt for kp in kps])  # list[cv.KeyPoint] -> NDArray (N, 2)
-            self._store.append(ImageData(idx, filepath, img, kp, des))
+            if method == "sift":
+                kp, des, img = self._extract_sift(filepath, num_features)
+            else:  # disk
+                kp, des, img = self._extract_disk(filepath, num_features)
 
-    # TODO: move feature extraction to this class; join w/ _load_dir
-    def _load_dir_disk(self, img_dir: Path):
-        features, imgs = extract_disk(img_dir)
-        for idx, filepath in enumerate(img_dir.glob("*.jpg")):
-            self._store.append(
-                ImageData(
-                    idx,
-                    filepath,
-                    imgs[idx].cpu().numpy(),
-                    features[idx].keypoints.cpu().numpy(),  # (N, 2)
-                    features[idx].descriptors.cpu().numpy(),  # (N, D)
-                )
-            )
+            self._store.append(ImageData(idx, filepath, img, kp, des))
 
     @property
     def size(self) -> int:
@@ -237,20 +229,23 @@ def _match_lightglue_disk(
     des_from: torch.Tensor,
     kp_to: torch.Tensor,
     des_to: torch.Tensor,
+    lg_matcher: KF.LightGlueMatcher,
     min_dist: float | None = None,
 ) -> tuple[NDArrayFloat, NDArrayInt]:
-    lg_matcher = KF.LightGlueMatcher("disk").eval().to(device)
     lafs_from = KF.laf_from_center_scale_ori(kp_from[None], torch.ones(1, len(kp_from), 1, 1, device=device))
     lafs_to = KF.laf_from_center_scale_ori(kp_to[None], torch.ones(1, len(kp_to), 1, 1, device=device))
-    # hw1 = torch.tensor(img1.shape[2:], device=device)  # optional image height and width for LightGlue
-    # hw2 = torch.tensor(img2.shape[2:], device=device)
-    dists, idxs = lg_matcher(des_from, des_to, lafs_from, lafs_to)
-    if min_dist is not None:
-        if min_dist <= 0.0 or min_dist > 1.0:
-            raise ValueError(f"min_dist must be in (0, 1], got {min_dist}")
-        mask = dists > min_dist
-        return dists[mask], idxs[mask]
-    return dists, idxs
+
+    with torch.inference_mode():
+        dists, idxs = lg_matcher(des_from, des_to, lafs_from, lafs_to)
+
+        if min_dist:  # not None and > 0.0
+            if min_dist < 0.0 or min_dist > 1.0:
+                raise ValueError(f"min_dist must be in [0, 1], got {min_dist}")
+            mask = (dists > min_dist).squeeze()
+            dists, idxs = dists[mask], idxs[mask]
+
+        # min_dist=0.0 is valid (retain all matches)
+        return dists.detach().cpu().numpy(), idxs.detach().cpu().numpy()
 
 
 def _match_bf(
@@ -273,15 +268,19 @@ def compute_matches(
     method: Literal["lightglue", "bf"] = "bf",
     lowe_ratio: float | None = None,
     min_dist: float | None = None,
+    lightglue_matcher: KF.LightGlueMatcher | None = None,
 ) -> tuple[NDArrayFloat, NDArrayInt]:
     if method == "bf":
         return _match_bf(img_from.des, img_to.des, lowe_ratio)
     elif method == "lightglue":
+        if lightglue_matcher is None:
+            raise ValueError("lightglue_matcher must be provided when method='lightglue'")
         return _match_lightglue_disk(
-            torch.from_numpy(img_from.kp),
-            torch.from_numpy(img_from.des),
-            torch.from_numpy(img_to.kp),
-            torch.from_numpy(img_to.des),
+            torch.from_numpy(img_from.kp).to(device),
+            torch.from_numpy(img_from.des).to(device),
+            torch.from_numpy(img_to.kp).to(device),
+            torch.from_numpy(img_to.des).to(device),
+            lightglue_matcher,
             min_dist,
         )
     else:
@@ -292,8 +291,11 @@ def has_overlap(
     img_from: ImageData,
     img_to: ImageData,
     K: NDArray,
-    min_inliers: int = 50,
+    matcher_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
+    min_inliers: int,
 ) -> tuple[bool, int | None, NDArray | None]:
+    """Returns True if there is sufficient overlap between two images."""
+    # TODO: pass in matcher_fn!
     _, good = compute_matches(img_from, img_to, lowe_ratio=0.75)
 
     if len(good) < min_inliers:
@@ -315,7 +317,12 @@ def has_overlap(
     return True, inliers, good
 
 
-def construct_view_graph(image_store: FeatureStore, K: NDArray):
+def construct_view_graph(
+    image_store: FeatureStore,
+    K: NDArray,
+    matcher_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
+    min_inliers: int = 50,
+):
     view_graph = ViewGraph()
     kp, des = image_store.get_keypoints(), image_store.get_descriptors()
     assert len(kp) == len(des)
@@ -324,8 +331,8 @@ def construct_view_graph(image_store: FeatureStore, K: NDArray):
     for i in range(N):
         for j in range(i + 1, N):
             img_i, img_j = image_store[i], image_store[j]
-            ok_ij, inliers_ij, _ = has_overlap(img_i, img_j, K)
-            ok_ji, inliers_ji, _ = has_overlap(img_j, img_i, K)
+            ok_ij, inliers_ij, _ = has_overlap(img_i, img_j, K, matcher_fn, min_inliers)
+            ok_ji, inliers_ji, _ = has_overlap(img_j, img_i, K, matcher_fn, min_inliers)
             # ASK: why the matches should not be preserved ???
             if ok_ij and ok_ji:
                 view_graph.add_edge(i, j, inliers_ij, inliers_ji)

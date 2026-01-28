@@ -8,6 +8,7 @@ import typer
 
 from ba import bundle_adjustment
 from utils import (
+    KF,
     FeatureStore,
     ImageData,
     NDArrayFloat,
@@ -19,6 +20,7 @@ from utils import (
     calibrate_camera,
     compute_matches,
     construct_view_graph,
+    device,
 )
 
 app = typer.Typer()
@@ -235,13 +237,13 @@ def process_graph_component(
 @app.command()
 def main(
     feature_type: str = typer.Option(
-        "sift",
+        "disk",
         "--features",
         "-f",
         help="Feature extraction method: 'sift' or 'disk'",
     ),
     matcher_type: str = typer.Option(
-        "bf",
+        "lightglue",
         "--matcher",
         "-m",
         help="Keypoint matching method: 'bf' (brute-force) or 'lightglue'",
@@ -255,7 +257,7 @@ def main(
         max=1.0,
     ),
     min_dist: float = typer.Option(
-        0.75,
+        0.0,  # preserve all matches by default
         "--min-dist",
         "-d",
         help="Minimum distance threshold for LightGlue matcher (only used when matcher='lightglue')",
@@ -267,6 +269,20 @@ def main(
         "--dataset",
         "-s",
         help="Dataset name (subdirectory in data/raw/)",
+    ),
+    num_features: int = typer.Option(
+        2048,  # default for DISK
+        "--num-features",
+        "-n",
+        help="Maximum number of features to extract per image",
+        min=100,
+    ),
+    min_inliers: int = typer.Option(
+        50,
+        "--min-inliers",
+        "-i",
+        help="Minimum number of inliers to consider two views as overlapping",
+        min=10,
     ),
 ):
     """Run Structure from Motion pipeline with configurable feature extraction and matching."""
@@ -283,6 +299,7 @@ def main(
     # Display configuration
     typer.echo("Configuration:")
     typer.echo(f"  Feature type: {feature_type}")
+    typer.echo(f"  Num features: {num_features}")
     typer.echo(f"  Matcher type: {matcher_type}")
     if matcher_type == "bf":
         typer.echo(f"  Lowe ratio: {lowe_ratio}")
@@ -299,19 +316,23 @@ def main(
 
     # Load all images & extract features
     typer.echo(f"Extracting {feature_type.upper()} features from {img_dir}...")
-    image_store = FeatureStore(img_dir, method=feature_type)  # type: ignore
+    image_store = FeatureStore(img_dir, method=feature_type, num_features=num_features)  # type: ignore
     track_manager = TrackManager()
     point_cloud = PointCloud()
     exporter = ReconExporter(point_cloud, image_store)
 
     # Create keypoint matcher with appropriate parameters
+    lightglue_matcher = None
     if matcher_type == "bf":
         kp_matcher = partial(compute_matches, method="bf", lowe_ratio=lowe_ratio)
     else:  # lightglue
-        kp_matcher = partial(compute_matches, method="lightglue", min_dist=min_dist)
+        lightglue_matcher = KF.LightGlueMatcher("disk").eval().to(device)
+        kp_matcher = partial(
+            compute_matches, method="lightglue", min_dist=min_dist, lightglue_matcher=lightglue_matcher
+        )
 
     typer.echo("Constructing view graph...")
-    view_graph = construct_view_graph(image_store, K)
+    view_graph = construct_view_graph(image_store, K, kp_matcher, min_inliers=50)
 
     # Process the first component
     typer.echo("Processing graph component...")
@@ -327,14 +348,14 @@ def main(
     #         break
     basename = f"{dataset}_{feature_type}_{matcher_type}"
     typer.echo(f"Saving initial reconstruction to {out_dir / f'{basename}.ply'}...")
-    exporter.save_ply(filename=out_dir / f"{dataset}.ply")
+    exporter.save_ply(filename=out_dir / f"{basename}.ply")
 
     typer.echo("Running bundle adjustment...")
     bundle_adjustment(image_store, point_cloud, K, dist, track_manager, fix_first_camera=False)
 
     typer.echo(f"Final point cloud size: {point_cloud.size}")
     typer.echo(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")
-    exporter.save_ply(filename=out_dir / f"{dataset}_ba.ply")
+    exporter.save_ply(filename=out_dir / f"{basename}_ba.ply")
 
     typer.echo("✓ Done!")
 
