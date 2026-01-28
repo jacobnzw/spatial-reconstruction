@@ -16,6 +16,7 @@ dependencies = [
     "plotly>=6.5.1",
     "pyceres>=2.6",
     "pycolmap>=3.13.0",
+    "typer>=0.21.1",
 ]
 
 [tool.ruff]

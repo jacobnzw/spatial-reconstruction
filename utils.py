@@ -13,6 +13,7 @@ from numpy.typing import NDArray
 device = K.utils.get_cuda_or_mps_device_if_available()
 
 NDArrayFloat = NDArray[np.floating[Any]]
+NDArrayInt = NDArray[np.integer[Any]]
 Point3D = Annotated[NDArrayFloat, Literal[3]]
 
 
@@ -97,30 +98,6 @@ def extract_disk(img_dir: Path, num_features: int = 2048) -> tuple[list[KF.DISKF
     disk = KF.DISK.from_pretrained("depth").to(device)
     features = disk(imgs, num_features, pad_if_not_divisible=True)
     return features, imgs
-
-
-def match_disk(features1: KF.DISKFeatures, features2: KF.DISKFeatures, min_dist: float | None = None):
-    """Match DISK features between two images using LightGlue matcher.
-
-    Returns:
-        dists: Distances between descriptors of matched keypoints of shape (M, 1)
-        idxs: Match indices of shape (M, 2) into descriptors of features1 and features2, respectively.
-    """
-    lg_matcher = KF.LightGlueMatcher("disk").eval().to(device)
-
-    kps1, descs1 = features1.keypoints, features1.descriptors
-    kps2, descs2 = features2.keypoints, features2.descriptors
-    lafs1 = KF.laf_from_center_scale_ori(kps1[None], torch.ones(1, len(kps1), 1, 1, device=device))
-    lafs2 = KF.laf_from_center_scale_ori(kps2[None], torch.ones(1, len(kps2), 1, 1, device=device))
-    # hw1 = torch.tensor(img1.shape[2:], device=device)  # optional image height and width for LightGlue
-    # hw2 = torch.tensor(img2.shape[2:], device=device)
-    dists, idxs = lg_matcher(descs1, descs2, lafs1, lafs2)
-    if min_dist is not None:
-        if min_dist <= 0.0 or min_dist > 1.0:
-            raise ValueError(f"min_dist must be in (0, 1], got {min_dist}")
-        mask = dists > min_dist
-        return dists[mask], idxs[mask]
-    return dists, idxs
 
 
 @dataclass
@@ -261,7 +238,7 @@ def _match_lightglue_disk(
     kp_to: torch.Tensor,
     des_to: torch.Tensor,
     min_dist: float | None = None,
-):
+) -> tuple[NDArrayFloat, NDArrayInt]:
     lg_matcher = KF.LightGlueMatcher("disk").eval().to(device)
     lafs_from = KF.laf_from_center_scale_ori(kp_from[None], torch.ones(1, len(kp_from), 1, 1, device=device))
     lafs_to = KF.laf_from_center_scale_ori(kp_to[None], torch.ones(1, len(kp_to), 1, 1, device=device))
@@ -276,7 +253,9 @@ def _match_lightglue_disk(
     return dists, idxs
 
 
-def _match_bf(des_from: NDArrayFloat, des_to: NDArrayFloat, lowe_ratio: float | None = None):
+def _match_bf(
+    des_from: NDArrayFloat, des_to: NDArrayFloat, lowe_ratio: float | None = None
+) -> tuple[NDArrayFloat, NDArrayInt]:
     bf = cv.BFMatcher(cv.NORM_L2, crossCheck=False)
     matches = bf.knnMatch(des_from, des_to, k=2)
     if lowe_ratio:
@@ -294,7 +273,7 @@ def compute_matches(
     method: Literal["lightglue", "bf"] = "bf",
     lowe_ratio: float | None = None,
     min_dist: float | None = None,
-) -> NDArray:
+) -> tuple[NDArrayFloat, NDArrayInt]:
     if method == "bf":
         return _match_bf(img_from.des, img_to.des, lowe_ratio)
     elif method == "lightglue":
@@ -380,7 +359,7 @@ class TrackManager:
             self.next_track_id += 1
         return added_track_ids
 
-    def update_tracks(self, img_idx_new: int, img_idx_ref: int, ref2new_matches: NDArray[np.integer[Any]]):
+    def update_tracks(self, img_idx_new: int, img_idx_ref: int, ref2new_matches: NDArrayInt):
         """Update tracks with new KP observations from img_new.
 
         img_ref is the reference image for which we already have 2D-3D pt correspondence in track_manager.
@@ -458,7 +437,7 @@ class ReconExporter:
         # World --> Camera:   Xc = R Xw + t
         # Camera --> World:   Xw = Rᵀ (Xc − t)
         # Camera center in world coordinates: Xc=0 --> Xw = Rᵀ (0 − t) = -Rᵀ t
-        C = -R.T @ t  # R.T @ (-t)
+        C = -R.T @ t.squeeze()  # R.T @ (-t)
 
         # Camera axes in world frame
         right = R.T @ np.array([1, 0, 0])

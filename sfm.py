@@ -1,13 +1,17 @@
+from functools import partial
 from pathlib import Path
+from typing import Callable
 
 import cv2 as cv
 import numpy as np
+import typer
 
 from ba import bundle_adjustment
 from utils import (
     FeatureStore,
     ImageData,
     NDArrayFloat,
+    NDArrayInt,
     PointCloud,
     ReconExporter,
     TrackManager,
@@ -17,9 +21,16 @@ from utils import (
     construct_view_graph,
 )
 
+app = typer.Typer()
+
 
 def compute_baseline_estimate(
-    img_0: ImageData, img_1: ImageData, K: NDArrayFloat, track_manager: TrackManager, point_cloud: PointCloud
+    img_0: ImageData,
+    img_1: ImageData,
+    K: NDArrayFloat,
+    track_manager: TrackManager,
+    point_cloud: PointCloud,
+    match_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
 ):
     """Computes two-view baseline estimate of 3D points and poses
 
@@ -28,7 +39,7 @@ def compute_baseline_estimate(
 
     # Match key points (via descriptors)
     print(f"baseline: Computing matches from {img_0.idx}:{img_0.path.name} to {img_1.idx}:{img_1.path.name}")
-    _, matches = compute_matches(img_0, img_1, lowe_ratio=0.75)
+    _, matches = match_fn(img_0, img_1)
 
     # extract corresponding pixel coordinates
     pts0 = img_0.kp[matches[:, 0]]
@@ -67,7 +78,13 @@ def compute_baseline_estimate(
 
 
 def add_view(
-    img_new: ImageData, img_ref: ImageData, K: NDArrayFloat, dist, track_manager: TrackManager, point_cloud: PointCloud
+    img_new: ImageData,
+    img_ref: ImageData,
+    K: NDArrayFloat,
+    dist,
+    track_manager: TrackManager,
+    point_cloud: PointCloud,
+    match_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
 ):
     """Adds 3D points from new view using PnP and triangulation.
 
@@ -76,7 +93,7 @@ def add_view(
     # Compute KP matches from ref image to new image
     # Matching from new to ref image: Where does ref img tracked KP match to in new img?
     print(f"add_view: Computing matches from {img_ref.idx}:{img_ref.path.name} to {img_new.idx}:{img_new.path.name}")
-    _, matches = compute_matches(img_ref, img_new, lowe_ratio=0.75)
+    _, matches = match_fn(img_ref, img_new)
 
     # add new img KPs, that are matched to from tracked ref img KPs, to current tracks (3D pts)
     # returns track_ids and (un)tracked KPs in the new image; track_ids used as indices to point cloud
@@ -122,7 +139,6 @@ def add_view(
     P_new = K @ img_new.pose_matrix
 
     # Triangulate the untracked KPs in the new image
-    # TODO: the transposes might cause issues
     points_4d = cv.triangulatePoints(P_ref, P_new, pts_ref.T, pts_new.T)
     points_3d = (points_4d[:3] / points_4d[3]).T
 
@@ -154,6 +170,7 @@ def process_graph_component(
     store: FeatureStore,
     track_manager: TrackManager,
     point_cloud: PointCloud,
+    match_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
 ) -> tuple[list[ViewEdge], set[int]]:
     # Pick strongest baseline:
     # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
@@ -163,7 +180,7 @@ def process_graph_component(
     )
 
     # matches -> E -> pose -> triangulation
-    compute_baseline_estimate(img_0, img_1, K, track_manager, point_cloud)
+    compute_baseline_estimate(img_0, img_1, K, track_manager, point_cloud, match_fn)
 
     R = set((img_0.idx, img_1.idx))
     U = {node for e in edges for node in (e.i, e.j)}
@@ -190,7 +207,7 @@ def process_graph_component(
         )
         try:
             # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
-            add_view(img_new, img_ref, K, dist, track_manager, point_cloud)
+            add_view(img_new, img_ref, K, dist, track_manager, point_cloud, match_fn)
         except ValueError as e:
             # failed to add new view: indicate the (img_ref, img_new) pair as bad and move on
             # best_edge was the best chance to add img_new (don't consider next best edge w/ img_new)
@@ -215,20 +232,90 @@ def process_graph_component(
 
 
 # TODO: nice logging by levels
-def main():
+@app.command()
+def main(
+    feature_type: str = typer.Option(
+        "sift",
+        "--features",
+        "-f",
+        help="Feature extraction method: 'sift' or 'disk'",
+    ),
+    matcher_type: str = typer.Option(
+        "bf",
+        "--matcher",
+        "-m",
+        help="Keypoint matching method: 'bf' (brute-force) or 'lightglue'",
+    ),
+    lowe_ratio: float = typer.Option(
+        0.75,
+        "--lowe-ratio",
+        "-l",
+        help="Lowe's ratio test threshold for BF matcher (only used when matcher='bf')",
+        min=0.0,
+        max=1.0,
+    ),
+    min_dist: float = typer.Option(
+        0.75,
+        "--min-dist",
+        "-d",
+        help="Minimum distance threshold for LightGlue matcher (only used when matcher='lightglue')",
+        min=0.0,
+        max=1.0,
+    ),
+    dataset: str = typer.Option(
+        "statue",
+        "--dataset",
+        "-s",
+        help="Dataset name (subdirectory in data/raw/)",
+    ),
+):
+    """Run Structure from Motion pipeline with configurable feature extraction and matching."""
+
+    # Validate inputs
+    if feature_type not in ["sift", "disk"]:
+        typer.echo(f"Error: feature_type must be 'sift' or 'disk', got '{feature_type}'", err=True)
+        raise typer.Exit(code=1)
+
+    if matcher_type not in ["bf", "lightglue"]:
+        typer.echo(f"Error: matcher_type must be 'bf' or 'lightglue', got '{matcher_type}'", err=True)
+        raise typer.Exit(code=1)
+
+    # Display configuration
+    typer.echo("Configuration:")
+    typer.echo(f"  Feature type: {feature_type}")
+    typer.echo(f"  Matcher type: {matcher_type}")
+    if matcher_type == "bf":
+        typer.echo(f"  Lowe ratio: {lowe_ratio}")
+    else:
+        typer.echo(f"  Min distance: {min_dist}")
+    typer.echo(f"  Dataset: {dataset}")
+    typer.echo()
+
     K, dist = calibrate_camera()  # TODO: move to FeatureStore?
 
-    img_dir = Path("data") / "raw" / "statue_orbit"
-    out_dir = Path("data") / "out" / img_dir.name
-    # load all images & extract features
-    image_store = FeatureStore(img_dir)
+    img_dir = Path("data") / "raw" / dataset
+    out_dir = Path("data") / "out" / dataset
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load all images & extract features
+    typer.echo(f"Extracting {feature_type.upper()} features from {img_dir}...")
+    image_store = FeatureStore(img_dir, method=feature_type)  # type: ignore
     track_manager = TrackManager()
     point_cloud = PointCloud()
     exporter = ReconExporter(point_cloud, image_store)
 
+    # Create keypoint matcher with appropriate parameters
+    if matcher_type == "bf":
+        kp_matcher = partial(compute_matches, method="bf", lowe_ratio=lowe_ratio)
+    else:  # lightglue
+        kp_matcher = partial(compute_matches, method="lightglue", min_dist=min_dist)
+
+    typer.echo("Constructing view graph...")
     view_graph = construct_view_graph(image_store, K)
+
     # Process the first component
-    process_graph_component(K, dist, view_graph.edges.copy(), image_store, track_manager, point_cloud)
+    typer.echo("Processing graph component...")
+    process_graph_component(K, dist, view_graph.edges.copy(), image_store, track_manager, point_cloud, kp_matcher)
 
     # Process all connected components of the view graph
     # Each component will lead to a point cloud with its own reference frame
@@ -238,12 +325,19 @@ def main():
     #     leftover_edges, U = process_graph_component(K, dist, leftover_edges, image_store, track_manager, point_cloud)
     #     if not U:
     #         break
-    exporter.save_ply(filename=out_dir / f"{img_dir.name}.ply")
+    basename = f"{dataset}_{feature_type}_{matcher_type}"
+    typer.echo(f"Saving initial reconstruction to {out_dir / f'{basename}.ply'}...")
+    exporter.save_ply(filename=out_dir / f"{dataset}.ply")
+
+    typer.echo("Running bundle adjustment...")
     bundle_adjustment(image_store, point_cloud, K, dist, track_manager, fix_first_camera=False)
 
-    print(f"Final point cloud size: {point_cloud.size}")
-    exporter.save_ply(filename=out_dir / f"{img_dir.name}_ba.ply")
+    typer.echo(f"Final point cloud size: {point_cloud.size}")
+    typer.echo(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")
+    exporter.save_ply(filename=out_dir / f"{dataset}_ba.ply")
+
+    typer.echo("✓ Done!")
 
 
 if __name__ == "__main__":
-    main()
+    app()
