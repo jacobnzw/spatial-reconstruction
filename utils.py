@@ -4,8 +4,16 @@ from pathlib import Path
 from typing import Annotated, Any, Iterable, Literal
 
 import cv2 as cv
+import kornia as K
+import kornia.feature as KF
 import numpy as np
+import torch
 from numpy.typing import NDArray
+
+device = K.utils.get_cuda_or_mps_device_if_available()
+
+NDArrayFloat = NDArray[np.floating[Any]]
+Point3D = Annotated[NDArrayFloat, Literal[3]]
 
 
 def calibrate_camera(img_dir: Path = Path("data/calibration")):
@@ -69,23 +77,65 @@ def extract_sift(img_path: Path):
     # img = cv.resize(img, (800, 600))
     gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
 
-    sift = cv.SIFT_create(nfeatures=10_000)
+    sift = cv.SIFT_create(nfeatures=10_000)  # ty:ignore[unresolved-attribute]
     kp, des = sift.detectAndCompute(gray, None)
 
     return kp, des, img
+
+
+def extract_disk(img_dir: Path, num_features: int = 2048) -> tuple[list[KF.DISKFeatures], torch.Tensor]:
+    """Extract DISK features from all images in img_dir."""
+    # Load all images
+    # TODO: generalize to processing batch_size images at a time if img_dir has > batch_size images
+    img_files = list(img_dir.glob("*.jpg"))
+    imgs = []
+    for img_path in img_files:
+        imgs.append(K.io.load_image(img_path, K.io.ImageLoadType.RGB32, device=device)[None, ...])
+    imgs = torch.cat(imgs, dim=0)
+
+    # Extract features
+    disk = KF.DISK.from_pretrained("depth").to(device)
+    features = disk(imgs, num_features, pad_if_not_divisible=True)
+    return features, imgs
+
+
+def match_disk(features1: KF.DISKFeatures, features2: KF.DISKFeatures, min_dist: float | None = None):
+    """Match DISK features between two images using LightGlue matcher.
+
+    Returns:
+        dists: Distances between descriptors of matched keypoints of shape (M, 1)
+        idxs: Match indices of shape (M, 2) into descriptors of features1 and features2, respectively.
+    """
+    lg_matcher = KF.LightGlueMatcher("disk").eval().to(device)
+
+    kps1, descs1 = features1.keypoints, features1.descriptors
+    kps2, descs2 = features2.keypoints, features2.descriptors
+    lafs1 = KF.laf_from_center_scale_ori(kps1[None], torch.ones(1, len(kps1), 1, 1, device=device))
+    lafs2 = KF.laf_from_center_scale_ori(kps2[None], torch.ones(1, len(kps2), 1, 1, device=device))
+    # hw1 = torch.tensor(img1.shape[2:], device=device)  # optional image height and width for LightGlue
+    # hw2 = torch.tensor(img2.shape[2:], device=device)
+    dists, idxs = lg_matcher(descs1, descs2, lafs1, lafs2)
+    if min_dist is not None:
+        if min_dist <= 0.0 or min_dist > 1.0:
+            raise ValueError(f"min_dist must be in (0, 1], got {min_dist}")
+        mask = dists > min_dist
+        return dists[mask], idxs[mask]
+    return dists, idxs
 
 
 @dataclass
 class ImageData:
     idx: int
     path: Path
-    img: NDArray[Any]
+    # TODO; rename to "pixels"
+    # Useful for rendering and debugging
+    pixels: NDArray[Any]
     # Extracted keypoints and descriptors
-    kp: list[cv.KeyPoint]
-    des: NDArray[np.floating[Any]]
+    kp: NDArrayFloat
+    des: NDArrayFloat
     # Estimated pose
-    R: NDArray[np.floating[Any]] | None = None
-    t: NDArray[np.floating[Any]] | None = None
+    R: NDArrayFloat | None = None
+    t: NDArrayFloat | None = None
 
     def set_pose(self, R, t):
         self.R = R
@@ -97,27 +147,46 @@ class ImageData:
 
     @property
     def pose_matrix(self) -> NDArray[np.float32]:
-        return np.hstack((self.R, self.t))
+        return np.hstack((self.R, self.t))  # ty:ignore[no-matching-overload]
 
     @property
     def rvec(self) -> NDArray[np.float32]:
-        return cv.Rodrigues(self.R)[0].ravel()
+        return cv.Rodrigues(self.R)[0].ravel()  # ty:ignore[no-matching-overload]
 
 
 class FeatureStore:
-    def __init__(self, img_dir: Path):
+    def __init__(self, img_dir: Path, method: Literal["sift", "disk"] = "sift"):
         self._store: list[ImageData] = []
-        self._load_dir(img_dir)
+        if method == "sift":
+            self._load_dir_sift(img_dir)
+        else:
+            self._load_dir_disk(img_dir)
 
-    def _load_dir(self, img_dir: Path, ext: str = "jpg"):
+    def _load_dir_sift(self, img_dir: Path, ext: str = "jpg"):
         img_paths = sorted(list(img_dir.glob(f"*.{ext}")))
 
         if not img_paths:
             raise ValueError(f"No *.{ext} images found in {img_dir}")
 
         for idx, filepath in enumerate(img_paths):
-            kp, des, img = extract_sift(filepath)
+            # TODO: use SIFT from kornia to match better with DISK
+            kps, des, img = extract_sift(filepath)
+            kp = np.array([kp.pt for kp in kps])  # list[cv.KeyPoint] -> NDArray (N, 2)
             self._store.append(ImageData(idx, filepath, img, kp, des))
+
+    # TODO: move feature extraction to this class; join w/ _load_dir
+    def _load_dir_disk(self, img_dir: Path):
+        features, imgs = extract_disk(img_dir)
+        for idx, filepath in enumerate(img_dir.glob("*.jpg")):
+            self._store.append(
+                ImageData(
+                    idx,
+                    filepath,
+                    imgs[idx].cpu().numpy(),
+                    features[idx].keypoints.cpu().numpy(),  # (N, 2)
+                    features[idx].descriptors.cpu().numpy(),  # (N, D)
+                )
+            )
 
     @property
     def size(self) -> int:
@@ -126,11 +195,11 @@ class FeatureStore:
     def __getitem__(self, img_idx: int) -> ImageData:
         return self._store[img_idx]
 
-    def get_keypoints(self) -> list[list[cv.KeyPoint]]:
+    def get_keypoints(self) -> list[NDArrayFloat]:
         """Get keypoints of all images."""
         return [img_data.kp for img_data in self._store]
 
-    def get_descriptors(self) -> list[NDArray[np.floating[Any]]]:
+    def get_descriptors(self) -> list[NDArrayFloat]:
         """Get descriptors of all images."""
         return [img_data.des for img_data in self._store]
 
@@ -188,8 +257,8 @@ class ViewGraph:
 
 
 def compute_matches(
-    des_from: NDArray[np.float32],
-    des_to: NDArray[np.float32],
+    des_from: NDArrayFloat,
+    des_to: NDArrayFloat,
     lowe_ratio: float | None = None,
 ):
     bf = cv.BFMatcher(cv.NORM_L2, crossCheck=False)
@@ -199,17 +268,24 @@ def compute_matches(
     return matches
 
 
-def has_overlap(kp1, des1, kp2, des2, K, min_inliers=50):
+def has_overlap(
+    kp1: NDArrayFloat,
+    des1: NDArrayFloat,
+    kp2: NDArrayFloat,
+    des2: NDArrayFloat,
+    K: NDArray,
+    min_inliers: int = 50,
+):
     good = compute_matches(des1, des2, lowe_ratio=0.75)
 
     if len(good) < min_inliers:
         return False, None, None
 
     # geometric validation: rejects matches that cannot arise from a rigid 3D scene
-    pts1 = np.float32([kp1[m.queryIdx].pt for m in good])
-    pts2 = np.float32([kp2[m.trainIdx].pt for m in good])
+    pts1 = kp1[[m.queryIdx for m in good]]
+    pts2 = kp2[[m.trainIdx for m in good]]
 
-    E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.RANSAC, threshold=1.0)  # ty:ignore[no-matching-overload]
+    E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.RANSAC, threshold=1.0)
 
     if E is None:
         return False, None, None
@@ -221,7 +297,7 @@ def has_overlap(kp1, des1, kp2, des2, K, min_inliers=50):
     return True, inliers, good
 
 
-def construct_view_graph(kp: list, des: list, K):
+def construct_view_graph(kp: list[NDArrayFloat], des: list[NDArrayFloat], K: NDArray):
     view_graph = ViewGraph()
     assert len(kp) == len(des)
     N = len(kp)
@@ -290,10 +366,6 @@ class TrackManager:
         return track_ids_tracked, kp_idx_new_tracked, matches_untracked
 
 
-# Type alias for 3D points in Euclidean space
-Point3D = Annotated[NDArray[np.floating[Any]], Literal[3]]
-
-
 class PointCloud:
     def __init__(self):
         self._data: dict[int, Point3D] = {}  # track_id -> np.array([x, y, z])
@@ -313,7 +385,7 @@ class PointCloud:
     def get_point(self, track_id: int) -> Point3D | None:
         return self._data.get(track_id, None)
 
-    def get_points_as_array(self, track_ids: list[int] | None = None) -> NDArray[np.floating[Any]]:
+    def get_points_as_array(self, track_ids: list[int] | None = None) -> NDArrayFloat:
         """Returns array of 3D points corresponding to the given track_ids.
 
         Missing points are returned as np.nan.

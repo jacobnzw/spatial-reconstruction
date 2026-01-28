@@ -30,8 +30,8 @@ def compute_baseline_estimate(
     matches = compute_matches(img_0.des, img_1.des, lowe_ratio=0.75)
 
     # extract corresponding pixel coordinates
-    pts0 = np.array([img_0.kp[m.queryIdx].pt for m in matches]).astype(np.float32)
-    pts1 = np.array([img_1.kp[m.trainIdx].pt for m in matches]).astype(np.float32)
+    pts0 = img_0.kp[[m.queryIdx for m in matches]]
+    pts1 = img_1.kp[[m.trainIdx for m in matches]]
 
     # compute Essential matrix using camera intrinsics; mask indicates inliers
     E, mask = cv.findEssentialMat(pts0, pts1, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
@@ -86,7 +86,7 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
     object_points = point_cloud.get_points_as_array(track_ids_tracked)
     # PnP needs tracked KPs from new image (2D) and matching 3D object pts
     # In other words, new 2D points that observe the same 3D object points as the tracked KPs in the ref image
-    img_new_pts_tracked = np.array([img_new.kp[i].pt for i in kp_idx_new_tracked]).astype(np.float32)
+    img_new_pts_tracked = img_new.kp[[i for i in kp_idx_new_tracked]]
 
     assert len(object_points) == len(img_new_pts_tracked), "Number of 3D points must match number of 2D points"
     assert np.isfinite(object_points).all(), "Object points must be finite"
@@ -111,14 +111,15 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
 
     # Triangulate untracked KPs in the new image
     # pts_ref[i] matched to pts_new[i]
-    pts_ref = np.array([img_ref.kp[m.queryIdx].pt for m in matches_untracked]).astype(np.float32)
-    pts_new = np.array([img_new.kp[m.trainIdx].pt for m in matches_untracked]).astype(np.float32)
+    pts_ref = img_ref.kp[[m.queryIdx for m in matches_untracked]]
+    pts_new = img_new.kp[[m.trainIdx for m in matches_untracked]]
 
     # Projection matrices: from 3D world to each camera 2D image plane
     P_ref = K @ img_ref.pose_matrix
     P_new = K @ img_new.pose_matrix
 
     # Triangulate the untracked KPs in the new image
+    # TODO: the transposes might cause issues
     points_4d = cv.triangulatePoints(P_ref, P_new, pts_ref.T, pts_new.T)
     points_3d = (points_4d[:3] / points_4d[3]).T
 
