@@ -87,7 +87,22 @@ Outputs:
  - Refined 3D Points: More accurate 3D coordinates for the sparse point cloud, minimizing overall error.
  - Optimized Camera Poses: Precise camera positions and orientations, creating a more accurate camera trajectory.
  - Calibrated Camera Intrinsics: Improved internal camera parameters (like focal length).
- - Reprojection Error Statistics: Metrics (like Root Mean Square Error - RMSE) quantifying the final accuracy of the adjustment. 
+ - Reprojection Error Statistics: Metrics (like Root Mean Square Error - RMSE) quantifying the final accuracy of the adjustment.
+
+ **Gauge freedom**: I could rotate, translate and scale the whole scene (incl. cam poses) and the re-projection error would stay the same. 
+    - Fix the first camera to remove the gauge freedom.
+
+#### Sim(3): 
+ - the group of similarity transformations in 3D space, consisting of rotation, translation, and uniform scaling.
+ - 7 degrees of freedom (3 for rotation, 3 for translation, 1 for scaling)
+ - A transformation in Sim(3) can be represented as a 4x4 matrix with the following form:
+ $$
+ \begin{bmatrix}
+    sR & t \\
+    0 & 1
+ \end{bmatrix}
+ $$, 
+ where $R$ is a 3x3 rotation matrix, $t$ is a 3x1 translation vector, and $s$ is a scalar representing uniform scaling.
 
 
 ### View Graph
@@ -95,6 +110,14 @@ Assuming you have multiple images of the same object from different angles, you 
 Each node in the graph represents an image, and each edge represents the overlap between two images. 
 The weight of the edge can represent the amount of overlap or the quality of the match between the two images. 
 The view graph can be used to guide the image matching process and to estimate the camera poses.
+
+
+## Gaussian Splatting
+
+Spherical harmonics SH: basis functions for representing functions on a sphere. 
+They are the spherical analog of Fourier series and can be used to represent lighting and reflections in a compact and efficient way.
+Used to model view-dependent appearance of a surface point.
+
 
 ## 🚧 Links
 - real SfM systems (COLMAP, OpenMVG, VisualSfM)
