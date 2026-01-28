@@ -7,6 +7,7 @@ from ba import bundle_adjustment
 from utils import (
     FeatureStore,
     ImageData,
+    NDArrayFloat,
     PointCloud,
     ReconExporter,
     TrackManager,
@@ -18,7 +19,7 @@ from utils import (
 
 
 def compute_baseline_estimate(
-    img_0: ImageData, img_1: ImageData, K, track_manager: TrackManager, point_cloud: PointCloud
+    img_0: ImageData, img_1: ImageData, K: NDArrayFloat, track_manager: TrackManager, point_cloud: PointCloud
 ):
     """Computes two-view baseline estimate of 3D points and poses
 
@@ -27,11 +28,11 @@ def compute_baseline_estimate(
 
     # Match key points (via descriptors)
     print(f"baseline: Computing matches from {img_0.idx}:{img_0.path.name} to {img_1.idx}:{img_1.path.name}")
-    matches = compute_matches(img_0.des, img_1.des, lowe_ratio=0.75)
+    _, matches = compute_matches(img_0, img_1, lowe_ratio=0.75)
 
     # extract corresponding pixel coordinates
-    pts0 = img_0.kp[[m.queryIdx for m in matches]]
-    pts1 = img_1.kp[[m.trainIdx for m in matches]]
+    pts0 = img_0.kp[matches[:, 0]]
+    pts1 = img_1.kp[matches[:, 1]]
 
     # compute Essential matrix using camera intrinsics; mask indicates inliers
     E, mask = cv.findEssentialMat(pts0, pts1, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
@@ -49,11 +50,11 @@ def compute_baseline_estimate(
     # Homogeneous --> Euclidean; filter out outliers
     inliers = mask.ravel() > 0
     points_3d = (points_4d[:3, inliers] / points_4d[3, inliers]).T
-    matches = [m for m, inlier in zip(matches, inliers) if inlier]
+    matches = matches[inliers]
 
     # Create new tracks for the triangulated 3D object points
     # first create tracks for KPs in img_0, then add KPs in img_1 that match to KPs in img_0
-    kp_key_pairs = [((img_0.idx, m.queryIdx), (img_1.idx, m.trainIdx)) for m in matches]
+    kp_key_pairs = [((img_0.idx, m[0]), (img_1.idx, m[1])) for m in matches]
     track_ids_added = track_manager.add_new_tracks(kp_key_pairs)
 
     point_cloud.add_points(track_ids_added, points_3d)
@@ -65,7 +66,9 @@ def compute_baseline_estimate(
     print(f"Baseline constructed with {len(points_3d)} 3D points.")
 
 
-def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: TrackManager, point_cloud: PointCloud):
+def add_view(
+    img_new: ImageData, img_ref: ImageData, K: NDArrayFloat, dist, track_manager: TrackManager, point_cloud: PointCloud
+):
     """Adds 3D points from new view using PnP and triangulation.
 
     img_ref is reference image for which we already have 2D-3D pt correspondence in track_manager
@@ -73,7 +76,7 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
     # Compute KP matches from ref image to new image
     # Matching from new to ref image: Where does ref img tracked KP match to in new img?
     print(f"add_view: Computing matches from {img_ref.idx}:{img_ref.path.name} to {img_new.idx}:{img_new.path.name}")
-    matches = compute_matches(img_ref.des, img_new.des, lowe_ratio=0.75)
+    _, matches = compute_matches(img_ref, img_new, lowe_ratio=0.75)
 
     # add new img KPs, that are matched to from tracked ref img KPs, to current tracks (3D pts)
     # returns track_ids and (un)tracked KPs in the new image; track_ids used as indices to point cloud
@@ -86,7 +89,7 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
     object_points = point_cloud.get_points_as_array(track_ids_tracked)
     # PnP needs tracked KPs from new image (2D) and matching 3D object pts
     # In other words, new 2D points that observe the same 3D object points as the tracked KPs in the ref image
-    img_new_pts_tracked = img_new.kp[[i for i in kp_idx_new_tracked]]
+    img_new_pts_tracked = img_new.kp[kp_idx_new_tracked]
 
     assert len(object_points) == len(img_new_pts_tracked), "Number of 3D points must match number of 2D points"
     assert np.isfinite(object_points).all(), "Object points must be finite"
@@ -111,8 +114,8 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
 
     # Triangulate untracked KPs in the new image
     # pts_ref[i] matched to pts_new[i]
-    pts_ref = img_ref.kp[[m.queryIdx for m in matches_untracked]]
-    pts_new = img_new.kp[[m.trainIdx for m in matches_untracked]]
+    pts_ref = img_ref.kp[matches_untracked[:, 0]]  # [:, 0] = queryIdx; [:, 1] = trainIdx
+    pts_new = img_new.kp[matches_untracked[:, 1]]
 
     # Projection matrices: from 3D world to each camera 2D image plane
     P_ref = K @ img_ref.pose_matrix
@@ -124,7 +127,7 @@ def add_view(img_new: ImageData, img_ref: ImageData, K, dist, track_manager: Tra
     points_3d = (points_4d[:3] / points_4d[3]).T
 
     # Create track for each pair of KPs (ref, new) that were triangulated to a 3D point
-    kp_key_pairs = [((img_ref.idx, m.queryIdx), (img_new.idx, m.trainIdx)) for m in matches_untracked]
+    kp_key_pairs = [((img_ref.idx, m[0]), (img_new.idx, m[1])) for m in matches_untracked]
     track_ids_added = track_manager.add_new_tracks(kp_key_pairs)
     point_cloud.add_points(track_ids_added, points_3d)
     print(f"Added {len(points_3d)} 3D points.")
@@ -213,18 +216,17 @@ def process_graph_component(
 
 # TODO: nice logging by levels
 def main():
-    K, dist = calibrate_camera()
+    K, dist = calibrate_camera()  # TODO: move to FeatureStore?
 
-    img_dir = Path("data") / "raw" / "statue"
+    img_dir = Path("data") / "raw" / "statue_orbit"
     out_dir = Path("data") / "out" / img_dir.name
     # load all images & extract features
     image_store = FeatureStore(img_dir)
     track_manager = TrackManager()
     point_cloud = PointCloud()
+    exporter = ReconExporter(point_cloud, image_store)
 
-    kp_list, des_list = image_store.get_keypoints(), image_store.get_descriptors()
-    view_graph = construct_view_graph(kp_list, des_list, K)
-
+    view_graph = construct_view_graph(image_store, K)
     # Process the first component
     process_graph_component(K, dist, view_graph.edges.copy(), image_store, track_manager, point_cloud)
 
@@ -236,11 +238,11 @@ def main():
     #     leftover_edges, U = process_graph_component(K, dist, leftover_edges, image_store, track_manager, point_cloud)
     #     if not U:
     #         break
-
+    exporter.save_ply(filename=out_dir / f"{img_dir.name}.ply")
     bundle_adjustment(image_store, point_cloud, K, dist, track_manager, fix_first_camera=False)
 
     print(f"Final point cloud size: {point_cloud.size}")
-    ReconExporter(point_cloud, image_store).save_ply(filename=out_dir / f"{img_dir.name}_ba.ply")
+    exporter.save_ply(filename=out_dir / f"{img_dir.name}_ba.ply")
 
 
 if __name__ == "__main__":

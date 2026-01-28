@@ -127,7 +127,6 @@ def match_disk(features1: KF.DISKFeatures, features2: KF.DISKFeatures, min_dist:
 class ImageData:
     idx: int
     path: Path
-    # TODO; rename to "pixels"
     # Useful for rendering and debugging
     pixels: NDArray[Any]
     # Extracted keypoints and descriptors
@@ -256,55 +255,98 @@ class ViewGraph:
         return max(self.edges, key=lambda e: e.weight, default=None)
 
 
-def compute_matches(
-    des_from: NDArrayFloat,
-    des_to: NDArrayFloat,
-    lowe_ratio: float | None = None,
+def _match_lightglue_disk(
+    kp_from: torch.Tensor,
+    des_from: torch.Tensor,
+    kp_to: torch.Tensor,
+    des_to: torch.Tensor,
+    min_dist: float | None = None,
 ):
+    lg_matcher = KF.LightGlueMatcher("disk").eval().to(device)
+    lafs_from = KF.laf_from_center_scale_ori(kp_from[None], torch.ones(1, len(kp_from), 1, 1, device=device))
+    lafs_to = KF.laf_from_center_scale_ori(kp_to[None], torch.ones(1, len(kp_to), 1, 1, device=device))
+    # hw1 = torch.tensor(img1.shape[2:], device=device)  # optional image height and width for LightGlue
+    # hw2 = torch.tensor(img2.shape[2:], device=device)
+    dists, idxs = lg_matcher(des_from, des_to, lafs_from, lafs_to)
+    if min_dist is not None:
+        if min_dist <= 0.0 or min_dist > 1.0:
+            raise ValueError(f"min_dist must be in (0, 1], got {min_dist}")
+        mask = dists > min_dist
+        return dists[mask], idxs[mask]
+    return dists, idxs
+
+
+def _match_bf(des_from: NDArrayFloat, des_to: NDArrayFloat, lowe_ratio: float | None = None):
     bf = cv.BFMatcher(cv.NORM_L2, crossCheck=False)
     matches = bf.knnMatch(des_from, des_to, k=2)
     if lowe_ratio:
         matches = [m for m, n in matches if m.distance < lowe_ratio * n.distance]
-    return matches
+    else:
+        matches = [m for m, n in matches]
+
+    dist = np.array([m.distance for m in matches])  # (N,)
+    return dist, np.array([(m.queryIdx, m.trainIdx) for m in matches])  # (N, 2)
+
+
+def compute_matches(
+    img_from: ImageData,
+    img_to: ImageData,
+    method: Literal["lightglue", "bf"] = "bf",
+    lowe_ratio: float | None = None,
+    min_dist: float | None = None,
+) -> NDArray:
+    if method == "bf":
+        return _match_bf(img_from.des, img_to.des, lowe_ratio)
+    elif method == "lightglue":
+        return _match_lightglue_disk(
+            torch.from_numpy(img_from.kp),
+            torch.from_numpy(img_from.des),
+            torch.from_numpy(img_to.kp),
+            torch.from_numpy(img_to.des),
+            min_dist,
+        )
+    else:
+        raise ValueError(f"Unknown KP matching method: {method}")
 
 
 def has_overlap(
-    kp1: NDArrayFloat,
-    des1: NDArrayFloat,
-    kp2: NDArrayFloat,
-    des2: NDArrayFloat,
+    img_from: ImageData,
+    img_to: ImageData,
     K: NDArray,
     min_inliers: int = 50,
-):
-    good = compute_matches(des1, des2, lowe_ratio=0.75)
+) -> tuple[bool, int | None, NDArray | None]:
+    _, good = compute_matches(img_from, img_to, lowe_ratio=0.75)
 
     if len(good) < min_inliers:
         return False, None, None
 
     # geometric validation: rejects matches that cannot arise from a rigid 3D scene
-    pts1 = kp1[[m.queryIdx for m in good]]
-    pts2 = kp2[[m.trainIdx for m in good]]
+    pts1 = img_from.kp[good[:, 0]]  # [:, 0] = queryIdx; [:, 1] = trainIdx
+    pts2 = img_to.kp[good[:, 1]]
 
     E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.RANSAC, threshold=1.0)
 
     if E is None:
         return False, None, None
 
-    inliers = int(mask.sum())
+    inliers = int((mask > 0).sum())
     if inliers < min_inliers:
         return False, None, None
 
     return True, inliers, good
 
 
-def construct_view_graph(kp: list[NDArrayFloat], des: list[NDArrayFloat], K: NDArray):
+def construct_view_graph(image_store: FeatureStore, K: NDArray):
     view_graph = ViewGraph()
+    kp, des = image_store.get_keypoints(), image_store.get_descriptors()
     assert len(kp) == len(des)
+
     N = len(kp)
     for i in range(N):
         for j in range(i + 1, N):
-            ok_ij, inliers_ij, _ = has_overlap(kp[i], des[i], kp[j], des[j], K)
-            ok_ji, inliers_ji, _ = has_overlap(kp[j], des[j], kp[i], des[i], K)
+            img_i, img_j = image_store[i], image_store[j]
+            ok_ij, inliers_ij, _ = has_overlap(img_i, img_j, K)
+            ok_ji, inliers_ji, _ = has_overlap(img_j, img_i, K)
             # ASK: why the matches should not be preserved ???
             if ok_ij and ok_ji:
                 view_graph.add_edge(i, j, inliers_ij, inliers_ji)
@@ -338,7 +380,7 @@ class TrackManager:
             self.next_track_id += 1
         return added_track_ids
 
-    def update_tracks(self, img_idx_new: int, img_idx_ref: int, ref2new_matches: list[cv.DMatch]):
+    def update_tracks(self, img_idx_new: int, img_idx_ref: int, ref2new_matches: NDArray[np.integer[Any]]):
         """Update tracks with new KP observations from img_new.
 
         img_ref is the reference image for which we already have 2D-3D pt correspondence in track_manager.
@@ -349,21 +391,21 @@ class TrackManager:
         kp_idx_new_tracked, track_ids_tracked = [], []
         matches_untracked = []
         # I wanna add the new KPs (that have matches to tracked ref KPs) to current tracks
-        for m in ref2new_matches:
-            kp_idx_ref, kp_idx_new = m.queryIdx, m.trainIdx
+        for match in ref2new_matches:
+            kp_idx_ref, kp_idx_new = match
             # if ref KP has a track, add the matching new KP to the same track
             # this means the same 3D object point is now observed by a new 2D KP
             kp_key_new = (img_idx_new, kp_idx_new)
             kp_key_ref = (img_idx_ref, kp_idx_ref)
-            if (track_id := self.get_track(kp_key_ref)) is not None:
+            if (track_id := self.get_track(kp_key_ref)) is not None:  # ty:ignore[invalid-argument-type]
                 track_ids_tracked.append(track_id)
                 kp_idx_new_tracked.append(kp_idx_new)
-                self._register_keypoint_track(kp_key_new, track_id)
+                self._register_keypoint_track(kp_key_new, track_id)  # ty:ignore[invalid-argument-type]
             else:  # ref KP is untracked and therefore its matching KP from img_new is also untracked
-                matches_untracked.append(m)
+                matches_untracked.append(match)
 
         # return tracked KPs in new img and ref2new matches for untracked KPs for triangulation
-        return track_ids_tracked, kp_idx_new_tracked, matches_untracked
+        return track_ids_tracked, kp_idx_new_tracked, np.array(matches_untracked)
 
 
 class PointCloud:
@@ -405,7 +447,7 @@ class ReconExporter:
     Edge = tuple[int, int]  # (v1, v2)
 
     def __init__(self, point_cloud: PointCloud, images: FeatureStore):
-        self.xyz = point_cloud.get_points_as_array()
+        self.point_cloud = point_cloud
         self.images = images
 
     @staticmethod
@@ -467,7 +509,8 @@ class ReconExporter:
         import pandas as pd
 
         # Convert to DataFrame
-        df = pd.DataFrame(self.xyz, columns=["x", "y", "z"])
+        xyz = self.point_cloud.get_points_as_array()
+        df = pd.DataFrame(xyz, columns=["x", "y", "z"])
 
         # --- OUTLIER REMOVAL ---
         # Calculate the distance from the median to find the "main cluster"
