@@ -1,8 +1,7 @@
 import numpy as np
+import pyceres
 import pycolmap
 import pycolmap._core.cost_functions as cost_functions
-import pyceres
-from numpy.typing import NDArray
 
 from utils import (
     FeatureStore,
@@ -14,15 +13,12 @@ from utils import (
 def bundle_adjustment(
     images: FeatureStore,
     point_cloud: PointCloud,
-    K: NDArray[np.float32],
-    dist: NDArray[np.float32],
     track_manager: TrackManager,
     fix_first_camera: bool = True,
 ):
     """Run bundle adjustment on all cameras and 3D points using pycolmap cost functions."""
 
-    print("Running bundle adjustment...")
-
+    K, dist = images.get_intrisics()
     # Create pycolmap camera model (OPENCV: fx, fy, cx, cy, k1, k2, p1, p2)
     fx = K[0, 0]
     fy = K[1, 1]
@@ -121,8 +117,6 @@ def bundle_adjustment(
 def bundle_adjustment_pycolmap(
     feature_store: FeatureStore,
     point_cloud: PointCloud,
-    K: NDArray[np.float32],
-    dist: NDArray[np.float32],
     track_manager: TrackManager,
     fix_first_camera: bool = True,
 ):
@@ -135,6 +129,7 @@ def bundle_adjustment_pycolmap(
 
     # Map your OpenCV calibration to COLMAP parameters
     # OpenCV order: [fx, fy, cx, cy, k1, k2, p1, p2]
+    K, dist = feature_store.get_intrisics()
     fx, fy = K[0, 0], K[1, 1]
     cx, cy = K[0, 2], K[1, 2]
     k1, k2, p1, p2 = dist[0][:4]  # Assuming standard 4-5 params

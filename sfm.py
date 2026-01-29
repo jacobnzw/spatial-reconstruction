@@ -166,8 +166,6 @@ def pick_best_image_pair(
 
 
 def process_graph_component(
-    K,
-    dist,
     edges: list[ViewEdge],
     store: FeatureStore,
     track_manager: TrackManager,
@@ -180,7 +178,7 @@ def process_graph_component(
     print(
         f"Establishing baseline ({best_edge.weight} matches) from: {img_0.idx}:{img_0.path.name} and {img_1.idx}:{img_1.path.name}"
     )
-
+    K, dist = store.get_intrisics()
     # matches -> E -> pose -> triangulation
     compute_baseline_estimate(img_0, img_1, K, track_manager, point_cloud, match_fn)
 
@@ -234,6 +232,7 @@ def process_graph_component(
 
 
 # TODO: nice logging by levels
+# TODO: use tyro? too many options here
 @app.command()
 def main(
     feature_type: str = typer.Option(
@@ -314,7 +313,7 @@ def main(
     typer.echo(f"  Dataset: {dataset}")
     typer.echo()
 
-    K, dist = calibrate_camera()  # TODO: move to FeatureStore?
+    K, dist = calibrate_camera()
 
     img_dir = Path("data") / "raw" / dataset
     out_dir = Path("data") / "out" / dataset
@@ -322,36 +321,34 @@ def main(
 
     # Load all images & extract features
     typer.echo(f"Extracting {feature_type.upper()} features from {img_dir}...")
-    image_store = FeatureStore(img_dir, method=feature_type, num_features=num_features)  # type: ignore
+    # TODO: max_size in CLI or tyro config; better parameterize as scaling factor < 1, affects SfM accuracy
+    image_store = FeatureStore(img_dir, K, dist, method=feature_type, num_features=num_features, max_size=4080)  # type: ignore
     track_manager = TrackManager()
     point_cloud = PointCloud()
     exporter = ReconExporter(point_cloud, image_store)
 
     # Create keypoint matcher with appropriate parameters
-    lightglue_matcher = None
     if matcher_type == "bf":
         kp_matcher = partial(compute_matches, method="bf", lowe_ratio=lowe_ratio)
-    else:  # lightglue
+    else:
         lightglue_matcher = KF.LightGlueMatcher("disk").eval().to(device)
         kp_matcher = partial(
             compute_matches, method="lightglue", min_dist=min_dist, lightglue_matcher=lightglue_matcher
         )
 
     typer.echo("Constructing view graph...")
-    view_graph = construct_view_graph(image_store, K, kp_matcher, min_inliers=50)
+    view_graph = construct_view_graph(image_store, kp_matcher, min_inliers=min_inliers)
 
     # Process the first component
     typer.echo("Processing graph component...")
-    process_graph_component(K, dist, view_graph.edges.copy(), image_store, track_manager, point_cloud, kp_matcher)
+    process_graph_component(view_graph.edges.copy(), image_store, track_manager, point_cloud, kp_matcher)
 
     # Process all connected components of the view graph
     # Each component will lead to a point cloud with its own reference frame
     # and thus appear disconnected from the others
     # leftover_edges = view_graph.edges.copy()
     # while True:
-    #     leftover_edges, U = process_graph_component(
-    #         K, dist, leftover_edges, image_store, track_manager, point_cloud, kp_matcher
-    #     )
+    #     leftover_edges, U = process_graph_component(leftover_edges, image_store, track_manager, point_cloud, kp_matcher)
     #     if not U:
     #         break
 
@@ -361,7 +358,7 @@ def main(
 
     if run_ba:
         typer.echo("Running bundle adjustment...")
-        bundle_adjustment(image_store, point_cloud, K, dist, track_manager, fix_first_camera=False)
+        bundle_adjustment(image_store, point_cloud, track_manager, fix_first_camera=False)
 
         typer.echo(f"Final point cloud size: {point_cloud.size}")
         typer.echo(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")

@@ -8,6 +8,7 @@ import kornia as K
 import kornia.feature as KF
 import numpy as np
 import torch
+import torch.nn.functional as F
 from numpy.typing import NDArray
 
 device = K.utils.get_cuda_or_mps_device_if_available()
@@ -104,16 +105,51 @@ class ImageData:
 
 
 class FeatureStore:
-    def __init__(self, img_dir: Path, method: Literal["sift", "disk"] = "sift", num_features: int = 2048):
+    def __init__(
+        self,
+        img_dir: Path,
+        K: NDArrayFloat,
+        dist: NDArrayFloat,
+        ext: str = "jpg",
+        method: Literal["sift", "disk"] = "sift",
+        num_features: int = 2048,
+        max_size=1024,
+    ):
         self._store: list[ImageData] = []
         self._disk_model = None  # Lazy load DISK model
-        self._load_dir(img_dir, method=method, num_features=num_features)
+        self._max_size = max_size
+        self._K = K
+        self._dist = dist
+
+        img_paths = sorted(list(img_dir.glob(f"*.{ext}")))
+        if not img_paths:
+            raise ValueError(f"No *.{ext} images found in {img_dir}")
+
+        # Figure out the size of images and get scale for downsampling if too large
+        h, w = cv.imread(img_paths[0]).shape[:2]
+        if max(h, w) > self._max_size:
+            hn, wn, scale = self._get_capped_resolution((h, w))
+            self._scale = scale
+            print(f"Resizing images from ({h}, {w}) to ({hn}, {wn}) before feature extraction...")
+        else:
+            self._scale = 1.0
+
+        self._load_dir(img_paths, method=method, num_features=num_features)
+
+    def _get_capped_resolution(self, img_hw: tuple[int, int]) -> tuple[int, int, float]:
+        """Calculate resolution preserving aspect ratio, given max_size."""
+        h, w = img_hw
+        scale = self._max_size / max(h, w)
+        return int(h * scale), int(w * scale), scale
 
     def _extract_sift(self, img_path: Path, num_features: int) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
         """Extract SIFT features from a single image."""
-        img = cv.imread(str(img_path))
-        gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)  # ty:ignore[no-matching-overload]
+        img = cv.imread(str(img_path))  # (H, W, 3)
+        if self._scale < 1.0:
+            # AREA interpolation friendlier to feature extraction
+            img = cv.resize(img, dsize=None, fx=self._scale, fy=self._scale, interpolation=cv.INTER_AREA)
 
+        gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
         sift = cv.SIFT_create(nfeatures=num_features)  # ty:ignore[unresolved-attribute]
         kps, des = sift.detectAndCompute(gray, None)
 
@@ -126,10 +162,12 @@ class FeatureStore:
         """Extract DISK features from a single image."""
         # Lazy load DISK model
         if self._disk_model is None:
-            self._disk_model = KF.DISK.from_pretrained("depth").to(device)
+            self._disk_model = KF.DISK.from_pretrained("depth").eval().to(device)
 
-        # Load image
+        # Load image as (3, H, W)
         img_tensor = K.io.load_image(img_path, K.io.ImageLoadType.RGB32, device=device)[None, ...]
+        if self._scale < 1.0:
+            img_tensor = F.interpolate(img_tensor, scale_factor=self._scale, mode="area")
 
         # Extract features
         with torch.inference_mode():
@@ -139,14 +177,14 @@ class FeatureStore:
         des = features.descriptors.cpu().numpy()  # (N, D)
         img = img_tensor[0].cpu().numpy()  # (C, H, W) -> convert to numpy
 
+        # Memory management
+        # del img_tensor, features
+        # torch.cuda.empty_cache()
+
         return kp, des, img
 
-    def _load_dir(self, img_dir: Path, method: Literal["sift", "disk"], num_features: int, ext: str = "jpg"):
+    def _load_dir(self, img_paths: list[Path], method: Literal["sift", "disk"], num_features: int, ext: str = "jpg"):
         """Load all images from directory and extract features using specified method."""
-        img_paths = sorted(list(img_dir.glob(f"*.{ext}")))
-
-        if not img_paths:
-            raise ValueError(f"No *.{ext} images found in {img_dir}")
 
         for idx, filepath in enumerate(img_paths):
             if method == "sift":
@@ -155,6 +193,15 @@ class FeatureStore:
                 kp, des, img = self._extract_disk(filepath, num_features)
 
             self._store.append(ImageData(idx, filepath, img, kp, des))
+
+    def get_intrisics(self, rescaled=True) -> tuple[NDArrayFloat, NDArrayFloat]:
+        """Get camera intrinsics. Optionally return rescaled version if images were downsized."""
+        if rescaled and self._scale < 1.0:
+            K_rescaled = self._K.copy()
+            K_rescaled[0, :] *= self._scale
+            K_rescaled[1, :] *= self._scale
+            return K_rescaled, self._dist
+        return self._K, self._dist
 
     @property
     def size(self) -> int:
@@ -318,12 +365,12 @@ def has_overlap(
 
 def construct_view_graph(
     image_store: FeatureStore,
-    K: NDArray,
     matcher_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
     min_inliers: int = 50,
 ):
     view_graph = ViewGraph()
     kp, des = image_store.get_keypoints(), image_store.get_descriptors()
+    K, _ = image_store.get_intrisics()
     assert len(kp) == len(des)
 
     N = len(kp)
