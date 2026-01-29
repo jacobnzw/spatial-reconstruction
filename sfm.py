@@ -225,8 +225,8 @@ def process_graph_component(
         U.remove(img_new.idx)
         leftover_edges.remove(best_edge)
 
-    # No use for edges involving views that were already registered (ie. in R)
-    leftover_edges = [e for e in leftover_edges if not (e.i in R or e.j in R)]
+    # Filter out any remaining edges that connect registered views/images
+    leftover_edges = [e for e in leftover_edges if not (e.i in R and e.j in R)]
     print(f"{R = }\n{U = }")
     print(f"leftover_edges {[(e.i, e.j) for e in leftover_edges]}")
 
@@ -283,6 +283,12 @@ def main(
         "-i",
         help="Minimum number of inliers to consider two views as overlapping",
         min=10,
+    ),
+    run_ba: bool = typer.Option(
+        True,
+        "--bundle-adjustment/--no-bundle-adjustment",
+        "-b/-nb",
+        help="Run bundle adjustment optimization after initial reconstruction",
     ),
 ):
     """Run Structure from Motion pipeline with configurable feature extraction and matching."""
@@ -343,19 +349,23 @@ def main(
     # and thus appear disconnected from the others
     # leftover_edges = view_graph.edges.copy()
     # while True:
-    #     leftover_edges, U = process_graph_component(K, dist, leftover_edges, image_store, track_manager, point_cloud)
+    #     leftover_edges, U = process_graph_component(
+    #         K, dist, leftover_edges, image_store, track_manager, point_cloud, kp_matcher
+    #     )
     #     if not U:
     #         break
+
     basename = f"{dataset}_{feature_type}_{matcher_type}"
     typer.echo(f"Saving initial reconstruction to {out_dir / f'{basename}.ply'}...")
     exporter.save_ply(filename=out_dir / f"{basename}.ply")
 
-    typer.echo("Running bundle adjustment...")
-    bundle_adjustment(image_store, point_cloud, K, dist, track_manager, fix_first_camera=False)
+    if run_ba:
+        typer.echo("Running bundle adjustment...")
+        bundle_adjustment(image_store, point_cloud, K, dist, track_manager, fix_first_camera=False)
 
-    typer.echo(f"Final point cloud size: {point_cloud.size}")
-    typer.echo(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")
-    exporter.save_ply(filename=out_dir / f"{basename}_ba.ply")
+        typer.echo(f"Final point cloud size: {point_cloud.size}")
+        typer.echo(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")
+        exporter.save_ply(filename=out_dir / f"{basename}_ba.ply")
 
     typer.echo("✓ Done!")
 
