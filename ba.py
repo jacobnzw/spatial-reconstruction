@@ -58,7 +58,7 @@ def bundle_adjustment(
                 continue
 
             # Get observed 2D point
-            observed_pt = np.array(images[img_idx].kp[kp_idx].pt, dtype=np.float64)
+            observed_pt = np.array(images[img_idx].kp[kp_idx], dtype=np.float64)
 
             # Create cost function using pycolmap (with built-in Jacobians)
             cost = cost_functions.ReprojErrorCost(camera_model, observed_pt)
@@ -180,7 +180,7 @@ def bundle_adjustment_pycolmap(
         )
         p2d_list = pycolmap.Point2DList()
         for kp in img_data.kp:
-            p2d_list.append(pycolmap.Point2D(kp.pt, pycolmap.INVALID_POINT3D_ID))
+            p2d_list.append(pycolmap.Point2D(kp, pycolmap.INVALID_POINT3D_ID))
         image.points2D = p2d_list
         # Link the image to the frame
         # image.frame_id = frame.frame_id

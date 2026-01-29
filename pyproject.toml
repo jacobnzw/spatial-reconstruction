@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "kaleido>=1.2.0", # TODO: likely not needed (export of static plotly graph images to PNG)
+    "kornia>=0.8.2",
+    "kornia-moons>=0.2.9",
     "marimo>=0.18.4",
     "matplotlib>=3.10.8",
     "open3d>=0.19.0",
@@ -14,6 +16,7 @@ dependencies = [
     "plotly>=6.5.1",
     "pyceres>=2.6",
     "pycolmap>=3.13.0",
+    "typer>=0.21.1",
 ]
 
 [tool.ruff]

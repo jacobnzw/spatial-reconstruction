@@ -229,6 +229,17 @@ def _(extract_sift, img_list):
 
 
 @app.cell
+def _(kp0, matches):
+    kp_array = np.array([kp.pt for kp in kp0])
+    len(kp_array) == len(kp0)
+    kp_array[[1, 2]] == kp_array[1:3]
+    matches_array = np.array([(m.queryIdx, m.trainIdx) for m in matches])
+    query, train = matches_array[0]
+    print(type(query), type(train))
+    return
+
+
+@app.cell
 def _(img0, img1, kp0, kp1, matches):
     img_matches = cv.drawMatches(
         img0, kp0,
@@ -422,7 +433,7 @@ def _(extract_sift, img_dir, self):
         # @property
         # def stamped_keypoints():
         #     return [(idx, p.)]
-    
+
     class FeatureStore:
 
         def __init__(self, img_dir: Path):
@@ -431,10 +442,10 @@ def _(extract_sift, img_dir, self):
 
         def _load_dir(self, img_dir: Path, ext: str = "jpg"):
             img_paths = sorted(list(img_dir.glob(f"*.{ext}")))
-        
+
             if not img_paths:
                 raise ValueError(f"No *.{ext} images found in {img_dir}")
-            
+
             for idx, filepath in enumerate(img_paths):
                 kp, des, img = extract_sift(filepath)
                 self._store.append(ImageData(idx, filepath, img, kp, des))
@@ -449,14 +460,14 @@ def _(extract_sift, img_dir, self):
         def set_pose(img_idx: int, R, t):
             self._store[img_idx].R = R
             self._store[img_idx].t = t
-        
-    
+
+
         def keypoints(self):
             yield from (item.kp for item in self._store)
 
         def descriptors(self):
             yield from (item.des for item in self._store)
-        
+
     # load all images & extract features
     store = FeatureStore(img_dir)
     return ImageData, store
@@ -566,7 +577,6 @@ def _(K, store):
     # TODO: change store to SOA layout? need materialized lists for view graph anyway
     kp_list, des_list = list(store.keypoints()), list(store.descriptors())
     view_graph = construct_view_graph(kp_list, des_list)
-
     return (view_graph,)
 
 
@@ -629,7 +639,7 @@ def _(ImageData, K, dist, images, mask_pose, store, track_manager, view_graph):
         # Matching from new to ref image: Where does tracked ref img KP match to in new img?
         matches = bf.knnMatch(img_ref.des, img_new.des, k=2)
         matches = [m for m, n in matches if m.distance < 0.75 * n.distance]
-    
+
         # pts_ref[i] matched to pts_new[i]
         pts_ref = np.float32([img_ref.kp[m.queryIdx].pt for m in matches])
         pts_new = np.float32([img_new.kp[m.trainIdx].pt for m in matches])
@@ -638,17 +648,17 @@ def _(ImageData, K, dist, images, mask_pose, store, track_manager, view_graph):
         # TODO: what args do I need here? 
         tracked_kps, untracked_kps, tracks = track_manager.update_tracks(img_new, img_ref, matches)
         # Only use tracked KPs for reconstruction; tracked == "have 3D point"
-    
+
         # TODO: as if TM should store the 3D pts; thiking PointCloud should be managed separately, TM should index into it; PointCloud.export(),plot_colored(),plot_depth()?
         object_points = track_manager.get_object_points(tracks)
-    
+
         # Estimate pose of new image camera
         # PnP needs tracked KPs from new image (2D) and matching 3D pts
         pnp_ok, R, t, inliers = cv.solvePnPRansac(object_points, tracked_kps, K, dist)
         if not pnp_ok:
             raise ValueError("solvePnPRansac failed to estimate pose.")
         img_new.R, img_new.t = R, t
-    
+
         # Inliers only
         inliers = mask_pose.ravel() > 0
         if np.all(inliers==False):
@@ -656,7 +666,7 @@ def _(ImageData, K, dist, images, mask_pose, store, track_manager, view_graph):
         pts_ref = pts_ref[inliers]
         pts_new = pts_new[inliers]
         print(f"# inliers: {len(inliers)}")
-    
+
         # Projection matrices: from 3D world to each camera 2D image plane
         P_ref = K @ np.hstack((img_ref.R, img_ref.t))
         P_new = K @ np.hstack((img_new.R, img_new.t))

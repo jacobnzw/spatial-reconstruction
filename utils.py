@@ -1,11 +1,20 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Iterable, Literal
+from typing import Annotated, Any, Callable, Iterable, Literal
 
 import cv2 as cv
+import kornia as K
+import kornia.feature as KF
 import numpy as np
+import torch
 from numpy.typing import NDArray
+
+device = K.utils.get_cuda_or_mps_device_if_available()
+
+NDArrayFloat = NDArray[np.floating[Any]]
+NDArrayInt = NDArray[np.integer[Any]]
+Point3D = Annotated[NDArrayFloat, Literal[3]]
 
 
 def calibrate_camera(img_dir: Path = Path("data/calibration")):
@@ -64,28 +73,18 @@ def calibrate_camera(img_dir: Path = Path("data/calibration")):
     return K, dist
 
 
-def extract_sift(img_path: Path):
-    img = cv.imread(img_path)  # ty:ignore[no-matching-overload]
-    # img = cv.resize(img, (800, 600))
-    gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-
-    sift = cv.SIFT_create(nfeatures=10_000)
-    kp, des = sift.detectAndCompute(gray, None)
-
-    return kp, des, img
-
-
 @dataclass
 class ImageData:
     idx: int
     path: Path
-    img: NDArray[Any]
+    # Useful for rendering and debugging
+    pixels: NDArray[Any]
     # Extracted keypoints and descriptors
-    kp: list[cv.KeyPoint]
-    des: NDArray[np.floating[Any]]
+    kp: NDArrayFloat
+    des: NDArrayFloat
     # Estimated pose
-    R: NDArray[np.floating[Any]] | None = None
-    t: NDArray[np.floating[Any]] | None = None
+    R: NDArrayFloat | None = None
+    t: NDArrayFloat | None = None
 
     def set_pose(self, R, t):
         self.R = R
@@ -97,26 +96,64 @@ class ImageData:
 
     @property
     def pose_matrix(self) -> NDArray[np.float32]:
-        return np.hstack((self.R, self.t))
+        return np.hstack((self.R, self.t))  # ty:ignore[no-matching-overload]
 
     @property
     def rvec(self) -> NDArray[np.float32]:
-        return cv.Rodrigues(self.R)[0].ravel()
+        return cv.Rodrigues(self.R)[0].ravel()  # ty:ignore[no-matching-overload]
 
 
 class FeatureStore:
-    def __init__(self, img_dir: Path):
+    def __init__(self, img_dir: Path, method: Literal["sift", "disk"] = "sift", num_features: int = 2048):
         self._store: list[ImageData] = []
-        self._load_dir(img_dir)
+        self._disk_model = None  # Lazy load DISK model
+        self._load_dir(img_dir, method=method, num_features=num_features)
 
-    def _load_dir(self, img_dir: Path, ext: str = "jpg"):
+    def _extract_sift(self, img_path: Path, num_features: int) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
+        """Extract SIFT features from a single image."""
+        img = cv.imread(str(img_path))
+        gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)  # ty:ignore[no-matching-overload]
+
+        sift = cv.SIFT_create(nfeatures=num_features)  # ty:ignore[unresolved-attribute]
+        kps, des = sift.detectAndCompute(gray, None)
+
+        # Convert list[cv.KeyPoint] to NDArray (N, 2)
+        kp = np.array([kp.pt for kp in kps], dtype=np.float32)
+
+        return kp, des, img
+
+    def _extract_disk(self, img_path: Path, num_features: int) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
+        """Extract DISK features from a single image."""
+        # Lazy load DISK model
+        if self._disk_model is None:
+            self._disk_model = KF.DISK.from_pretrained("depth").to(device)
+
+        # Load image
+        img_tensor = K.io.load_image(img_path, K.io.ImageLoadType.RGB32, device=device)[None, ...]
+
+        # Extract features
+        with torch.inference_mode():
+            features = self._disk_model(img_tensor, num_features, pad_if_not_divisible=True)[0]
+
+        kp = features.keypoints.cpu().numpy()  # (N, 2)
+        des = features.descriptors.cpu().numpy()  # (N, D)
+        img = img_tensor[0].cpu().numpy()  # (C, H, W) -> convert to numpy
+
+        return kp, des, img
+
+    def _load_dir(self, img_dir: Path, method: Literal["sift", "disk"], num_features: int, ext: str = "jpg"):
+        """Load all images from directory and extract features using specified method."""
         img_paths = sorted(list(img_dir.glob(f"*.{ext}")))
 
         if not img_paths:
             raise ValueError(f"No *.{ext} images found in {img_dir}")
 
         for idx, filepath in enumerate(img_paths):
-            kp, des, img = extract_sift(filepath)
+            if method == "sift":
+                kp, des, img = self._extract_sift(filepath, num_features)
+            else:  # disk
+                kp, des, img = self._extract_disk(filepath, num_features)
+
             self._store.append(ImageData(idx, filepath, img, kp, des))
 
     @property
@@ -126,11 +163,11 @@ class FeatureStore:
     def __getitem__(self, img_idx: int) -> ImageData:
         return self._store[img_idx]
 
-    def get_keypoints(self) -> list[list[cv.KeyPoint]]:
+    def get_keypoints(self) -> list[NDArrayFloat]:
         """Get keypoints of all images."""
         return [img_data.kp for img_data in self._store]
 
-    def get_descriptors(self) -> list[NDArray[np.floating[Any]]]:
+    def get_descriptors(self) -> list[NDArrayFloat]:
         """Get descriptors of all images."""
         return [img_data.des for img_data in self._store]
 
@@ -187,48 +224,114 @@ class ViewGraph:
         return max(self.edges, key=lambda e: e.weight, default=None)
 
 
-def compute_matches(
-    des_from: NDArray[np.float32],
-    des_to: NDArray[np.float32],
-    lowe_ratio: float | None = None,
-):
+def _match_lightglue_disk(
+    kp_from: torch.Tensor,
+    des_from: torch.Tensor,
+    kp_to: torch.Tensor,
+    des_to: torch.Tensor,
+    lg_matcher: KF.LightGlueMatcher,
+    min_dist: float | None = None,
+) -> tuple[NDArrayFloat, NDArrayInt]:
+    lafs_from = KF.laf_from_center_scale_ori(kp_from[None], torch.ones(1, len(kp_from), 1, 1, device=device))
+    lafs_to = KF.laf_from_center_scale_ori(kp_to[None], torch.ones(1, len(kp_to), 1, 1, device=device))
+
+    with torch.inference_mode():
+        dists, idxs = lg_matcher(des_from, des_to, lafs_from, lafs_to)
+
+        if min_dist:  # not None and > 0.0
+            if min_dist < 0.0 or min_dist > 1.0:
+                raise ValueError(f"min_dist must be in [0, 1], got {min_dist}")
+            mask = (dists > min_dist).squeeze()
+            dists, idxs = dists[mask], idxs[mask]
+
+        # min_dist=0.0 is valid (retain all matches)
+        return dists.detach().cpu().numpy(), idxs.detach().cpu().numpy()
+
+
+def _match_bf(
+    des_from: NDArrayFloat, des_to: NDArrayFloat, lowe_ratio: float | None = None
+) -> tuple[NDArrayFloat, NDArrayInt]:
     bf = cv.BFMatcher(cv.NORM_L2, crossCheck=False)
     matches = bf.knnMatch(des_from, des_to, k=2)
     if lowe_ratio:
         matches = [m for m, n in matches if m.distance < lowe_ratio * n.distance]
-    return matches
+    else:
+        matches = [m for m, n in matches]
+
+    dist = np.array([m.distance for m in matches])  # (N,)
+    return dist, np.array([(m.queryIdx, m.trainIdx) for m in matches])  # (N, 2)
 
 
-def has_overlap(kp1, des1, kp2, des2, K, min_inliers=50):
-    good = compute_matches(des1, des2, lowe_ratio=0.75)
+def compute_matches(
+    img_from: ImageData,
+    img_to: ImageData,
+    method: Literal["lightglue", "bf"] = "bf",
+    lowe_ratio: float | None = None,
+    min_dist: float | None = None,
+    lightglue_matcher: KF.LightGlueMatcher | None = None,
+) -> tuple[NDArrayFloat, NDArrayInt]:
+    if method == "bf":
+        return _match_bf(img_from.des, img_to.des, lowe_ratio)
+    elif method == "lightglue":
+        if lightglue_matcher is None:
+            raise ValueError("lightglue_matcher must be provided when method='lightglue'")
+        return _match_lightglue_disk(
+            torch.from_numpy(img_from.kp).to(device),
+            torch.from_numpy(img_from.des).to(device),
+            torch.from_numpy(img_to.kp).to(device),
+            torch.from_numpy(img_to.des).to(device),
+            lightglue_matcher,
+            min_dist,
+        )
+    else:
+        raise ValueError(f"Unknown KP matching method: {method}")
+
+
+def has_overlap(
+    img_from: ImageData,
+    img_to: ImageData,
+    K: NDArray,
+    matcher_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
+    min_inliers: int,
+) -> tuple[bool, int | None, NDArray | None]:
+    """Returns True if there is sufficient overlap between two images."""
+    _, good = matcher_fn(img_from, img_to)
 
     if len(good) < min_inliers:
         return False, None, None
 
     # geometric validation: rejects matches that cannot arise from a rigid 3D scene
-    pts1 = np.float32([kp1[m.queryIdx].pt for m in good])
-    pts2 = np.float32([kp2[m.trainIdx].pt for m in good])
+    pts1 = img_from.kp[good[:, 0]]  # [:, 0] = queryIdx; [:, 1] = trainIdx
+    pts2 = img_to.kp[good[:, 1]]
 
-    E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.RANSAC, threshold=1.0)  # ty:ignore[no-matching-overload]
+    E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.RANSAC, threshold=1.0)
 
     if E is None:
         return False, None, None
 
-    inliers = int(mask.sum())
+    inliers = int((mask > 0).sum())
     if inliers < min_inliers:
         return False, None, None
 
     return True, inliers, good
 
 
-def construct_view_graph(kp: list, des: list, K):
+def construct_view_graph(
+    image_store: FeatureStore,
+    K: NDArray,
+    matcher_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
+    min_inliers: int = 50,
+):
     view_graph = ViewGraph()
+    kp, des = image_store.get_keypoints(), image_store.get_descriptors()
     assert len(kp) == len(des)
+
     N = len(kp)
     for i in range(N):
         for j in range(i + 1, N):
-            ok_ij, inliers_ij, _ = has_overlap(kp[i], des[i], kp[j], des[j], K)
-            ok_ji, inliers_ji, _ = has_overlap(kp[j], des[j], kp[i], des[i], K)
+            img_i, img_j = image_store[i], image_store[j]
+            ok_ij, inliers_ij, _ = has_overlap(img_i, img_j, K, matcher_fn, min_inliers)
+            ok_ji, inliers_ji, _ = has_overlap(img_j, img_i, K, matcher_fn, min_inliers)
             # ASK: why the matches should not be preserved ???
             if ok_ij and ok_ji:
                 view_graph.add_edge(i, j, inliers_ij, inliers_ji)
@@ -262,7 +365,7 @@ class TrackManager:
             self.next_track_id += 1
         return added_track_ids
 
-    def update_tracks(self, img_idx_new: int, img_idx_ref: int, ref2new_matches: list[cv.DMatch]):
+    def update_tracks(self, img_idx_new: int, img_idx_ref: int, ref2new_matches: NDArrayInt):
         """Update tracks with new KP observations from img_new.
 
         img_ref is the reference image for which we already have 2D-3D pt correspondence in track_manager.
@@ -273,25 +376,21 @@ class TrackManager:
         kp_idx_new_tracked, track_ids_tracked = [], []
         matches_untracked = []
         # I wanna add the new KPs (that have matches to tracked ref KPs) to current tracks
-        for m in ref2new_matches:
-            kp_idx_ref, kp_idx_new = m.queryIdx, m.trainIdx
+        for match in ref2new_matches:
+            kp_idx_ref, kp_idx_new = match
             # if ref KP has a track, add the matching new KP to the same track
             # this means the same 3D object point is now observed by a new 2D KP
             kp_key_new = (img_idx_new, kp_idx_new)
             kp_key_ref = (img_idx_ref, kp_idx_ref)
-            if (track_id := self.get_track(kp_key_ref)) is not None:
+            if (track_id := self.get_track(kp_key_ref)) is not None:  # ty:ignore[invalid-argument-type]
                 track_ids_tracked.append(track_id)
                 kp_idx_new_tracked.append(kp_idx_new)
-                self._register_keypoint_track(kp_key_new, track_id)
+                self._register_keypoint_track(kp_key_new, track_id)  # ty:ignore[invalid-argument-type]
             else:  # ref KP is untracked and therefore its matching KP from img_new is also untracked
-                matches_untracked.append(m)
+                matches_untracked.append(match)
 
         # return tracked KPs in new img and ref2new matches for untracked KPs for triangulation
-        return track_ids_tracked, kp_idx_new_tracked, matches_untracked
-
-
-# Type alias for 3D points in Euclidean space
-Point3D = Annotated[NDArray[np.floating[Any]], Literal[3]]
+        return track_ids_tracked, kp_idx_new_tracked, np.array(matches_untracked)
 
 
 class PointCloud:
@@ -313,7 +412,7 @@ class PointCloud:
     def get_point(self, track_id: int) -> Point3D | None:
         return self._data.get(track_id, None)
 
-    def get_points_as_array(self, track_ids: list[int] | None = None) -> NDArray[np.floating[Any]]:
+    def get_points_as_array(self, track_ids: list[int] | None = None) -> NDArrayFloat:
         """Returns array of 3D points corresponding to the given track_ids.
 
         Missing points are returned as np.nan.
@@ -333,7 +432,7 @@ class ReconExporter:
     Edge = tuple[int, int]  # (v1, v2)
 
     def __init__(self, point_cloud: PointCloud, images: FeatureStore):
-        self.xyz = point_cloud.get_points_as_array()
+        self.point_cloud = point_cloud
         self.images = images
 
     @staticmethod
@@ -344,7 +443,7 @@ class ReconExporter:
         # World --> Camera:   Xc = R Xw + t
         # Camera --> World:   Xw = Rᵀ (Xc − t)
         # Camera center in world coordinates: Xc=0 --> Xw = Rᵀ (0 − t) = -Rᵀ t
-        C = -R.T @ t  # R.T @ (-t)
+        C = -R.T @ t.squeeze()  # R.T @ (-t)
 
         # Camera axes in world frame
         right = R.T @ np.array([1, 0, 0])
@@ -395,7 +494,8 @@ class ReconExporter:
         import pandas as pd
 
         # Convert to DataFrame
-        df = pd.DataFrame(self.xyz, columns=["x", "y", "z"])
+        xyz = self.point_cloud.get_points_as_array()
+        df = pd.DataFrame(xyz, columns=["x", "y", "z"])
 
         # --- OUTLIER REMOVAL ---
         # Calculate the distance from the median to find the "main cluster"
