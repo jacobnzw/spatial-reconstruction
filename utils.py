@@ -295,8 +295,7 @@ def has_overlap(
     min_inliers: int,
 ) -> tuple[bool, int | None, NDArray | None]:
     """Returns True if there is sufficient overlap between two images."""
-    # TODO: pass in matcher_fn!
-    _, good = compute_matches(img_from, img_to, lowe_ratio=0.75)
+    _, good = matcher_fn(img_from, img_to)
 
     if len(good) < min_inliers:
         return False, None, None
