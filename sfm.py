@@ -4,9 +4,11 @@ from typing import Callable
 
 import cv2 as cv
 import numpy as np
-import typer
+import tyro
+from rich.pretty import pprint
 
 from ba import bundle_adjustment
+from config import SfMConfig
 from utils import (
     KF,
     FeatureStore,
@@ -22,8 +24,6 @@ from utils import (
     construct_view_graph,
     device,
 )
-
-app = typer.Typer()
 
 
 def compute_baseline_estimate(
@@ -232,115 +232,46 @@ def process_graph_component(
 
 
 # TODO: nice logging by levels
-# TODO: use tyro? too many options here
-@app.command()
-def main(
-    feature_type: str = typer.Option(
-        "disk",
-        "--features",
-        "-f",
-        help="Feature extraction method: 'sift' or 'disk'",
-    ),
-    matcher_type: str = typer.Option(
-        "lightglue",
-        "--matcher",
-        "-m",
-        help="Keypoint matching method: 'bf' (brute-force) or 'lightglue'",
-    ),
-    lowe_ratio: float = typer.Option(
-        0.75,
-        "--lowe-ratio",
-        "-l",
-        help="Lowe's ratio test threshold for BF matcher (only used when matcher='bf')",
-        min=0.0,
-        max=1.0,
-    ),
-    min_dist: float = typer.Option(
-        0.0,  # preserve all matches by default
-        "--min-dist",
-        "-d",
-        help="Minimum distance threshold for LightGlue matcher (only used when matcher='lightglue')",
-        min=0.0,
-        max=1.0,
-    ),
-    dataset: str = typer.Option(
-        "statue",
-        "--dataset",
-        "-s",
-        help="Dataset name (subdirectory in data/raw/)",
-    ),
-    num_features: int = typer.Option(
-        2048,  # default for DISK
-        "--num-features",
-        "-n",
-        help="Maximum number of features to extract per image",
-        min=100,
-    ),
-    min_inliers: int = typer.Option(
-        50,
-        "--min-inliers",
-        "-i",
-        help="Minimum number of inliers to consider two views as overlapping",
-        min=10,
-    ),
-    run_ba: bool = typer.Option(
-        True,
-        "--bundle-adjustment/--no-bundle-adjustment",
-        "-b/-nb",
-        help="Run bundle adjustment optimization after initial reconstruction",
-    ),
-):
-    """Run Structure from Motion pipeline with configurable feature extraction and matching."""
+def main(cfg: SfMConfig = SfMConfig()):
+    """Run Structure from Motion pipeline with configurable feature extraction and matching.
 
-    # Validate inputs
-    if feature_type not in ["sift", "disk"]:
-        typer.echo(f"Error: feature_type must be 'sift' or 'disk', got '{feature_type}'", err=True)
-        raise typer.Exit(code=1)
-
-    if matcher_type not in ["bf", "lightglue"]:
-        typer.echo(f"Error: matcher_type must be 'bf' or 'lightglue', got '{matcher_type}'", err=True)
-        raise typer.Exit(code=1)
+    Args:
+        cfg: Configuration object. Override defaults with --cfg.param_name value
+    """
 
     # Display configuration
-    typer.echo("Configuration:")
-    typer.echo(f"  Feature type: {feature_type}")
-    typer.echo(f"  Num features: {num_features}")
-    typer.echo(f"  Matcher type: {matcher_type}")
-    if matcher_type == "bf":
-        typer.echo(f"  Lowe ratio: {lowe_ratio}")
-    else:
-        typer.echo(f"  Min distance: {min_dist}")
-    typer.echo(f"  Dataset: {dataset}")
-    typer.echo()
+    pprint(cfg, expand_all=True)
+    print()
 
     K, dist = calibrate_camera()
 
-    img_dir = Path("data") / "raw" / dataset
-    out_dir = Path("data") / "out" / dataset
+    img_dir = Path("data") / "raw" / cfg.dataset
+    out_dir = Path("data") / "out" / cfg.dataset
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Load all images & extract features
-    typer.echo(f"Extracting {feature_type.upper()} features from {img_dir}...")
-    # TODO: max_size in CLI or tyro config; better parameterize as scaling factor < 1, affects SfM accuracy
-    image_store = FeatureStore(img_dir, K, dist, method=feature_type, num_features=num_features, max_size=4080)  # type: ignore
+    print(f"Extracting {cfg.feature_type.upper()} features from {img_dir}...")
+    image_store = FeatureStore(
+        img_dir, K, dist, method=cfg.feature_type, num_features=cfg.num_features, max_size=cfg.max_size
+    )
     track_manager = TrackManager()
     point_cloud = PointCloud()
     exporter = ReconExporter(point_cloud, image_store)
 
     # Create keypoint matcher with appropriate parameters
-    if matcher_type == "bf":
-        kp_matcher = partial(compute_matches, method="bf", lowe_ratio=lowe_ratio)
+    if cfg.matcher_type == "bf":
+        kp_matcher = partial(compute_matches, method="bf", lowe_ratio=cfg.lowe_ratio)
     else:
         lightglue_matcher = KF.LightGlueMatcher("disk").eval().to(device)
         kp_matcher = partial(
-            compute_matches, method="lightglue", min_dist=min_dist, lightglue_matcher=lightglue_matcher
+            compute_matches, method="lightglue", min_dist=cfg.min_dist, lightglue_matcher=lightglue_matcher
         )
 
-    typer.echo("Constructing view graph...")
-    view_graph = construct_view_graph(image_store, kp_matcher, min_inliers=min_inliers)
+    print("Constructing view graph...")
+    view_graph = construct_view_graph(image_store, kp_matcher, min_inliers=cfg.min_inliers)
 
     # Process the first component
-    typer.echo("Processing graph component...")
+    print("Processing graph component...")
     process_graph_component(view_graph.edges.copy(), image_store, track_manager, point_cloud, kp_matcher)
 
     # Process all connected components of the view graph
@@ -352,20 +283,20 @@ def main(
     #     if not U:
     #         break
 
-    basename = f"{dataset}_{feature_type}_{matcher_type}"
-    typer.echo(f"Saving initial reconstruction to {out_dir / f'{basename}.ply'}...")
+    basename = f"{cfg.dataset}_{cfg.feature_type}_{cfg.matcher_type}"
+    print(f"Saving initial reconstruction to {out_dir / f'{basename}.ply'}...")
     exporter.save_ply(filename=out_dir / f"{basename}.ply")
 
-    if run_ba:
-        typer.echo("Running bundle adjustment...")
-        bundle_adjustment(image_store, point_cloud, track_manager, fix_first_camera=False)
+    if cfg.run_ba:
+        print("Running bundle adjustment...")
+        bundle_adjustment(image_store, point_cloud, track_manager, fix_first_camera=cfg.fix_first_camera)
 
-        typer.echo(f"Final point cloud size: {point_cloud.size}")
-        typer.echo(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")
+        print(f"Final point cloud size: {point_cloud.size}")
+        print(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")
         exporter.save_ply(filename=out_dir / f"{basename}_ba.ply")
 
-    typer.echo("✓ Done!")
+    print("✓ Done!")
 
 
 if __name__ == "__main__":
-    app()
+    tyro.cli(main)

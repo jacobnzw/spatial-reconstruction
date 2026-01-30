@@ -1,83 +1,127 @@
 # SfM CLI Usage
 
-The Structure from Motion pipeline now has a Typer CLI with configurable options.
+The Structure from Motion pipeline uses Tyro with a dataclass-based configuration system for easy experimentation.
+
+## Configuration System
+
+The pipeline uses a `SfMConfig` dataclass defined in `config.py`. You can:
+1. **Modify defaults** in `config.py` for persistent changes
+2. **Override via CLI** using `--cfg.param_name value` for one-off experiments
 
 ## Basic Usage
 
 ```bash
-# Run with defaults (SIFT features + BF matcher with lowe_ratio=0.75)
+# Run with defaults from config.py
 uv run python sfm.py
 
-# Show help
+# Show help and all available options
 uv run python sfm.py --help
 ```
 
-## Feature Extraction Options
+## Modifying Defaults
 
-Choose between SIFT and DISK features:
+Edit `config.py` to change default values:
 
-```bash
-# Use SIFT features (default)
-uv run python sfm.py --features sift
-
-# Use DISK features
-uv run python sfm.py --features disk
-# or short form:
-uv run python sfm.py -f disk
+```python
+@dataclass
+class SfMConfig:
+    feature_type: Literal["sift", "disk"] = "disk"  # Change to "sift"
+    num_features: int = 2048  # Change to 4096
+    matcher_type: Literal["bf", "lightglue"] = "lightglue"
+    # ... etc
 ```
 
-## Matching Options
+## Command-Line Overrides
 
-### Brute-Force Matcher (with Lowe's ratio test)
+All parameters can be overridden via CLI using the `--cfg.` prefix:
+
+### Feature Extraction Options
 
 ```bash
-# Use BF matcher with default lowe_ratio=0.75
-uv run python sfm.py --matcher bf
+# Use SIFT features (override default)
+uv run python sfm.py --cfg.feature-type sift
 
+# Use DISK features with more features
+uv run python sfm.py --cfg.feature-type disk --cfg.num-features 4096
+
+# Limit image size
+uv run python sfm.py --cfg.max-size 2048
+```
+
+### Matching Options
+
+```bash
 # Use BF matcher with custom lowe_ratio
-uv run python sfm.py --matcher bf --lowe-ratio 0.8
-# or short form:
-uv run python sfm.py -m bf -l 0.8
-```
-
-### LightGlue Matcher
-
-```bash
-# Use LightGlue matcher with default min_dist=0.75
-uv run python sfm.py --matcher lightglue
+uv run python sfm.py --cfg.matcher-type bf --cfg.lowe-ratio 0.8
 
 # Use LightGlue matcher with custom min_dist
-uv run python sfm.py --matcher lightglue --min-dist 0.2
-# or short form:
-uv run python sfm.py -m lightglue -d 0.2
+uv run python sfm.py --cfg.matcher-type lightglue --cfg.min-dist 0.2
 ```
 
-## Dataset Selection
+### Dataset Selection
 
 ```bash
-# Use default dataset (statue_orbit)
-uv run python sfm.py
-
 # Use custom dataset
-uv run python sfm.py --dataset my_dataset
-# or short form:
-uv run python sfm.py -s my_dataset
+uv run python sfm.py --cfg.dataset my_dataset
+
+# Adjust minimum inliers threshold
+uv run python sfm.py --cfg.dataset temple --cfg.min-inliers 30
+```
+
+### Bundle Adjustment
+
+```bash
+# Skip bundle adjustment
+uv run python sfm.py --cfg.no-run-ba
+
+# Run BA with first camera fixed
+uv run python sfm.py --cfg.run-ba --cfg.fix-first-camera
 ```
 
 ## Complete Examples
 
 ```bash
-# SIFT + BF with lowe_ratio=0.8
-uv run python sfm.py -f sift -m bf -l 0.8
+# SIFT + BF with custom parameters
+uv run python sfm.py --cfg.feature-type sift --cfg.matcher-type bf --cfg.lowe-ratio 0.8
 
-# DISK + LightGlue with min_dist=0.2
-uv run python sfm.py -f disk -m lightglue -d 0.2
+# DISK + LightGlue with more features
+uv run python sfm.py --cfg.feature-type disk --cfg.matcher-type lightglue --cfg.min-dist 0.2 --cfg.num-features 4096
 
-# SIFT + LightGlue on custom dataset
-uv run python sfm.py -f sift -m lightglue -d 0.5 -s temple
+# Custom dataset with SIFT features
+uv run python sfm.py --cfg.feature-type sift --cfg.dataset temple --cfg.num-features 4096
 
-# DISK + BF with custom parameters
-uv run python sfm.py -f disk -m bf -l 0.7 -s statue
+# Quick reconstruction (fewer features, no BA)
+uv run python sfm.py --cfg.num-features 1024 --cfg.min-inliers 30 --cfg.no-run-ba
+
+# High-quality reconstruction (more features, fixed first camera)
+uv run python sfm.py --cfg.num-features 8192 --cfg.fix-first-camera
+```
+
+## Configuration Display
+
+The pipeline prints the full configuration at startup, showing all parameter values being used:
+
+```
+============================================================
+SfM Configuration
+============================================================
+Feature Extraction:
+  Type:         disk
+  Num features: 2048
+  Max size:     4080
+
+Keypoint Matching:
+  Type:         lightglue
+  Min distance: 0.0
+
+Dataset:
+  Name:         statue
+  Min inliers:  50
+
+Optimization:
+  Bundle adjustment: True
+  Fix first camera:  False
+============================================================
 ```
 
 ## Output
@@ -87,7 +131,15 @@ The pipeline will:
 2. Extract features from images in `data/raw/{dataset}/`
 3. Construct the view graph
 4. Process the reconstruction
-5. Save initial reconstruction to `data/out/{dataset}/{dataset}.ply`
-6. Run bundle adjustment
-7. Save optimized reconstruction to `data/out/{dataset}/{dataset}_ba.ply`
+5. Save initial reconstruction to `data/out/{dataset}/{dataset}_{feature_type}_{matcher_type}.ply`
+6. Run bundle adjustment (if enabled)
+7. Save optimized reconstruction to `data/out/{dataset}/{dataset}_{feature_type}_{matcher_type}_ba.ply`
+
+## Tips for Experimentation
+
+1. **Edit `config.py`** for parameters you change frequently
+2. **Use CLI overrides** for quick one-off experiments
+3. **Check the printed config** at startup to verify your settings
+4. **Start with fewer features** (`--cfg.num-features 1024`) for faster iteration
+5. **Disable BA** (`--cfg.no-run-ba`) during initial testing
 
