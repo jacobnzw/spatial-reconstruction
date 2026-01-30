@@ -1,4 +1,3 @@
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Callable, Iterable, Literal
@@ -16,6 +15,7 @@ device = K.utils.get_cuda_or_mps_device_if_available()
 NDArrayFloat = NDArray[np.floating[Any]]
 NDArrayInt = NDArray[np.integer[Any]]
 Point3D = Annotated[NDArrayFloat, Literal[3]]
+KPKey = tuple[int, int]  # Keypoint observation (img_id, kp_idx)
 
 
 def calibrate_camera(img_dir: Path = Path("data/calibration")):
@@ -156,7 +156,7 @@ class FeatureStore:
         # Convert list[cv.KeyPoint] to NDArray (N, 2)
         kp = np.array([kp.pt for kp in kps], dtype=np.float32)
 
-        return kp, des, img
+        return kp, des, cv.cvtColor(img, cv.COLOR_BGR2RGB)
 
     def _extract_disk(self, img_path: Path, num_features: int) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
         """Extract DISK features from a single image."""
@@ -242,7 +242,6 @@ class ViewGraph:
     """
 
     def __init__(self):
-        self.adj = defaultdict(dict)  # adj[i][j] = ViewEdge
         self.edges = []  # list of ViewEdge (global access)
 
     def add_edge(self, i, j, inliers_ij, inliers_ji):
@@ -254,15 +253,7 @@ class ViewGraph:
 
         edge = ViewEdge(i, j, inliers_ij, inliers_ji)
 
-        self.adj[i][j] = edge
-        self.adj[j][i] = edge
         self.edges.append(edge)
-
-    def neighbors(self, i) -> dict[int, ViewEdge]:
-        """
-        Return neighbors of image i with weights.
-        """
-        return self.adj[i]
 
     def best_edge(self) -> ViewEdge | None:
         """
@@ -387,12 +378,10 @@ def construct_view_graph(
 
 
 class TrackManager:
-    KPKey = tuple[int, int]  # (img_id, kp_idx)
-
     def __init__(self):
         self.next_track_id = 0
-        self.kp_to_track: dict[self.KPKey, int] = {}
-        self.track_to_kps: dict[int, list[self.KPKey]] = {}
+        self.kp_to_track: dict[KPKey, int] = {}
+        self.track_to_kps: dict[int, list[KPKey]] = {}
 
     def _register_keypoint_track(self, kp_key: KPKey, track_id: int):
         self.kp_to_track[kp_key] = track_id
