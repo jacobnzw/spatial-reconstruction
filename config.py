@@ -13,17 +13,17 @@ class SfMConfig:
     """
 
     # Feature extraction
-    feature_type: Literal["sift", "disk"] = "disk"
+    feature_type: Literal["sift", "disk"] = "sift"
     """Feature extraction method: 'sift' or 'disk'"""
 
-    num_features: int = 2048
+    num_features: int = 10_000
     """Maximum number of features to extract per image"""
 
     max_size: int = 4080
     """Maximum image dimension (images will be resized if larger)"""
 
     # Keypoint matching
-    matcher_type: Literal["bf", "lightglue"] = "lightglue"
+    matcher_type: Literal["bf", "lightglue"] = "bf"
     """Keypoint matching method: 'bf' (brute-force) or 'lightglue'"""
 
     lowe_ratio: float = 0.75
@@ -44,5 +44,5 @@ class SfMConfig:
     run_ba: bool = True
     """Run bundle adjustment optimization after initial reconstruction"""
 
-    fix_first_camera: bool = False
+    fix_first_camera: bool = True
     """Fix the first camera during bundle adjustment"""

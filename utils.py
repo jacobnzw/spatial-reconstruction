@@ -203,6 +203,14 @@ class FeatureStore:
             return K_rescaled, self._dist
         return self._K, self._dist
 
+    def get_pixels(self, kp_keys: list[KPKey]) -> NDArray[np.uint8]:
+        """Get pixel color for a given keypoint in an image."""
+        pixels = np.zeros((len(kp_keys), 3), dtype=np.uint8)
+        for i, (img_idx, kp_idx) in enumerate(kp_keys):
+            kp_uv = self._store[img_idx].kp[kp_idx].astype(np.uint16)
+            pixels[i] = self._store[img_idx].pixels[*np.flip(kp_uv)]  #
+        return pixels
+
     @property
     def size(self) -> int:
         return len(self._store)
@@ -467,9 +475,10 @@ class ReconExporter:
     Vertex = tuple[float, float, float]  # (x, y, z)
     Edge = tuple[int, int]  # (v1, v2)
 
-    def __init__(self, point_cloud: PointCloud, images: FeatureStore):
+    def __init__(self, point_cloud: PointCloud, images: FeatureStore, track_manager: TrackManager):
         self.point_cloud = point_cloud
         self.images = images
+        self.track_manager = track_manager
 
     @staticmethod
     def _camera_frustum_points(R: NDArray[np.float32], t: NDArray[np.float32], scale: float = 0.1) -> list:
@@ -526,6 +535,15 @@ class ReconExporter:
             (base_idx + 4, base_idx + 1),
         ]
 
+    def _get_point_colors(self) -> NDArray[np.uint8]:
+        """Returns an array of RGB colors for each 3D point."""
+        colors = np.zeros((self.point_cloud.size, 3), dtype=np.uint8)
+        for track_id, pt in self.point_cloud.items():
+            kp_keys = self.track_manager.track_to_kps[track_id]
+            # average the colors of all KPs in the track
+            colors[track_id] = self.images.get_pixels(kp_keys).mean(axis=0)
+        return colors
+
     def save_ply(self, filename: Path = Path("point_cloud.ply")):
         import pandas as pd
 
@@ -540,7 +558,9 @@ class ReconExporter:
 
         # Keep only points within the 95th percentile of distance
         # This removes the "points at infinity" that squash your visualization
-        df_filtered = df[distance < distance.quantile(0.95)]
+        distance_mask = distance < distance.quantile(0.95)
+        df_filtered = df[distance_mask]
+        colors_filtered = self._get_point_colors()[distance_mask]
 
         # Add camera frustums
         vertices = []
@@ -585,10 +605,10 @@ class ReconExporter:
             f.write("property uchar blue\n")
             f.write("end_header\n")
             # point cloud as white points
-            for x, y, z in df_filtered.values:
-                f.write(f"{x} {y} {z} 255 255 255\n")
+            for (x, y, z), (r, g, b) in zip(df_filtered.values, colors_filtered):
+                f.write(f"{x} {y} {z} {r} {g} {b}\n")
             # camera frustums: red vertices + edges
             for v in vertices:
                 f.write(f"{v[0]} {v[1]} {v[2]} 255 0 0\n")
-            for e in edges:
+            for e in edges:  # TODO: edges don't work in my viewer
                 f.write(f"{e[0]} {e[1]} 255 0 0\n")

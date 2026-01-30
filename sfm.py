@@ -256,7 +256,7 @@ def main(cfg: SfMConfig = SfMConfig()):
     )
     track_manager = TrackManager()
     point_cloud = PointCloud()
-    exporter = ReconExporter(point_cloud, image_store)
+    exporter = ReconExporter(point_cloud, image_store, track_manager)
 
     # Create keypoint matcher with appropriate parameters
     if cfg.matcher_type == "bf":
