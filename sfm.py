@@ -16,7 +16,7 @@ from utils import (
     NDArrayFloat,
     NDArrayInt,
     PointCloud,
-    ReconExporter,
+    ReconIO,
     TrackManager,
     ViewEdge,
     calibrate_camera,
@@ -256,7 +256,7 @@ def main(cfg: SfMConfig = SfMConfig()):
     )
     track_manager = TrackManager()
     point_cloud = PointCloud()
-    exporter = ReconExporter(point_cloud, image_store, track_manager)
+    exporter = ReconIO(point_cloud, image_store, track_manager)
 
     # Create keypoint matcher with appropriate parameters
     if cfg.matcher_type == "bf":
@@ -295,7 +295,15 @@ def main(cfg: SfMConfig = SfMConfig()):
         print(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")
         exporter.save_ply(filename=out_dir / f"{basename}_ba.ply")
 
-    print("✓ Done!")
+        # Save tensors for gsplat (after BA)
+        print("\nSaving tensors for gsplat...")
+        exporter.save_for_gsplat(filename=out_dir / f"{basename}_ba.pt")
+    else:
+        # Save tensors for gsplat (without BA)
+        print("\nSaving tensors for gsplat...")
+        exporter.save_for_gsplat(filename=out_dir / f"{basename}.pt")
+
+    print("\n✓ Done!")
 
 
 if __name__ == "__main__":

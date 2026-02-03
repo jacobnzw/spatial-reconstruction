@@ -469,8 +469,8 @@ class PointCloud:
         yield from self._data.items()
 
 
-class ReconExporter:
-    """Exports a reconstruction to a PLY file."""
+class ReconIO:
+    """Handles saving and loading of reconstruction data (PLY files and gsplat tensors)."""
 
     Vertex = tuple[float, float, float]  # (x, y, z)
     Edge = tuple[int, int]  # (v1, v2)
@@ -543,6 +543,107 @@ class ReconExporter:
             # average the colors of all KPs in the track
             colors[track_id] = self.images.get_pixels(kp_keys).mean(axis=0)
         return colors
+
+    def save_for_gsplat(self, filename: Path):
+        """Save SfM reconstruction as tensors for gsplat training.
+
+        Saves:
+            - poses: (N, 4, 4) camera-to-world transformation matrices
+            - images: (N, H, W, 3) RGB images (float32, range [0, 1])
+            - points: (M, 3) 3D point positions
+            - colors: (M, 3) RGB colors for 3D points (float32, range [0, 1])
+            - intrinsics: (3, 3) camera intrinsic matrix
+        """
+        filename.parent.mkdir(exist_ok=True, parents=True)
+
+        # Collect camera poses as 4x4 matrices
+        poses_list = []
+        images_list = []
+
+        for img_data in self.images.iter_images_with_pose():
+            # Create 4x4 pose matrix [R | t; 0 0 0 1]
+            pose_4x4 = np.eye(4, dtype=np.float32)
+            pose_4x4[:3, :3] = img_data.R
+            pose_4x4[:3, 3:4] = img_data.t[..., None]  # ty:ignore[not-subscriptable]
+            poses_list.append(pose_4x4)
+            images_list.append(img_data.pixels)
+
+        # Stack into tensors
+        poses_tensor = torch.from_numpy(np.stack(poses_list, axis=0))  # (N, 4, 4)
+        images_tensor = (
+            torch.from_numpy(np.stack(images_list, axis=0)).float() / 255.0
+        )  # (N, H, W, 3), normalized to [0, 1]
+
+        # Get 3D points and colors (reuse existing method)
+        points_3d = self.point_cloud.get_points_as_array()  # (M, 3)
+        colors = self._get_point_colors()  # (M, 3) uint8
+
+        points_tensor = torch.from_numpy(points_3d).float()  # (M, 3)
+        colors_tensor = torch.from_numpy(colors).float() / 255.0  # (M, 3), normalized to [0, 1]
+
+        # Get camera intrinsics (rescaled if images were downsampled)
+        K, _ = self.images.get_intrisics(rescaled=True)
+        intrinsics_tensor = torch.from_numpy(K).float()  # (3, 3)
+
+        # Save as .pt file
+        torch.save(
+            {
+                "poses": poses_tensor,
+                "images": images_tensor,
+                "points": points_tensor,
+                "colors": colors_tensor,
+                "intrinsics": intrinsics_tensor,
+            },
+            filename,
+        )
+
+        print("Saved reconstruction for gsplat:")
+        print(f"  - {len(poses_list)} camera poses: {poses_tensor.shape}")
+        print(f"  - {len(images_list)} images: {images_tensor.shape}")
+        print(f"  - {self.point_cloud.size} 3D points: {points_tensor.shape}")
+        print(f"  - Colors: {colors_tensor.shape}")
+        print(f"  - Intrinsics: {intrinsics_tensor.shape}")
+        print(f"  -> {filename}")
+
+    @staticmethod
+    def load_for_gsplat(
+        filename: Path,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int, int]:
+        """Load SfM reconstruction tensors saved for gsplat training.
+
+        Returns:
+            Tuple of (poses, images, points, colors, intrinsics, width, height):
+                - poses: (N, 4, 4) camera-to-world transformation matrices
+                - images: (N, H, W, 3) RGB images (float32, range [0, 1])
+                - points: (M, 3) 3D point positions
+                - colors: (M, 3) RGB colors for 3D points (float32, range [0, 1])
+                - intrinsics: (N, 3, 3) camera intrinsic matrices (tiled for each camera)
+                - width: image width (int)
+                - height: image height (int)
+        """
+        data = torch.load(filename)
+
+        poses = data["poses"]  # (N, 4, 4)
+        images = data["images"]  # (N, H, W, 3)
+        points = data["points"]  # (M, 3)
+        colors = data["colors"]  # (M, 3)
+        intrinsics_single = data["intrinsics"]  # (3, 3)
+
+        # Get image dimensions from the images tensor
+        N, H, W, _ = images.shape
+
+        # Tile intrinsics to match number of cameras (N, 3, 3)
+        intrinsics = intrinsics_single.unsqueeze(0).expand(N, 3, 3)
+
+        print(f"Loaded reconstruction from {filename}:")
+        print(f"  - {N} camera poses: {poses.shape}")
+        print(f"  - {N} images: {images.shape}")
+        print(f"  - {points.shape[0]} 3D points: {points.shape}")
+        print(f"  - Colors: {colors.shape}")
+        print(f"  - Intrinsics (tiled): {intrinsics.shape}")
+        print(f"  - Image size: {W} x {H}")
+
+        return poses, images, points, colors, intrinsics, W, H
 
     def save_ply(self, filename: Path = Path("point_cloud.ply")):
         import pandas as pd
