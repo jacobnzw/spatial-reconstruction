@@ -175,13 +175,13 @@ class FeatureStore:
 
         kp = features.keypoints.cpu().numpy()  # (N, 2)
         des = features.descriptors.cpu().numpy()  # (N, D)
-        img = img_tensor[0].cpu().numpy()  # (C, H, W) -> convert to numpy
+        img = img_tensor[0].permute(1, 2, 0).cpu().numpy()  # (C, H, W) -> convert to numpy (H, W, C)
 
         # Memory management
         # del img_tensor, features
         # torch.cuda.empty_cache()
 
-        return kp, des, img
+        return kp, des, (img * 255).astype(np.uint8)  # [0, 1] -> [0, 255] for PLY export
 
     def _load_dir(self, img_paths: list[Path], method: Literal["sift", "disk"], num_features: int, ext: str = "jpg"):
         """Load all images from directory and extract features using specified method."""
