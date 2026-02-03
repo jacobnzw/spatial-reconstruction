@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "gsplat>=1.5.3",
     "kaleido>=1.2.0", # TODO: likely not needed (export of static plotly graph images to PNG)
     "kornia>=0.8.2",
     "kornia-moons>=0.2.9",
