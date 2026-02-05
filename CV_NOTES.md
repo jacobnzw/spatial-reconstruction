@@ -8,6 +8,45 @@ Pose graph
 View graph
 Factor graph
 
+## Mathematical Tooling
+There are many tools that constantly recur in CV:
+Gauss-Newton
+Levenberg-Marquardt
+RANSAC
+Singular Value Decomposition
+
+#### SE(3)
+ - the group of rigid transformations in 3D space, consisting of rotation and translation.
+ - 6 degrees of freedom (3 for rotation, 3 for translation)
+ - A transformation in SE(3) can be represented as a 4x4 matrix with the following form:
+ $$
+ \begin{bmatrix}
+    R & t \\
+    0 & 1
+ \end{bmatrix}
+ $$, 
+ where $R$ is a 3x3 rotation matrix, $t$ is a 3x1 translation vector.
+
+#### Sim(3): 
+ - the group of similarity transformations in 3D space, consisting of rotation, translation, and uniform scaling.
+ - 7 degrees of freedom (3 for rotation, 3 for translation, 1 for scaling)
+ - A transformation in Sim(3) can be represented as a 4x4 matrix with the following form:
+ $$
+ \begin{bmatrix}
+    sR & t \\
+    0 & 1
+ \end{bmatrix}
+ $$, 
+ where $R$ is a 3x3 rotation matrix, $t$ is a 3x1 translation vector, and $s$ is a scalar representing uniform scaling.
+
+
+### Keyframes
+Codec keyframes (I-frames) are built into the video and used for decompression. 
+Computer vision keyframes are extracted using models or algorithms to capture meaningful moments, which may or may not align with I-frames. 
+In practice, vision systems may use codec keyframes as a starting point but refine selection using content-aware models for higher relevance.
+
+Keyframes are crucial in computer vision processing of videos because they reduce data redundancy and computational overhead while preserving essential visual information. Videos typically contain hundreds or thousands of frames per minute, many of which are highly similar or contain minimal new information.  By selecting only the most representative frames—those that capture significant changes in content, motion, or structure—keyframes enable efficient processing for tasks like video summarization, action recognition, and visual localization.
+
 Pinhole Camera Model
 Other used camera models: Brown-Conrady model (fisheye), Kannala-Brandt model (fisheye), Dual Quaternion model (SfM), Catadioptric model (mirror+lens), Omnidirectional model (fish-eye+mirror)
 homography
@@ -16,8 +55,9 @@ Homography Estimation
 [Essential matrix](https://en.wikipedia.org/wiki/Essential_matrix), 
 [Fundamental matrix](https://en.wikipedia.org/wiki/Fundamental_matrix_(computer_vision)),
 [Epipolar Geometry](https://docs.opencv.org/4.x/da/de9/tutorial_py_epipolar_geometry.html)
-singular value decomposition
+
 bundle adjustment (gauge ambiguity; Sim(3))
+iterative projection matching
 reprojection error
 photometric error
 Sampson error for epipolar geometry
@@ -92,17 +132,7 @@ Outputs:
  **Gauge freedom**: I could rotate, translate and scale the whole scene (incl. cam poses) and the re-projection error would stay the same. 
     - Fix the first camera to remove the gauge freedom.
 
-#### Sim(3): 
- - the group of similarity transformations in 3D space, consisting of rotation, translation, and uniform scaling.
- - 7 degrees of freedom (3 for rotation, 3 for translation, 1 for scaling)
- - A transformation in Sim(3) can be represented as a 4x4 matrix with the following form:
- $$
- \begin{bmatrix}
-    sR & t \\
-    0 & 1
- \end{bmatrix}
- $$, 
- where $R$ is a 3x3 rotation matrix, $t$ is a 3x1 translation vector, and $s$ is a scalar representing uniform scaling.
+
 
 
 ### View Graph
@@ -110,9 +140,49 @@ Assuming you have multiple images of the same object from different angles, you 
 Each node in the graph represents an image, and each edge represents the overlap between two images. 
 The weight of the edge can represent the amount of overlap or the quality of the match between the two images. 
 The view graph can be used to guide the image matching process and to estimate the camera poses.
+Overlap = number of matched keypoints between two images.
 
 
-## Gaussian Splatting
+## SLAM
+
+### Factor Graph
+Sliding-window approach: Only the most recent N frames are kept in the graph, and as new frames arrive, the oldest ones 
+are removed to maintain a fixed-size window. This approach is common in real-time SLAM systems where memory and 
+processing constraints are important.
+Can be seen as generalization of bundle adjustment which is a special case for structure-from-motion.
+
+### Relocalization
+
+### IMU Preintegration
+
+
+
+## Scene Representation
+
+### Truncated Signed Distance Function (TSDF)
+Truncated Signed Distance Fields (TSDF) are a widely used volumetric representation in 3D reconstruction, robotics, 
+and computer vision.  They encode, at each voxel in a 3D grid, the signed distance to the nearest observed surface, 
+truncated to a fixed range (e.g., ±ϵ) around the surface.  This truncation ensures that only reliable surface 
+information is retained, reducing noise and enabling smooth surface reconstruction from noisy depth data like that 
+from RGB-D sensors (e.g., Kinect, RealSense). 
+
+Voxel grids serve as the underlying spatial structure for TSDFs.  A voxel grid partitions 3D space into a regular array 
+of cubic cells (voxels), where each voxel stores a TSDF value (distance), a weight (confidence), and optionally color 
+or normal data. The grid can be dense (uniform resolution) or sparse (using hierarchical structures like octrees or 
+hash tables) to manage memory and computational costs. Sparse voxel grids, such as those implemented via voxel hashing 
+or octree-based representations, are essential for scalable, real-time mapping in large environments. 
+
+
+### Neural Radiance Fields (NeRF)
+
+### Gaussian Splatting
+
+Gaussian Splatting does not involve a neural network.  It represents 3D scenes using millions of optimized 
+3D Gaussians—each defined by position, covariance (shape and orientation), opacity, and color (often using spherical 
+harmonics for view-dependent lighting).  The optimization process uses stochastic gradient descent to refine these 
+Gaussian parameters, but it does not rely on neural networks or MLPs.  This explicit, geometric representation allows 
+for real-time rendering and is fundamentally different from NeRF, which uses a neural network to implicitly model 
+the scene.
 
 Spherical harmonics SH: basis functions for representing functions on a sphere. 
 They are the spherical analog of Fourier series and can be used to represent lighting and reflections in a compact and efficient way.

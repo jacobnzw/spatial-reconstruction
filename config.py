@@ -19,7 +19,7 @@ class SfMConfig:
     num_features: int = 10_000
     """Maximum number of features to extract per image"""
 
-    max_size: int = 4080
+    max_size: int = 1024
     """Maximum image dimension (images will be resized if larger)"""
 
     # Keypoint matching
