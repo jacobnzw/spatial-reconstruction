@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "gsplat>=1.5.3",
-    "kaleido>=1.2.0", # TODO: likely not needed (export of static plotly graph images to PNG)
     "kornia>=0.8.2",
     "kornia-moons>=0.2.9",
     "marimo>=0.18.4",
@@ -25,6 +24,4 @@ dependencies = [
 line-length = 120 # Increase from default 88
 
 [dependency-groups]
-dev = [
-    "ipython>=9.9.0",
-]
+dev = ["ipython>=9.9.0"]

@@ -607,7 +607,7 @@ class ReconIO:
 
     @staticmethod
     def load_for_gsplat(
-        filename: Path,
+        filename: Path, device: torch.device
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int, int]:
         """Load SfM reconstruction tensors saved for gsplat training.
 
@@ -643,7 +643,7 @@ class ReconIO:
         print(f"  - Intrinsics (tiled): {intrinsics.shape}")
         print(f"  - Image size: {W} x {H}")
 
-        return poses, images, points, colors, intrinsics, W, H
+        return poses.to(device), images.to(device), points.to(device), colors.to(device), intrinsics.to(device), W, H
 
     def save_ply(self, filename: Path = Path("point_cloud.ply")):
         import pandas as pd
