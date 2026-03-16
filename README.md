@@ -37,3 +37,6 @@ S.D. Prince, Computer Vision: Models, Learning and Inference
 SuperPoint
 SuperGlue
 TODO: list papers to read
+
+## Notes
+See [notes/CV_NOTES.md](notes/CV_NOTES.md)
