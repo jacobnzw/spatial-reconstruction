@@ -12,15 +12,101 @@ All of these problems are formulated probabilistically as maximum likelihood est
 least squares optimization problems.
 
 
-### Pinhole Camera Model
-Other used camera models: Brown-Conrady model (fisheye), Kannala-Brandt model (fisheye), Dual Quaternion model (SfM), Catadioptric model (mirror+lens), Omnidirectional model (fish-eye+mirror)
-Projection matrix, camera matrix, intrinsic matrix, extrinsic matrix
+### Projective Pinhole Camera Model
 
-Field of view, aspect ratio, principal point, focal length, skew, distortion
+In homogeneous coordinates, a point in 3D space is represented as a 4D vector $(x, y, z, w)$, where $w$ is a scaling factor. 
+The point in Euclidean coordinates is then $(x/w, y/w, z/w)$. When $w=1$, the homogeneous point corresponds to a point in Euclidean space.
+
+Pinhole camera model in homogeneous coordinates:
+$$
+\lambda
+\begin{bmatrix}
+   x \\
+   y \\
+   1
+\end{bmatrix} = 
+\begin{bmatrix}
+   \phi_x & \gamma & \delta_x & 0 \\
+   0 & \phi_y & \delta_y & 0 \\
+   0 & 0 & 1 & 0
+\end{bmatrix}
+\begin{bmatrix}
+   u \\
+   v \\
+   w \\
+   1
+\end{bmatrix}
+$$
+where $\phi_x$ and $\phi_y$ are the focal lengths in the x and y directions, $\gamma$ is the skewness between the x and y axes, 
+and $(\delta_x, \delta_y)$ is the principal point (optical center) of the camera in pixel coordinates. 
+The scaling factor $\lambda$ is due to the fact that the homogeneous coordinates are not unique, and can be scaled by any non-zero factor.
+Effectively scaling by $\lambda$ slides the point into the image plane along the ray from the camera center to the point in 3D space.
+
+To complete the model, we add extrinsic parameters (rotation $\mathbf{R}$ and translation $\mathbf{t}$) that define 
+the position and orientation of the camera in 3D space, and thus relate the world coordinate system (frame) to 
+the camera coordinate system (frame).
+$$
+\lambda
+\begin{bmatrix}
+x\\
+y\\
+1
+\end{bmatrix} = 
+\begin{bmatrix}
+   \phi_x & \gamma & \delta_x & 0 \\
+   0 & \phi_y & \delta_y & 0 \\
+   0 & 0 & 1 & 0
+\end{bmatrix}
+\begin{bmatrix}
+   r_{11} & r_{12} & r_{13} & t_x \\
+   r_{21} & r_{22} & r_{23} & t_y \\
+   r_{31} & r_{32} & r_{33} & t \\
+   0 & 0 & 0 & 1
+\end{bmatrix}
+\begin{bmatrix}
+u \\
+v \\
+w \\
+1
+\end{bmatrix}
+$$
+In matrix form,
+$$
+\lambda
+\tilde{\mathbf{x}} = 
+\begin{bmatrix}
+   \mathbf{K} & \mathbf{0}
+\end{bmatrix}
+\begin{bmatrix}
+   \mathbf{R} & \mathbf{t} \\
+   \mathbf{0}^T & 1
+\end{bmatrix}
+\tilde{\mathbf{w}} = 
+\mathbf{K}
+\begin{bmatrix}
+   \mathbf{R} & \mathbf{t}
+\end{bmatrix}
+\tilde{\mathbf{w}}
+$$
+where $\tilde{\mathbf{x}}$ is a projection of the world point $\tilde{\mathbf{w}}$ onto the image plane expressed 
+in homogeneous coordinates, and $\mathbf{K}$ is the intrinsic matrix and rotation matrix $\mathbf{R}$ 
+and translation vector $\mathbf{t}$ are the extrinsic parameters that determine the camera pose in the world frame.
+
+*In the SE3 variable naming convention the camera pose in the world frame is a transformation 
+from the world frame to the camera frame: `camera_SE3_world`.*
 
 **Caveats:** the rays go through the optical center of the camera and form the same ray bundle geometry, 
 just reflected through the optical center, on the back of the camera. For example, routines for solving a PnP problem
 have to account for solutions "behind the camera" which are valid geometrically but not physically realizable. 
+
+#### Distortion models
+Camera lenses introduce radial and tangential distortion that deviate projections from being linear. 
+**Brown-Conrady model** is a widely used polynomial distortion model in computer vision for correcting lens distortions, including barrel, pincushion, and mustache distortions. 
+While it is commonly applied to standard and wide-angle lenses, it is less accurate for fisheye lenses with very large fields of view (FOV > 180°), where models like **Kannala-Brandt** or fisheye-specific models are preferred.
+
+
+
+
 
 ## Multi-View Geometry
 When multiple cameras observe the same scene, the geometry of the problem changes. 
@@ -41,6 +127,10 @@ what does it tell me? basic properties? relation to Essential matrix?
 Enhanced version of the essential matrix that accounts for camera intrinsics.
 
 [Homography](https://docs.opencv.org/4.x/d9/dab/tutorial_homography.html)
+Pinhole camera views a plane in the world. 
+There is a unique homography matrix H that maps points in the world plane to the image plane.
+It's therefore a family of 2D-to-2D transformations.
+
 Homography Estimation
 
 

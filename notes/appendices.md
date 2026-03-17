@@ -96,6 +96,15 @@ and allow smooth interpolation (e.g., spherical linear interpolation, or slerp).
 Preferable for interpolation, because it can be easily re-normalized if it gets perturbed by many sucessive transformations. 
 Avoids gimbal lock.
 
+#### Dual Quaternions
+<!-- TODO: verify -->
+8-dimensional numbers formed by combining two quaternions using a dual unit $ \varepsilon $ (where $ \varepsilon^2 = 0 $). They are written as $ \hat{q} = q_r + \varepsilon q_d $, where:
+- $ q_r $: represents rotation (like a normal quaternion),
+- $ q_d $: encodes translation (related to position).
+
+Can represent a full 6DOF rigid transformation (rotation + translation) with no gimbal lock and easy interpolation.
+
+
 
 
 
