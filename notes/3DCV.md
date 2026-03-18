@@ -105,6 +105,64 @@ Camera lenses introduce radial and tangential distortion that deviate projection
 While it is commonly applied to standard and wide-angle lenses, it is less accurate for fisheye lenses with very large fields of view (FOV > 180°), where models like **Kannala-Brandt** or fisheye-specific models are preferred.
 
 
+### [Homography](https://docs.opencv.org/4.x/d9/dab/tutorial_homography.html)
+Pinhole camera views a plane in the world. 
+There is a unique homography matrix H that maps points in the world plane to the image plane.
+It's therefore a family of 2D-to-2D *projective transformations*.
+Special cases: rotation, translation, similarity, uniform scaling, shearing.
+Lines that were parallel are not constrained to remain parallel in the image plane.
+Linear in homogeneous coordinates, nonlinear in Cartesian coordinates.
+$$
+\begin{align*}
+\lambda
+\begin{bmatrix}
+   x \\
+   y \\
+   1
+\end{bmatrix} 
+&= 
+\begin{bmatrix}
+   \phi_x & \gamma & \delta_x \\
+   0 & \phi_y & \delta_y \\
+   0 & 0 & 1
+\end{bmatrix}
+\begin{bmatrix}
+   r_{11} & r_{12} & r_{13} & t_x \\
+   r_{21} & r_{22} & r_{23} & t_y \\
+   r_{31} & r_{32} & r_{33} & t_z
+\end{bmatrix}
+\begin{bmatrix}
+   u \\
+   v \\
+   0 \\
+   1
+\end{bmatrix} \\
+&= 
+\begin{bmatrix}
+   \phi_x & \gamma & \delta_x \\
+   0 & \phi_y & \delta_y \\
+   0 & 0 & 1
+\end{bmatrix}
+\begin{bmatrix}
+   r_{11} & r_{12} & t_x \\
+   r_{21} & r_{22} & t_y \\
+   r_{31} & r_{32} & t_z
+\end{bmatrix}
+\begin{bmatrix}
+   u \\
+   v \\
+   1
+\end{bmatrix} \\
+\tilde{\mathbf{x}} &= \mathbf{H} \tilde{\mathbf{w}}
+\end{align*}
+$$
+
+#### Homography Estimation
+Because homography is a $3\times 3$ matrix with $8$ degrees of freedom, we need at least $4$ point correspondences 
+(pairs of points) to estimate it.
+It's a nonlinear optimization problem, no closed-form solution, thus need to rely on gradient based iterative methods,
+that need a good starting estimate. This is often obtained by *direct linear transform (DLT)* method, which uses 
+homogeneous coordinate formulation of the problem to arrive at a closed-form solution which serves as a good initialization.
 
 
 
@@ -119,19 +177,46 @@ This reduces the search for the 3D point from a 3D space to a 1D line, significa
 
 [Epipolar Geometry](https://docs.opencv.org/4.x/da/de9/tutorial_py_epipolar_geometry.html)
 
-[Essential matrix](https://en.wikipedia.org/wiki/Essential_matrix)
-what does it tell me? basic properties? decomposition into R,t?
+### [Essential matrix](https://en.wikipedia.org/wiki/Essential_matrix)
+Mathematical constraint between two views of the same scene captured by normalized cameras. 
+$$
+   \tilde{\mathbf{x}}_1^T \mathbf{E} \tilde{\mathbf{x}}_2 = 0
+$$
+where $\tilde{\mathbf{x}}_1, \tilde{\mathbf{x}}_2 \in \mathbb{R}^3$ are the homogeneous coordinates of the 
+corresponding 2D points in the two image planes, and 
+$$ 
+   \mathbf{E} = \mathbf{t}_\times \mathbf{R} 
+$$ 
+is the essential matrix, where $\mathbf{t}_\times$ 
+is the skew-symmetric matrix representation of the cross-product operation
+$$
+   \mathbf{t}_\times = 
+   \begin{bmatrix}
+      0 & -t_z & t_y \\
+      t_z & 0 & -t_x \\
+      -t_y & t_x & 0
+   \end{bmatrix}
+$$
+and $\mathbf{R}$ is the rotation matrix.
+The rotation and translation are a relative pose of camera B wrt. camera A, which is assumed to be at the 
+origin with no rotation (identity rotation matrix and zero translation vector).
 
-[Fundamental matrix](https://en.wikipedia.org/wiki/Fundamental_matrix_(computer_vision))
-what does it tell me? basic properties? relation to Essential matrix?
-Enhanced version of the essential matrix that accounts for camera intrinsics.
+#### Properties
+- Rank 2: $\text{rank}(\mathbf{E}) = 2$
+- Singular values: $\sigma_1 = \sigma_2 > 0, \sigma_3 = 0$
+- Determinant: $\det(\mathbf{E}) = 0$
+- Operates on homogeneous coordinates: $\tilde{\mathbf{x}} \in \mathbb{R}^3$
+- 7 DOF: 3 for rotation, 3 for translation, 1 for scale
+- Scale ambiguity: Multiplying all entries by any constant does not change its properties.
 
-[Homography](https://docs.opencv.org/4.x/d9/dab/tutorial_homography.html)
-Pinhole camera views a plane in the world. 
-There is a unique homography matrix H that maps points in the world plane to the image plane.
-It's therefore a family of 2D-to-2D transformations.
+### [Fundamental matrix](https://en.wikipedia.org/wiki/Fundamental_matrix_(computer_vision))
+Fundamental matrix plays role of the essential matrix for cameras with arbitrary intrinsics $\mathbf{K}_1, \mathbf{K}_2$.
+The realationship to essential matrix is
+$$
+   \mathbf{E} = \mathbf{K}_2^T \mathbf{F} \mathbf{K}_1 \ \Leftrightarrow\  F = \mathbf{K}_2^{-1} \mathbf{E} \mathbf{K}_1^{-1}
+$$
 
-Homography Estimation
+*Eight-point algorithm* is used to estimate the fundamental matrix from a set of 8 pairs of points (correspondences).
 
 
 iterative projection matching
@@ -140,16 +225,6 @@ photometric error
 Sampson error for epipolar geometry
 Umeyama algorithm for rigid transformation estimation with known correspondences
 
-
-
-#### Keyframes
-Codec keyframes (I-frames) are built into the video and used for decompression. 
-Computer vision keyframes are extracted using models or algorithms to capture meaningful moments, 
-which may or may not align with I-frames. 
-In practice, vision systems may use codec keyframes as a starting point but refine selection using content-aware 
-models for higher relevance.
-
-Keyframes are crucial in computer vision processing of videos because they reduce data redundancy and computational overhead while preserving essential visual information. Videos typically contain hundreds or thousands of frames per minute, many of which are highly similar or contain minimal new information. By selecting only the most representative frames—those that capture significant changes in content, motion, or structure—keyframes enable efficient processing for tasks like video summarization, action recognition, and visual localization.
 
 
 ## Stereo Principle
@@ -162,22 +237,43 @@ the 3D position of those points can be determined through a process called trian
 
 
 ### Perspective n-Point (PnP)
-Given 3D points in the world frame, their corresponding 2D projections in the image plane and known camera intrinsics, estimate the camera pose (rotation and translation) that best projects the 3D points to the 2D image points.
+Given 3D points in the world frame, their corresponding 2D projections in the image plane and known camera intrinsics, 
+estimate the camera pose (rotation and translation) that best projects the 3D points to the 2D image points.
 
-**EPnP** estimates camera pose using n 3D-to-2D point correspondences by representing the 3D points as a weighted sum of four virtual control points, enabling linear-time computation (O(n)). Non-iterative, closed-form solution. 
+**EPnP** estimates camera pose using n 3D-to-2D point correspondences by representing the 3D points as a weighted sum 
+of four virtual control points, enabling linear-time computation (O(n)). Non-iterative, closed-form solution. 
 Possibly followed by iterative refinement (Gauss-Newton, Levenberg-Marquardt).
 
+#### Keyframes
+Codec keyframes (I-frames) are built into the video and used for decompression. 
+Computer vision keyframes are extracted using models or algorithms to capture meaningful moments, 
+which may or may not align with I-frames. 
+In practice, vision systems may use codec keyframes as a starting point but refine selection using content-aware 
+models for higher relevance.
 
-### Keypoint Extraction
-- SIFT expensive but robust (invariant to image scaling, rotation, and translation; doesn't work well with changes in lighting or illumination, doesn't work with color; CSIFT addresses this)
+Keyframes are crucial in computer vision processing of videos because they reduce data redundancy and computational 
+overhead while preserving essential visual information. Videos typically contain hundreds or thousands of frames per 
+minute, many of which are highly similar or contain minimal new information. By selecting only the most representative 
+frames—those that capture significant changes in content, motion, or structure—keyframes enable efficient processing 
+for tasks like video summarization, action recognition, and visual localization.
+
+### Keypoints 
+#### Extraction
+- SIFT expensive but robust (invariant to image scaling, rotation, and translation; doesn't work well with changes in 
+lighting or illumination, doesn't work with color; CSIFT addresses this)
 - ORB fast but less robust (real-time)
 - AKAZE is a faster and more accurate alternative to SIFT, also invariant to illumination changes and point of view.
-- DISK is a modern, deep learning-based local feature detector and descriptor designed for robust image matching.  It is particularly effective for outdoor scenes and performs exceptionally well when combined with the LightGlue matcher, as shown in the IMC2021 benchmark.
+- DISK is a modern, deep learning-based local feature detector and descriptor designed for robust image matching.  
+It is particularly effective for outdoor scenes and performs exceptionally well when combined with the LightGlue 
+matcher, as shown in the IMC2021 benchmark.
 - LoFTR: A detector-free, transformer-based model that works best for indoor scenes.
 
-
-### Keypoint Matching
+#### Matching
 FLANN, Brute Force
-In image keypoint matching, inliers are the correct, geometrically consistent correspondences between keypoints in two different images, meaning they belong to the same physical points and follow the same transformation (like rotation, scale, or perspective). They contrast with outliers, which are incorrect matches (e.g., matching a window to a door due to similar appearance) that don't conform to the overall scene transformation, and are typically filtered out using algorithms like RANSAC (Random Sample Consensus). 
+In image keypoint matching, inliers are the correct, geometrically consistent correspondences between keypoints in two 
+different images, meaning they belong to the same physical points and follow the same transformation (like rotation, 
+scale, or perspective). They contrast with outliers, which are incorrect matches (e.g., matching a window to a door 
+due to similar appearance) that don't conform to the overall scene transformation, and are typically filtered out using 
+algorithms like RANSAC (Random Sample Consensus). 
 
 
