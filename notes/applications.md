@@ -80,7 +80,21 @@ A pose graph is a factor graph whose variables are poses and whose measurements 
 ### Relocalization
 
 ### IMU Preintegration
-IMU delivers measurements at a orders of magnitude higher rate (100-1000 Hz) than the camera images (10-30 Hz)
+IMU delivers measurements at a orders of magnitude higher rate (100-1000 Hz) than the camera images (10-30 Hz).
+
+IMU does not observe the pose directly, but rather the angular velocity $ \boldsymbol{\omega} $ and linear acceleration $\mathbf{a}$ which need to be integrated over time to obtain the pose.
+
+<!-- TODO: needs verification -->
+The continuous-time dynamcs are:
+$$
+   \begin{align*}
+      \dot{\mathbf{q}} &= \frac{1}{2} \mathbf{q} \otimes \boldsymbol{\omega} \\
+      \dot{\mathbf{v}} &= \mathbf{a} \\
+      \dot{\mathbf{p}} &= \mathbf{v} 
+   \end{align*}
+$$
+<!-- Analytically intractable due to noise and nonlinearity, and computationally expensive if done naively at such high rate. -->
+
 
 IMU preintegration is a technique to compute the IMU measurements in the local frame of the IMU. 
-It is used to compute the relative pose between two keyframes.
+It is used to compute the relative pose between two keyframes $i$ and $j$
