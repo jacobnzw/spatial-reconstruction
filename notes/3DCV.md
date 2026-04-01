@@ -274,6 +274,14 @@ In image keypoint matching, inliers are the correct, geometrically consistent co
 different images, meaning they belong to the same physical points and follow the same transformation (like rotation, 
 scale, or perspective). They contrast with outliers, which are incorrect matches (e.g., matching a window to a door 
 due to similar appearance) that don't conform to the overall scene transformation, and are typically filtered out using 
-algorithms like RANSAC (Random Sample Consensus). 
+algorithms like RANSAC (Random Sample Consensus).
+
+Lessons from debugging:
+- Query set vs. train set
+- TODO: lessons from using matchers:
+  - several queries to one train, directionality matters,  
+  - BFMatcher crossCheck=True vs. False; without cross-check, multiple queries can match to the same train, with 
+  cross-check, only one-to-one matches are allowed. 
+  In case of many-to-one, we might have one KP triangulated to multiple 3D points, which is geometrically impossible.
 
 
