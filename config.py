@@ -46,3 +46,9 @@ class SfMConfig:
 
     fix_first_camera: bool = True
     """Fix the first camera during bundle adjustment"""
+
+    dump_sfm_debug: bool = False
+    """Dump the SFM structs (image_store, point_cloud, track_manager) to disk for debugging/inspection"""
+
+    save_gsplat: bool = False
+    """Save tensors for gsplat (without BA)"""
