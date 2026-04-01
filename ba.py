@@ -16,7 +16,19 @@ def bundle_adjustment(
     track_manager: TrackManager,
     fix_first_camera: bool = True,
 ):
-    """Run bundle adjustment on all cameras and 3D points using pycolmap cost functions."""
+    """Run bundle adjustment on all cameras and 3D points.
+
+    Uses pyceres as the optimization backend with pycolmap's ReprojErrorCost
+    for computing reprojection errors and analytical Jacobians. Optimizes
+    camera poses (rotation + translation) and 3D point positions while keeping
+    camera intrinsics fixed.
+
+    Args:
+        images: Feature store containing keypoints and camera poses
+        point_cloud: 3D point cloud to optimize
+        track_manager: Manages correspondences between 2D keypoints and 3D points
+        fix_first_camera: If True, fixes the first camera pose to avoid gauge freedom
+    """
 
     K, dist = images.get_intrisics()
     # Create pycolmap camera model (OPENCV: fx, fy, cx, cy, k1, k2, p1, p2)
