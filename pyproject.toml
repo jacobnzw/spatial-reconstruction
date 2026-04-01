@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "gsplat>=1.5.3",
+    "gtsam-develop>=4.3a1.dev202603261854",
     "kornia>=0.8.2",
     "kornia-moons>=0.2.9",
     "marimo>=0.18.4",
