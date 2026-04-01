@@ -386,6 +386,22 @@ def construct_view_graph(
 
 
 class TrackManager:
+    """
+    Manages the mapping between 2D keypoint observations and 3D point tracks.
+
+    A track represents a single 3D point observed across multiple images. Each track
+    is identified by a unique track_id and contains a list of keypoint observations
+    (KPKey = (img_id, kp_idx)) that correspond to the same 3D point.
+
+    The class maintains a bidirectional mapping:
+    - kp_to_track: maps each keypoint observation to its track_id; 1-to-1
+    - track_to_kps: maps each track_id to all keypoint observations in that track; 1-to-N
+
+    Note: This assumes symmetric keypoint matches (e.g., BFMatcher with crossCheck=True).
+    If crossCheck=False, multiple keypoints in one image could match to the same keypoint
+    in another image, which would violate the 1-to-1 constraint and is geometrically invalid.
+    """
+
     def __init__(self):
         self.next_track_id = 0
         self.kp_to_track: dict[KPKey, int] = {}
@@ -395,8 +411,11 @@ class TrackManager:
         self.kp_to_track[kp_key] = track_id
         self.track_to_kps.setdefault(track_id, []).append(kp_key)
 
-    def get_track(self, kp_key: KPKey):
+    def get_track(self, kp_key: KPKey) -> int | None:
         return self.kp_to_track.get(kp_key, None)
+
+    def get_keypoints(self, track_id: int) -> list[KPKey]:
+        return self.track_to_kps.get(track_id, [])
 
     def add_new_tracks(self, kp_pairs: list[tuple[KPKey, KPKey]]):
         """Create new track for every given pair of KP observations."""
@@ -426,15 +445,28 @@ class TrackManager:
             # this means the same 3D object point is now observed by a new 2D KP
             kp_key_new = (img_idx_new, kp_idx_new)
             kp_key_ref = (img_idx_ref, kp_idx_ref)
-            if (track_id := self.get_track(kp_key_ref)) is not None:  # ty:ignore[invalid-argument-type]
+            if (track_id := self.get_track(kp_key_ref)) is not None:
                 track_ids_tracked.append(track_id)
                 kp_idx_new_tracked.append(kp_idx_new)
-                self._register_keypoint_track(kp_key_new, track_id)  # ty:ignore[invalid-argument-type]
+                self._register_keypoint_track(kp_key_new, track_id)
             else:  # ref KP is untracked and therefore its matching KP from img_new is also untracked
                 matches_untracked.append(match)
 
         # return tracked KPs in new img and ref2new matches for untracked KPs for triangulation
         return track_ids_tracked, kp_idx_new_tracked, np.array(matches_untracked)
+
+    def is_valid(self) -> bool:
+        """Check consistency of the bi-directional map between track_id and KP_key.
+
+        One track_id can map to multiple KPKeys, but one KPKey can only map to one track_id.
+        Returns True if the mapping is consistent, False otherwise. Only True if KP matches are symmetrical
+        (e.g. BFMatcher cross_check=True).
+        """
+        for track_id, kp_keys in self.track_to_kps.items():
+            for kp_key in kp_keys:
+                if self.kp_to_track[kp_key] != track_id:
+                    return False
+        return True
 
 
 class PointCloud:

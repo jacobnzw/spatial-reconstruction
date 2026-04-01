@@ -182,6 +182,8 @@ def process_graph_component(
     # matches -> E -> pose -> triangulation
     compute_baseline_estimate(img_0, img_1, K, track_manager, point_cloud, match_fn)
 
+    print(f"After compute_baseline_estimate: {track_manager.is_valid()=}")
+
     R = set((img_0.idx, img_1.idx))
     U = {node for e in edges for node in (e.i, e.j)}
     U.difference_update(R)
@@ -208,6 +210,8 @@ def process_graph_component(
         try:
             # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
             add_view(img_new, img_ref, K, dist, track_manager, point_cloud, match_fn)
+            print(f"After add_view: {track_manager.is_valid()=}")
+
         except ValueError as e:
             # failed to add new view: indicate the (img_ref, img_new) pair as bad and move on
             # best_edge was the best chance to add img_new (don't consider next best edge w/ img_new)
