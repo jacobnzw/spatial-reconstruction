@@ -1,4 +1,3 @@
-from functools import partial
 from pathlib import Path
 from typing import Callable
 
@@ -11,7 +10,6 @@ from rich.pretty import pprint
 from ba import bundle_adjustment
 from config import SfMConfig
 from utils import (
-    KF,
     FeatureStore,
     ImageData,
     NDArrayFloat,
@@ -21,9 +19,8 @@ from utils import (
     TrackManager,
     ViewEdge,
     calibrate_camera,
-    compute_matches,
     construct_view_graph,
-    device,
+    make_keypoint_matcher,
 )
 
 
@@ -264,13 +261,7 @@ def main(cfg: SfMConfig = SfMConfig()):
     exporter = ReconIO(point_cloud, image_store, track_manager)
 
     # Create keypoint matcher with appropriate parameters
-    if cfg.matcher_type == "bf":
-        kp_matcher = partial(compute_matches, method="bf", lowe_ratio=cfg.lowe_ratio)
-    else:
-        lightglue_matcher = KF.LightGlueMatcher("disk").eval().to(device)
-        kp_matcher = partial(
-            compute_matches, method="lightglue", min_dist=cfg.min_dist, lightglue_matcher=lightglue_matcher
-        )
+    kp_matcher = make_keypoint_matcher(cfg)
 
     print("Constructing view graph...")
     view_graph = construct_view_graph(image_store, kp_matcher, min_inliers=cfg.min_inliers)

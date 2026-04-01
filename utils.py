@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any, Callable, Iterable, Literal
 
@@ -9,6 +10,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from numpy.typing import NDArray
+
+from config import SfMConfig
 
 device = K.utils.get_cuda_or_mps_device_if_available()
 
@@ -271,13 +274,16 @@ class ViewGraph:
 
 
 def _match_lightglue_disk(
-    kp_from: torch.Tensor,
-    des_from: torch.Tensor,
-    kp_to: torch.Tensor,
-    des_to: torch.Tensor,
+    img_from: ImageData,
+    img_to: ImageData,
     lg_matcher: KF.LightGlueMatcher,
     min_dist: float | None = None,
 ) -> tuple[NDArrayFloat, NDArrayInt]:
+    kp_from = torch.from_numpy(img_from.kp).to(device)
+    des_from = torch.from_numpy(img_from.des).to(device)
+    kp_to = torch.from_numpy(img_to.kp).to(device)
+    des_to = torch.from_numpy(img_to.des).to(device)
+
     lafs_from = KF.laf_from_center_scale_ori(kp_from[None], torch.ones(1, len(kp_from), 1, 1, device=device))
     lafs_to = KF.laf_from_center_scale_ori(kp_to[None], torch.ones(1, len(kp_to), 1, 1, device=device))
 
@@ -295,42 +301,52 @@ def _match_lightglue_disk(
 
 
 def _match_bf(
-    des_from: NDArrayFloat, des_to: NDArrayFloat, lowe_ratio: float | None = None
+    img_from: ImageData,
+    img_to: ImageData,
+    lowe_ratio: float | None = None,
+    cross_check: bool = False,
 ) -> tuple[NDArrayFloat, NDArrayInt]:
-    bf = cv.BFMatcher(cv.NORM_L2, crossCheck=False)
-    matches = bf.knnMatch(des_from, des_to, k=2)
-    if lowe_ratio:
-        matches = [m for m, n in matches if m.distance < lowe_ratio * n.distance]
+    """Match descriptors using brute-force matcher with optional Lowe's ratio test.
+
+    Args:
+        img_from: Query image.
+        img_to: Train image.
+        lowe_ratio: Ratio threshold for Lowe's ratio test. If None, no filtering is applied.
+        cross_check: If True, only keep matches that are mutual best matches.
+
+    Returns:
+        Tuple of (distances, matches):
+            - distances: Array of match distances (N,).
+            - matches: Array of match indices (N, 2) where each row is (queryIdx, trainIdx).
+
+    Note:
+        Using crossCheck=False means that multiple KPs in img_from can match to the same KP in img_to. Consequently,
+        this might result in one KP in img_to triangulating to multiple 3D points.
+        Using crossCheck=True would remove this ambiguity, but might also remove valid matches.
+    """
+    des_from, des_to = img_from.des, img_to.des
+    bf = cv.BFMatcher(cv.NORM_L2, crossCheck=cross_check)
+    if cross_check:
+        matches = bf.match(des_from, des_to)
     else:
-        matches = [m for m, n in matches]
+        matches = bf.knnMatch(des_from, des_to, k=2)
+        if lowe_ratio:
+            matches = [m for m, n in matches if m.distance < lowe_ratio * n.distance]
+        else:
+            matches = [m for m, n in matches]
 
     dist = np.array([m.distance for m in matches])  # (N,)
     return dist, np.array([(m.queryIdx, m.trainIdx) for m in matches])  # (N, 2)
 
 
-def compute_matches(
-    img_from: ImageData,
-    img_to: ImageData,
-    method: Literal["lightglue", "bf"] = "bf",
-    lowe_ratio: float | None = None,
-    min_dist: float | None = None,
-    lightglue_matcher: KF.LightGlueMatcher | None = None,
-) -> tuple[NDArrayFloat, NDArrayInt]:
-    if method == "bf":
-        return _match_bf(img_from.des, img_to.des, lowe_ratio)
-    elif method == "lightglue":
-        if lightglue_matcher is None:
-            raise ValueError("lightglue_matcher must be provided when method='lightglue'")
-        return _match_lightglue_disk(
-            torch.from_numpy(img_from.kp).to(device),
-            torch.from_numpy(img_from.des).to(device),
-            torch.from_numpy(img_to.kp).to(device),
-            torch.from_numpy(img_to.des).to(device),
-            lightglue_matcher,
-            min_dist,
-        )
+def make_keypoint_matcher(cfg: SfMConfig):
+    if cfg.matcher_type == "bf":
+        return partial(_match_bf, lowe_ratio=cfg.lowe_ratio, cross_check=cfg.cross_check)
+    if cfg.matcher_type == "lightglue":
+        lightglue_matcher = KF.LightGlueMatcher("disk").eval().to(device)
+        return partial(_match_lightglue_disk, min_dist=cfg.min_dist, lg_matcher=lightglue_matcher)
     else:
-        raise ValueError(f"Unknown KP matching method: {method}")
+        ValueError(f"Unknown matcher type {cfg.matcher_type=} in config!")
 
 
 def has_overlap(

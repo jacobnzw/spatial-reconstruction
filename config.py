@@ -27,7 +27,10 @@ class SfMConfig:
     """Keypoint matching method: 'bf' (brute-force) or 'lightglue'"""
 
     lowe_ratio: float = 0.75
-    """Lowe's ratio test threshold for BF matcher (only used when matcher='bf')"""
+    """Lowe's ratio test threshold for BF matcher (only used when matcher='bf' and cross_check=False)"""
+
+    cross_check: bool = True
+    """Whether to use cross-checking for BF matcher (only used when matcher='bf')"""
 
     min_dist: float = 0.0
     """Minimum distance threshold for LightGlue matcher (only used when matcher='lightglue')"""
