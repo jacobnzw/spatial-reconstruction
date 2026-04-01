@@ -79,6 +79,21 @@ def calibrate_camera(img_dir: Path = Path("data/calibration")):
 
 @dataclass
 class ImageData:
+    """Represents a single image with extracted features and estimated camera pose.
+
+    Stores image metadata, pixel data, extracted keypoints and descriptors,
+    and the estimated camera pose (rotation and translation).
+
+    Attributes:
+        idx: Unique image index in the reconstruction.
+        path: Path to the image file.
+        pixels: RGB pixel data for rendering and debugging (H, W, 3).
+        kp: Extracted keypoint locations as (N, 2) array of (x, y) coordinates.
+        des: Feature descriptors as (N, D) array where D is descriptor dimension.
+        R: 3x3 rotation matrix (camera-to-world or world-to-camera depending on context).
+        t: 3x1 translation vector.
+    """
+
     idx: int
     path: Path
     # Useful for rendering and debugging
@@ -108,6 +123,21 @@ class ImageData:
 
 
 class FeatureStore:
+    """Manages feature extraction and storage for multiple images.
+
+    Handles loading images from a directory, extracting keypoints and descriptors
+    using either SIFT or DISK features, and storing the results along with camera
+    intrinsics. Supports automatic image downsampling if images exceed max_size.
+
+    Attributes:
+        _store: List of ImageData objects containing extracted features for each image.
+        _disk_model: Lazily loaded DISK model (only initialized if method='disk').
+        _max_size: Maximum dimension for image resizing.
+        _K: Camera intrinsic matrix.
+        _dist: Camera distortion coefficients.
+        _scale: Scaling factor applied to images during feature extraction.
+    """
+
     def __init__(
         self,
         img_dir: Path,
@@ -220,6 +250,10 @@ class FeatureStore:
 
     def __getitem__(self, img_idx: int) -> ImageData:
         return self._store[img_idx]
+
+    def get_keypoint(self, kp_key: KPKey) -> NDArrayFloat:
+        """Get keypoint for a given keypoint key (img_idx, kp_idx)."""
+        return self._store[kp_key[0]].kp[kp_key[1]]
 
     def get_keypoints(self) -> list[NDArrayFloat]:
         """Get keypoints of all images."""
