@@ -146,20 +146,23 @@ class FeatureStore:
         ext: str = "jpg",
         method: Literal["sift", "disk"] = "sift",
         num_features: int = 2048,
-        max_size=1024,
+        max_size: int = 1024,
+        max_frames: int | None = None,
     ):
         self._store: list[ImageData] = []
         self._disk_model = None  # Lazy load DISK model
         self._max_size = max_size
+        self._method = method
+        self._num_features = num_features
+        self._max_frames = max_frames
         self._K = K
         self._dist = dist
-
-        img_paths = sorted(list(img_dir.glob(f"*.{ext}")))
-        if not img_paths:
+        self._img_paths = sorted(list(Path(img_dir).glob(f"*.{ext}")))
+        if not self._img_paths:
             raise ValueError(f"No *.{ext} images found in {img_dir}")
 
         # Figure out the size of images and get scale for downsampling if too large
-        h, w = cv.imread(img_paths[0]).shape[:2]
+        h, w = cv.imread(self._img_paths[0]).shape[:2]
         if max(h, w) > self._max_size:
             hn, wn, scale = self._get_capped_resolution((h, w))
             self._scale = scale
@@ -167,7 +170,8 @@ class FeatureStore:
         else:
             self._scale = 1.0
 
-        self._load_dir(img_paths, method=method, num_features=num_features)
+        # TODO: decide what is passed via self.
+        self._load_dir(self._img_paths, method=method, num_features=num_features)
 
     def _get_capped_resolution(self, img_hw: tuple[int, int]) -> tuple[int, int, float]:
         """Calculate resolution preserving aspect ratio, given max_size."""
@@ -175,6 +179,8 @@ class FeatureStore:
         scale = self._max_size / max(h, w)
         return int(h * scale), int(w * scale), scale
 
+    # TODO: extract as standalone funcs to be curried by dedicated factory as the matchers are
+    # feature_func to be
     def _extract_sift(self, img_path: Path, num_features: int) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
         """Extract SIFT features from a single image."""
         img = cv.imread(str(img_path))  # (H, W, 3)
@@ -220,6 +226,9 @@ class FeatureStore:
         """Load all images from directory and extract features using specified method."""
 
         for idx, filepath in enumerate(img_paths):
+            if self._max_frames and idx >= self._max_frames:
+                print(f"Reached max_frames={self._max_frames}, stopping further loading.")
+                break
             if method == "sift":
                 kp, des, img = self._extract_sift(filepath, num_features)
             else:  # disk
@@ -266,6 +275,14 @@ class FeatureStore:
     def iter_images_with_pose(self) -> Iterable[ImageData]:
         """Yield images for which we have a pose estimate."""
         yield from (img_data for img_data in self._store if img_data.has_pose)
+
+    # TODO: extract as standalone generator function; curried for dir by decorator?
+    def iter_dir_image_data(self) -> Iterable[ImageData]:
+        """Yield ImageData objects for all images in the directory."""
+        extract_features = self._extract_sift if self._method == "sift" else self._extract_disk
+        for idx, filepath in enumerate(self._img_paths):
+            kp, des, img = extract_features(filepath, self._num_features)
+            yield ImageData(idx, filepath, img, kp, des)
 
 
 @dataclass
@@ -426,6 +443,7 @@ def construct_view_graph(
     for i in range(N):
         for j in range(i + 1, N):
             img_i, img_j = image_store[i], image_store[j]
+            # TODO: 1 direction enough, when matches symmetrical (e.g. crossCheck=True)
             ok_ij, inliers_ij, _ = has_overlap(img_i, img_j, K, matcher_fn, min_inliers)
             ok_ji, inliers_ji, _ = has_overlap(img_j, img_i, K, matcher_fn, min_inliers)
             # ASK: why the matches should not be preserved ???
@@ -464,8 +482,23 @@ class TrackManager:
     def get_track(self, kp_key: KPKey) -> int | None:
         return self.kp_to_track.get(kp_key, None)
 
-    def get_keypoints(self, track_id: int) -> list[KPKey]:
-        return self.track_to_kps.get(track_id, [])
+    def get_keypoints(self, track_id: int, img_idx: int | None = None) -> list[KPKey]:
+        kp_keys = self.track_to_kps.get(track_id, [])
+        if img_idx is not None:
+            kp_keys = [kp_key for kp_key in kp_keys if kp_key[0] == img_idx]
+        return kp_keys
+
+    def get_triangulated_view_keypoints(self, image_idx: int) -> list[KPKey]:
+        """Get keys of keypoints triangulated from a given view.
+        image_idx: int Index of the camera view (image).
+        """
+        # return filter(lambda kpkey: kpkey[0] == image_idx, self.kp_to_track.keys())
+        return [kpkey for kpkey in self.kp_to_track.keys() if kpkey[0] == image_idx]
+
+    def get_triangulated_view_tracks(self, image_idx: int) -> list[int]:
+        """Get track_ids of tracks triangulated from a given view."""
+        kp_keys = self.get_triangulated_view_keypoints(image_idx)
+        return [tid for kp_key in kp_keys if (tid := self.get_track(kp_key)) is not None]
 
     def add_new_tracks(self, kp_pairs: list[tuple[KPKey, KPKey]]):
         """Create new track for every given pair of KP observations."""

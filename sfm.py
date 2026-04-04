@@ -108,6 +108,7 @@ def add_view(
     # In other words, new 2D points that observe the same 3D object points as the tracked KPs in the ref image
     img_new_pts_tracked = img_new.kp[kp_idx_new_tracked]
 
+    assert len(object_points) >= 4, "At least 4 3D-2D correspondences are required for PnP"
     assert len(object_points) == len(img_new_pts_tracked), "Number of 3D points must match number of 2D points"
     assert np.isfinite(object_points).all(), "Object points must be finite"
     assert np.isfinite(img_new_pts_tracked).all(), "Image points must be finite"
