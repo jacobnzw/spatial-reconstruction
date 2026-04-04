@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from numpy.typing import NDArray
 
-from config import SfMConfig
+from config import SfMConfig, SLAMConfig
 
 device = K.utils.get_cuda_or_mps_device_if_available()
 
@@ -122,74 +122,36 @@ class ImageData:
         return cv.Rodrigues(self.R)[0].ravel()  # ty:ignore[no-matching-overload]
 
 
-class FeatureStore:
-    """Manages feature extraction and storage for multiple images.
+class FeatureExtractor:
+    """Feature extractor class that curries the extraction function based on config."""
 
-    Handles loading images from a directory, extracting keypoints and descriptors
-    using either SIFT or DISK features, and storing the results along with camera
-    intrinsics. Supports automatic image downsampling if images exceed max_size.
-
-    Attributes:
-        _store: List of ImageData objects containing extracted features for each image.
-        _disk_model: Lazily loaded DISK model (only initialized if method='disk').
-        _max_size: Maximum dimension for image resizing.
-        _K: Camera intrinsic matrix.
-        _dist: Camera distortion coefficients.
-        _scale: Scaling factor applied to images during feature extraction.
-    """
-
-    def __init__(
-        self,
-        img_dir: Path,
-        K: NDArrayFloat,
-        dist: NDArrayFloat,
-        ext: str = "jpg",
-        method: Literal["sift", "disk"] = "sift",
-        num_features: int = 2048,
-        max_size: int = 1024,
-        max_frames: int | None = None,
-    ):
-        self._store: list[ImageData] = []
-        self._disk_model = None  # Lazy load DISK model
-        self._max_size = max_size
-        self._method = method
-        self._num_features = num_features
-        self._max_frames = max_frames
-        self._K = K
-        self._dist = dist
-        self._img_paths = sorted(list(Path(img_dir).glob(f"*.{ext}")))
-        if not self._img_paths:
+    def __init__(self, cfg: SfMConfig | SLAMConfig, img_dir: Path, ext: str = "jpg"):
+        self.cfg = cfg
+        img_paths = sorted(list(Path(img_dir).glob(f"*.{ext}")))
+        if not img_paths:
             raise ValueError(f"No *.{ext} images found in {img_dir}")
 
-        # Figure out the size of images and get scale for downsampling if too large
-        h, w = cv.imread(self._img_paths[0]).shape[:2]
-        if max(h, w) > self._max_size:
-            hn, wn, scale = self._get_capped_resolution((h, w))
-            self._scale = scale
-            print(f"Resizing images from ({h}, {w}) to ({hn}, {wn}) before feature extraction...")
+        # Compute scale based on first image
+        h, w = cv.imread(str(img_paths[0])).shape[:2]
+        self.scale = cfg.max_size / max(h, w) if max(h, w) > cfg.max_size else 1.0
+
+        if cfg.feature_type == "sift":
+            self._extract_fn = self._extract_sift
+        elif cfg.feature_type == "disk":
+            self.disk_model = KF.DISK.from_pretrained("depth").eval().to(device)
+            self._extract_fn = self._extract_disk
         else:
-            self._scale = 1.0
+            raise ValueError(f"Unknown feature type {cfg.feature_type} in config!")
 
-        # TODO: decide what is passed via self.
-        self._load_dir(self._img_paths, method=method, num_features=num_features)
-
-    def _get_capped_resolution(self, img_hw: tuple[int, int]) -> tuple[int, int, float]:
-        """Calculate resolution preserving aspect ratio, given max_size."""
-        h, w = img_hw
-        scale = self._max_size / max(h, w)
-        return int(h * scale), int(w * scale), scale
-
-    # TODO: extract as standalone funcs to be curried by dedicated factory as the matchers are
-    # feature_func to be
-    def _extract_sift(self, img_path: Path, num_features: int) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
+    def _extract_sift(self, img_path: Path) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
         """Extract SIFT features from a single image."""
         img = cv.imread(str(img_path))  # (H, W, 3)
-        if self._scale < 1.0:
+        if self.scale < 1.0:
             # AREA interpolation friendlier to feature extraction
-            img = cv.resize(img, dsize=None, fx=self._scale, fy=self._scale, interpolation=cv.INTER_AREA)
+            img = cv.resize(img, dsize=None, fx=self.scale, fy=self.scale, interpolation=cv.INTER_AREA)
 
         gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-        sift = cv.SIFT_create(nfeatures=num_features)  # ty:ignore[unresolved-attribute]
+        sift = cv.SIFT_create(nfeatures=self.cfg.num_features)  # ty:ignore[unresolved-attribute]
         kps, des = sift.detectAndCompute(gray, None)
 
         # Convert list[cv.KeyPoint] to NDArray (N, 2)
@@ -197,20 +159,16 @@ class FeatureStore:
 
         return kp, des, cv.cvtColor(img, cv.COLOR_BGR2RGB)
 
-    def _extract_disk(self, img_path: Path, num_features: int) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
+    def _extract_disk(self, img_path: Path) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
         """Extract DISK features from a single image."""
-        # Lazy load DISK model
-        if self._disk_model is None:
-            self._disk_model = KF.DISK.from_pretrained("depth").eval().to(device)
-
         # Load image as (3, H, W)
         img_tensor = K.io.load_image(img_path, K.io.ImageLoadType.RGB32, device=device)[None, ...]
-        if self._scale < 1.0:
-            img_tensor = F.interpolate(img_tensor, scale_factor=self._scale, mode="area")
+        if self.scale < 1.0:
+            img_tensor = F.interpolate(img_tensor, scale_factor=self.scale, mode="area")
 
         # Extract features
         with torch.inference_mode():
-            features = self._disk_model(img_tensor, num_features, pad_if_not_divisible=True)[0]
+            features = self.disk_model(img_tensor, self.cfg.num_features, pad_if_not_divisible=True)[0]
 
         kp = features.keypoints.cpu().numpy()  # (N, 2)
         des = features.descriptors.cpu().numpy()  # (N, D)
@@ -222,18 +180,53 @@ class FeatureStore:
 
         return kp, des, (img * 255).astype(np.uint8)  # [0, 1] -> [0, 255] for PLY export
 
-    def _load_dir(self, img_paths: list[Path], method: Literal["sift", "disk"], num_features: int, ext: str = "jpg"):
-        """Load all images from directory and extract features using specified method."""
+    def __call__(self, img_path: Path) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
+        return self._extract_fn(img_path)
+
+
+class FeatureStore:
+    """Manages feature extraction and storage for multiple images.
+
+    Handles loading images from a directory, extracting keypoints and descriptors
+    using a provided FeatureExtractor, and storing the results along with camera
+    intrinsics. Supports automatic image downsampling if images exceed max_size.
+
+    Attributes:
+        _store: List of ImageData objects containing extracted features for each image.
+        _K: Camera intrinsic matrix.
+        _dist: Camera distortion coefficients.
+        _scale: Scaling factor applied to images during feature extraction.
+    """
+
+    def __init__(
+        self,
+        img_dir: Path,
+        K: NDArrayFloat,
+        dist: NDArrayFloat,
+        feature_extractor: FeatureExtractor,
+        ext: str = "jpg",
+        max_frames: int | None = None,
+    ):
+        self._store: list[ImageData] = []
+        self._scale = feature_extractor.scale
+        self._feature_fn = feature_extractor
+        self._max_frames = max_frames
+        self._K = K
+        self._dist = dist
+        self._img_paths = sorted(list(Path(img_dir).glob(f"*.{ext}")))
+        if not self._img_paths:
+            raise ValueError(f"No *.{ext} images found in {img_dir}")
+
+        self._load_dir(self._img_paths)
+
+    def _load_dir(self, img_paths: list[Path]):
+        """Load all images from directory and extract features using the provided feature function."""
 
         for idx, filepath in enumerate(img_paths):
             if self._max_frames and idx >= self._max_frames:
                 print(f"Reached max_frames={self._max_frames}, stopping further loading.")
                 break
-            if method == "sift":
-                kp, des, img = self._extract_sift(filepath, num_features)
-            else:  # disk
-                kp, des, img = self._extract_disk(filepath, num_features)
-
+            kp, des, img = self._feature_fn(filepath)
             self._store.append(ImageData(idx, filepath, img, kp, des))
 
     def get_intrisics(self, rescaled=True) -> tuple[NDArrayFloat, NDArrayFloat]:
@@ -276,12 +269,10 @@ class FeatureStore:
         """Yield images for which we have a pose estimate."""
         yield from (img_data for img_data in self._store if img_data.has_pose)
 
-    # TODO: extract as standalone generator function; curried for dir by decorator?
     def iter_dir_image_data(self) -> Iterable[ImageData]:
         """Yield ImageData objects for all images in the directory."""
-        extract_features = self._extract_sift if self._method == "sift" else self._extract_disk
         for idx, filepath in enumerate(self._img_paths):
-            kp, des, img = extract_features(filepath, self._num_features)
+            kp, des, img = self._feature_fn(filepath)
             yield ImageData(idx, filepath, img, kp, des)
 
 
@@ -390,7 +381,9 @@ def _match_bf(
     return dist, np.array([(m.queryIdx, m.trainIdx) for m in matches])  # (N, 2)
 
 
-def make_keypoint_matcher(cfg: SfMConfig):
+def make_keypoint_matcher(
+    cfg: SfMConfig | SLAMConfig,
+) -> Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]]:
     if cfg.matcher_type == "bf":
         return partial(_match_bf, lowe_ratio=cfg.lowe_ratio, cross_check=cfg.cross_check)
     if cfg.matcher_type == "lightglue":

@@ -10,6 +10,7 @@ from rich.pretty import pprint
 from ba import bundle_adjustment
 from config import SfMConfig
 from utils import (
+    FeatureExtractor,
     FeatureStore,
     ImageData,
     NDArrayFloat,
@@ -254,9 +255,8 @@ def main(cfg: SfMConfig = SfMConfig()):
 
     # Load all images & extract features
     print(f"Extracting {cfg.feature_type.upper()} features from {img_dir}...")
-    image_store = FeatureStore(
-        img_dir, K, dist, method=cfg.feature_type, num_features=cfg.num_features, max_size=cfg.max_size
-    )
+    feature_extractor = FeatureExtractor(cfg, img_dir)
+    image_store = FeatureStore(img_dir, K, dist, feature_extractor=feature_extractor)
     track_manager = TrackManager()
     point_cloud = PointCloud()
     exporter = ReconIO(point_cloud, image_store, track_manager)

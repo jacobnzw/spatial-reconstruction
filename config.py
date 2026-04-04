@@ -55,3 +55,46 @@ class SfMConfig:
 
     save_gsplat: bool = False
     """Save tensors for gsplat (without BA)"""
+
+
+@dataclass
+class SLAMConfig:
+    """Configuration for GTSAM ISAM2 SLAM pipeline.
+
+    Modify the default values here for experimentation.
+    Command-line overrides: --cfg.param_name value
+    """
+
+    # Feature extraction
+    feature_type: Literal["sift", "disk"] = "sift"
+    """Feature extraction method: 'sift' or 'disk'"""
+
+    num_features: int = 1_000
+    """Maximum number of features to extract per image"""
+
+    max_size: int = 512
+    """Maximum image dimension (images will be resized if larger)"""
+
+    # Keypoint matching
+    matcher_type: Literal["bf", "lightglue"] = "bf"
+    """Keypoint matching method: 'bf' (brute-force) or 'lightglue'"""
+
+    lowe_ratio: float = 0.75
+    """Lowe's ratio test threshold for BF matcher (only used when matcher='bf' and cross_check=False)"""
+
+    cross_check: bool = True
+    """Whether to use cross-checking for BF matcher (only used when matcher='bf')"""
+
+    min_dist: float = 0.0
+    """Minimum distance threshold for LightGlue matcher (only used when matcher='lightglue')"""
+
+    # Dataset
+    dataset: str = "dataset-corridor4_512_16"
+    """Dataset name (subdirectory in data/tum/)"""
+
+    # View graph construction
+    min_inliers: int = 50
+    """Minimum number of inliers to consider two views as overlapping"""
+
+    max_frames: int = 100
+    """Maximum number of frames to process from the dataset"""

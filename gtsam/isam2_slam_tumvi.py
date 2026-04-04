@@ -1,4 +1,5 @@
 from __future__ import print_function
+from matplotlib.pylab import e
 
 from collections import deque
 from pathlib import Path
@@ -10,7 +11,7 @@ import yaml
 from gtsam.symbol_shorthand import L, X
 
 import gtsam
-from config import SfMConfig
+from config import SLAMConfig
 from gtsam import Point2, Point3, Pose3, Rot3
 from sfm import add_view, compute_baseline_estimate
 from utils import (
@@ -20,10 +21,8 @@ from utils import (
     TrackManager,
     has_overlap,
     make_keypoint_matcher,
+    FeatureExtractor,
 )
-
-dataset_path = Path("data/tum/dataset-corridor4_512_16")
-image_dir = Path(dataset_path) / "dso" / "cam0" / "images"
 
 
 def load_intrinsics(dataset_path, cam_key: str = "cam0"):
@@ -186,8 +185,9 @@ def add_new_keyframe_factors(
     initial_estimates.insert(X(img.idx), gtsam_cam_pose(img))
 
 
-def visual_ISAM2_tumvi_example(dataset_path, max_frames: int = 40):
-    # plt.ion()
+def visual_ISAM2_tumvi_example(cfg: SLAMConfig):
+    dataset_path = Path("data/tum") / cfg.dataset
+    image_dir = Path(dataset_path) / "dso" / "cam0" / "images"
 
     # fx, fy, s, cx, cy
     k_vec, dist = load_intrinsics(dataset_path)
@@ -205,11 +205,12 @@ def visual_ISAM2_tumvi_example(dataset_path, max_frames: int = 40):
 
     track_manager = TrackManager()
     point_cloud = PointCloud()
+
     # Load images
-    # images = load_tumvi_images(dataset_path, max_frames)
+    extractor = FeatureExtractor(cfg, image_dir, ext="png")
     image_dir = Path(dataset_path) / "dso" / "cam0" / "images"
-    images = FeatureStore(image_dir, K.K(), dist, ext="png", max_frames=max_frames)
-    kp_matcher = make_keypoint_matcher(SfMConfig())
+    images = FeatureStore(image_dir, K.K(), dist, feature_extractor=extractor, ext="png", max_frames=cfg.max_frames)
+    kp_matcher = make_keypoint_matcher(cfg)
 
     num_recent_keyframes = 10
     keyframe_window = deque(maxlen=num_recent_keyframes)  # keep ~8–15 recent keyframes
@@ -275,4 +276,5 @@ def visual_ISAM2_tumvi_example(dataset_path, max_frames: int = 40):
 
 
 if __name__ == "__main__":
-    visual_ISAM2_tumvi_example(dataset_path, max_frames=110)
+    cfg = SLAMConfig()
+    visual_ISAM2_tumvi_example(cfg)
