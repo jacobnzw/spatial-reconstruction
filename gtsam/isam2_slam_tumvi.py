@@ -16,8 +16,8 @@ from gtsam import Point2, Point3, Pose3, Rot3
 from sfm import add_view, compute_baseline_estimate
 from utils import (
     FeatureExtractor,
-    FeatureStore,
     ImageData,
+    NDArrayFloat,
     PointCloud,
     TrackManager,
     has_overlap,
@@ -25,21 +25,109 @@ from utils import (
 )
 
 
+class KeyframeStreamer:
+    """Streams keyframes from a directory of images.
+
+    This class handles loading images, extracting features, and determining which frames should be
+    keyframes based on motion. It also provides a method to find the best reference keyframe for a
+    new keyframe based on overlap and triangulated tracks.
+
+    Args:
+        image_dir: Directory containing the images.
+        feature_extractor: An instance of FeatureExtractor to extract keypoints and descriptors.
+        matcher: A keypoint matcher function that takes two ImageData objects and returns matches.
+        ext: Image file extension (default: "png").
+        max_motion_matches: Maximum number of matches to consider for judging motion (default: 120).
+        max_frames: Maximum number of frames to keep in the sliding window for keyframe selection (default: 10).
+        max_read_frames: Optional maximum number of frames to read from the directory (default: None, meaning read all).
+    """
+
+    def __init__(
+        self,
+        image_dir: Path,
+        feature_extractor: FeatureExtractor,
+        matcher,
+        ext="png",
+        max_motion_matches=120,
+        max_window_keyframes=10,
+        max_read_frames=None,
+    ):
+        self.image_dir = sorted(list(Path(image_dir).glob(f"*.{ext}")))
+        self.extractor = feature_extractor
+        self.matcher = matcher
+        self.max_motion_matches = max_motion_matches
+        self.max_read_frames = max_read_frames
+        self._frame_window = deque(maxlen=max_window_keyframes)
+
+    def _enough_motion_for_keyframe(self, frame: ImageData) -> bool:
+        pnp_min = 4  # PnP needs at least 4 matches to work
+
+        last_kf = self._frame_window[-1]  # pick last keyframe
+        _, matches = self.matcher(last_kf, frame)
+
+        if pnp_min <= len(matches) < self.max_motion_matches:
+            return True
+
+        return False
+
+    def keyframes(self):
+        """Yields pairs of consecutive keyframes."""
+        for idx, filepath in enumerate(self.image_dir):
+            if self.max_read_frames and idx > self.max_read_frames:
+                print(f"Reached {self.max_read_frames=}, stopping further loading.")
+                break
+
+            kp, des, img = self.extractor(filepath)
+            frame = ImageData(idx, filepath, img, kp, des)
+
+            # Add 1st frame as keyframe
+            if idx == 0:
+                self._frame_window.append(frame)
+                continue
+
+            # yield only frames that are sufficiently different from the last keyframe
+            if self._enough_motion_for_keyframe(frame):
+                self._frame_window.append(frame)
+                yield frame, self._frame_window[-2]
+
+    def find_reference_frame(
+        self,
+        frame: ImageData,
+        track_manager: TrackManager,
+        K: NDArrayFloat,
+        min_inliers: int = 30,
+    ) -> ImageData | None:
+        """Pick the reference image that gives the most reliable 3D-2D correspondences."""
+        best_ref = None
+        best_score = -1
+
+        for ref in self._frame_window:
+            # Use your existing has_overlap (geometric validation + E-matrix inliers)
+            is_overlapping, inliers, matches = has_overlap(ref, frame, K, self.matcher, min_inliers)
+            if not is_overlapping:
+                continue
+
+            # Count how many of these inliers are already triangulated tracks
+            triangulated_count = 0
+            for m in matches[:inliers]:  # only inliers
+                kp_key_ref = (ref.idx, m[0])  # queryIdx in ref
+                if track_manager.get_track(kp_key_ref) is not None:
+                    triangulated_count += 1
+
+            if triangulated_count > best_score:
+                best_score = triangulated_count
+                best_ref = ref
+
+        # Fallback: always prefer the most recent keyframe if it has at least a few points
+        if best_ref is None and len(self._frame_window) > 0:
+            best_ref = self._frame_window[-1]  # most recent is usually the safest geometrically
+
+        return best_ref
+
+
 def load_intrinsics(dataset_path, cam_key: str = "cam0"):
     camchain_file = yaml.safe_load((Path(dataset_path) / "dso" / "camchain.yaml").open())
     return np.array(camchain_file[cam_key]["intrinsics"]), np.array(camchain_file[cam_key]["distortion_coeffs"])
-
-
-def enough_motion_for_keyframe(new_img: ImageData, last_kf_img: ImageData | None, kp_matcher, max_matches=60) -> bool:
-    # if last_kf_img is None:  # when processing first image
-    #     return True
-
-    pnp_min = 4  # PnP needs at least 4 matches to work
-    _, matches = kp_matcher(last_kf_img, new_img)
-    if pnp_min <= len(matches) < max_matches:
-        return True
-
-    return False
 
 
 def visual_ISAM2_plot(result):
@@ -86,42 +174,6 @@ def gtsam_keypoints_from_pose(img: ImageData, tm: TrackManager) -> list[Point3]:
     return [Point2(img.kp[pt]) for pt in kpkeys]
 
 
-def pick_best_reference(
-    query_img: ImageData,
-    window: deque[ImageData],
-    track_manager: TrackManager,
-    K: np.array,
-    kp_matcher,
-    min_inliers: int = 30,
-) -> ImageData | None:
-    """Pick the reference image that gives the most reliable 3D-2D correspondences."""
-    best_ref = None
-    best_score = -1
-
-    for ref in window:
-        # Use your existing has_overlap (geometric validation + E-matrix inliers)
-        is_overlapping, inliers, matches = has_overlap(ref, query_img, K, kp_matcher, min_inliers)
-        if not is_overlapping:
-            continue
-
-        # Count how many of these inliers are already triangulated tracks
-        triangulated_count = 0
-        for m in matches[:inliers]:  # only inliers
-            kp_key_ref = (ref.idx, m[0])  # queryIdx in ref
-            if track_manager.get_track(kp_key_ref) is not None:
-                triangulated_count += 1
-
-        if triangulated_count > best_score:
-            best_score = triangulated_count
-            best_ref = ref
-
-    # Fallback: always prefer the most recent keyframe if it has at least a few points
-    if best_ref is None and len(window) > 0:
-        best_ref = window[-1]  # most recent is usually the safest geometrically
-
-    return best_ref
-
-
 def add_initial_factors_and_priors(
     graph: gtsam.NonlinearFactorGraph,
     initial_estimates,
@@ -142,7 +194,6 @@ def add_initial_factors_and_priors(
     graph.add(gtsam.BetweenFactorPose3(X(img0.idx), X(img1.idx), baseline_pose, between_noise))
     # First pose got prior + init value, other poses get only init value
     initial_estimates.insert(X(img1.idx), gtsam_cam_pose(img1))
-    # TODO: what's the diff btw: putting a prior on pose vs. using initial value for pose
 
     # Initials for landmarks from both images (img0 sufficient; no need for img1)
     # When bootstrapping from first two frames, landmarks observed from img0 same as those from img1,
@@ -229,42 +280,36 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
     # Load images
     extractor = FeatureExtractor(cfg, image_dir, ext="png")
     image_dir = Path(dataset_path) / "dso" / "cam0" / "images"
-    images = FeatureStore(image_dir, K.K(), dist, feature_extractor=extractor, ext="png", max_frames=cfg.max_frames)
+    # images = FeatureStore(image_dir, K.K(), dist, feature_extractor=extractor, ext="png", max_frames=cfg.max_frames)
     kp_matcher = make_keypoint_matcher(cfg)
+    streamer = KeyframeStreamer(
+        image_dir,
+        extractor,
+        kp_matcher,
+        max_motion_matches=cfg.max_motion_matches,
+        max_window_keyframes=cfg.max_window_keyframes,
+        max_read_frames=cfg.max_frames,
+    )
 
-    keyframe_window = deque(maxlen=cfg.max_window_keyframes)  # keep ~8–15 recent keyframes
-    last_keyframe_idx = 0
-    keyframe_window.append(images[last_keyframe_idx])
-
-    for img in images:
-        if img.idx == 0:
-            continue
-
-        last_kf_img = images[last_keyframe_idx]
-        if not enough_motion_for_keyframe(img, last_kf_img, kp_matcher, max_matches=cfg.max_motion_matches):
-            continue  # skip non-keyframes (very important at 20 Hz!)
-
-        # --- Now we have a new keyframe ---
-        if last_keyframe_idx == 0:
-            print(f"First pair of keyframes: {keyframe_window[0].idx=} and {img.idx=}...")
-            compute_baseline_estimate(keyframe_window[0], img, K.K(), track_manager, point_cloud, kp_matcher)
+    for keyframe, prev_keyframe in streamer.keyframes():
+        if prev_keyframe.idx == 0:
+            print(f"First pair of keyframes: {keyframe.idx=} and {prev_keyframe.idx=}...")
+            compute_baseline_estimate(prev_keyframe, keyframe, K.K(), track_manager, point_cloud, kp_matcher)
             # now have: first triang 3d points (landmarks) + keypoints for each image (cam pose)
             add_initial_factors_and_priors(
-                graph, initial_estimate, K, keyframe_window[0], img, track_manager, point_cloud
+                graph, initial_estimate, K, prev_keyframe, keyframe, track_manager, point_cloud
             )
-            last_keyframe_idx = img.idx
-            keyframe_window.append(img)
             continue
 
-        print(f"Processing frame {img.idx}: {img.path}")
+        print(f"Processing frame {keyframe.idx}: {keyframe.path}")
 
         # Normal keyframe: pick most overlapping recent keyframe
-        ref = pick_best_reference(img, keyframe_window, track_manager, K.K(), kp_matcher)
+        ref = streamer.find_reference_frame(keyframe, track_manager, K.K(), min_inliers=cfg.min_inliers)
         if ref is None:
             print("No good reference found — skipping keyframe")
             continue
-        add_view(img, ref, K.K(), dist, track_manager, point_cloud, kp_matcher)
-        add_new_keyframe_factors(graph, initial_estimate, isam, img, ref, K, track_manager, point_cloud)
+        add_view(keyframe, ref, K.K(), dist, track_manager, point_cloud, kp_matcher)
+        add_new_keyframe_factors(graph, initial_estimate, isam, keyframe, ref, K, track_manager, point_cloud)
 
         # === DEBUG: inspect the graph before iSAM2 update ===
         print("\n=== GRAPH DEBUG AFTER BOOTSTRAP ===")
@@ -306,13 +351,12 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
         isam.update()  # optional extra iteration
 
         # bookkeeping
-        print(f"DEBUG: keyframe idxs = {[kf.idx for kf in keyframe_window]}, current img idx = {img.idx}")
-        last_keyframe_idx = img.idx
+        print(f"DEBUG: keyframe window = {[kf.idx for kf in streamer._frame_window]}")
 
         # # Show current estimate
         # current_estimate = isam.calculateEstimate()
-        # print(f"Frame {img.idx} poses:")
-        # for j in range(img.idx + 1):
+        # print(f"Frame {keyframe.idx} poses:")
+        # for j in range(keyframe.idx + 1):
         #     if current_estimate.exists(X(j)):
         #         print(X(j), ":", current_estimate.atPose3(X(j)))
         # visual_ISAM2_plot(current_estimate, ax_lim=10, delay_sec=0.5)
