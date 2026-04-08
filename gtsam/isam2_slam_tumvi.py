@@ -1,5 +1,4 @@
 from __future__ import print_function
-from matplotlib.pylab import e
 
 from collections import deque
 from pathlib import Path
@@ -7,6 +6,7 @@ from pathlib import Path
 import gtsam.utils.plot as gtsam_plot
 import matplotlib.pyplot as plt
 import numpy as np
+import tyro
 import yaml
 from gtsam.symbol_shorthand import L, X
 
@@ -15,13 +15,13 @@ from config import SLAMConfig
 from gtsam import Point2, Point3, Pose3, Rot3
 from sfm import add_view, compute_baseline_estimate
 from utils import (
+    FeatureExtractor,
     FeatureStore,
     ImageData,
     PointCloud,
     TrackManager,
     has_overlap,
     make_keypoint_matcher,
-    FeatureExtractor,
 )
 
 
@@ -71,7 +71,7 @@ def gtsam_cam_pose(img: ImageData) -> Pose3:
 
 
 def gtsam_landmarks_from_pose(img: ImageData, tm: TrackManager, landmarks: PointCloud) -> list[Point3]:
-    """Get landmarks (3D pts) visible from cam pose in img0"""
+    """Get landmarks (3D pts) visible from cam pose in img"""
     tids = tm.get_triangulated_view_tracks(img.idx)
     return tids, [Point3(pt) for pt in landmarks.get_points_as_array(tids)]
 
@@ -136,24 +136,27 @@ def add_initial_factors_and_priors(
     pose_noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.1, 0.1, 0.1, 0.3, 0.3, 0.3]))
     graph.addPriorPose3(X(img0.idx), origin_pose, pose_noise)
     initial_estimates.insert(X(img0.idx), origin_pose)
+
+    baseline_pose = gtsam_cam_pose(img1)  # img1 is the second keyframe
+    between_noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.2, 0.2, 0.2, 0.5, 0.5, 0.5]))
+    graph.add(gtsam.BetweenFactorPose3(X(img0.idx), X(img1.idx), baseline_pose, between_noise))
     # First pose got prior + init value, other poses get only init value
     initial_estimates.insert(X(img1.idx), gtsam_cam_pose(img1))
     # TODO: what's the diff btw: putting a prior on pose vs. using initial value for pose
 
-    # Initials for landmarks from both images (img0 sufficient; no need for  img1)
+    # Initials for landmarks from both images (img0 sufficient; no need for img1)
     # When bootstrapping from first two frames, landmarks observed from img0 same as those from img1,
     # otherwise they couldn't get triangulated.
     x0_lm_tids, x0_landmarks = gtsam_landmarks_from_pose(img0, track_manager, point_cloud)
 
-    # Prior on first landmark (fixes scale)
-    lm_noise = gtsam.noiseModel.Isotropic.Sigma(3, 2.0)
-    graph.addPriorPoint3(L(0), x0_landmarks[0], lm_noise)
-
+    # Prior on landmarks (fixes scale; stabilizes optimization in initial phase)
+    lm_noise = gtsam.noiseModel.Isotropic.Sigma(3, 5.0)
     # Observation noise (pixels)
-    obs_noise = gtsam.noiseModel.Isotropic.Sigma(2, 2.0)
+    obs_noise = gtsam.noiseModel.Isotropic.Sigma(2, 5.0)
     # for each landmark observed in this frame
     for lm_tid, lm in zip(x0_lm_tids, x0_landmarks):
-        # Add factor for each view observing landmark L(l)
+        graph.addPriorPoint3(L(lm_tid), lm, lm_noise)
+        # Add factor for each view observing landmark L(lm_tid)
         for img_idx, kp_idx in track_manager.get_keypoints(lm_tid):
             obs = img0.kp[kp_idx] if img_idx == 0 else img1.kp[kp_idx]
             # Landmark indices are track IDs (addresses to the point_cloud)
@@ -164,28 +167,45 @@ def add_initial_factors_and_priors(
 def add_new_keyframe_factors(
     graph: gtsam.NonlinearFactorGraph,
     initial_estimates: gtsam.Values,
-    img: ImageData,
+    isam,
+    img_new: ImageData,
+    img_ref: ImageData,
     K: gtsam.Cal3_S2,
     track_manager: TrackManager,
     point_cloud: PointCloud,
 ):
-    tids, lms = gtsam_landmarks_from_pose(img, track_manager, point_cloud)
+    # Landmark IDs and 3D positions visible from new view (img_new)
+    tids, lms = gtsam_landmarks_from_pose(img_new, track_manager, point_cloud)
 
     # Add factors joining new view (keyframe) pose X with all the visible landmarks L (from pose X)
-    obs_noise = gtsam.noiseModel.Isotropic.Sigma(2, 2.0)
+    obs_noise = gtsam.noiseModel.Isotropic.Sigma(2, 5.0)
     for tid, lm in zip(tids, lms):
         # Get KP observation of the landmark (lm) in the new view (img)
-        kp_keys = track_manager.get_keypoints(tid, img.idx)
-        assert len(kp_keys) == 1  # geometrically only 1 KP possible; True for symmetric view-to-view KP matches
-        obs = img.kp[kp_keys[0][1]][:, None]
+        kp_keys = track_manager.get_keypoints(tid)
+        for img_idx, kp_idx in kp_keys:
+            if img_idx != img_new.idx and img_idx != img_ref.idx:
+                continue  # only add factors for the new keyframe and its reference keyframe (for now)
+            # Note: the landmarks observed in new keyframe were triangulated from the reference keyframe,
+            # so they must have been observed in the reference keyframe (img_ref).
+            img = img_new if img_idx == img_new.idx else img_ref
+            obs = img.kp[kp_idx][:, None]  # make (2,) into (2,1) for gtsam
+            graph.add(gtsam.GenericProjectionFactorCal3_S2(obs, obs_noise, X(img.idx), L(tid), K))
 
-        graph.add(gtsam.GenericProjectionFactorCal3_S2(obs, obs_noise, X(img.idx), L(tid), K))
-        if not initial_estimates.exists(L(tid)):
+        # Landmark initials: only add if not already in graph (from previous keyframes)
+        # FIXME: how not to re-add L(0) already in graph or isam object? isam.valueExists(L(0))?
+        if not isam.valueExists(L(tid)) and not initial_estimates.exists(L(tid)):
             initial_estimates.insert(L(tid), lm)
-    initial_estimates.insert(X(img.idx), gtsam_cam_pose(img))
+            # Priors help stabilize in initial phase
+            lm_noise = gtsam.noiseModel.Isotropic.Sigma(3, 5.0)
+            graph.add(gtsam.PriorFactorPoint3(L(tid), lm, lm_noise))
+
+    # Pose initials: for new pose (possibly ref pose if not already in graph)
+    initial_estimates.insert(X(img_new.idx), gtsam_cam_pose(img_new))
+    if not isam.valueExists(X(img_ref.idx)) and not initial_estimates.exists(X(img_ref.idx)):
+        initial_estimates.insert(X(img_ref.idx), gtsam_cam_pose(img_ref))
 
 
-def visual_ISAM2_tumvi_example(cfg: SLAMConfig):
+def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
     dataset_path = Path("data/tum") / cfg.dataset
     image_dir = Path(dataset_path) / "dso" / "cam0" / "images"
 
@@ -212,8 +232,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig):
     images = FeatureStore(image_dir, K.K(), dist, feature_extractor=extractor, ext="png", max_frames=cfg.max_frames)
     kp_matcher = make_keypoint_matcher(cfg)
 
-    num_recent_keyframes = 10
-    keyframe_window = deque(maxlen=num_recent_keyframes)  # keep ~8–15 recent keyframes
+    keyframe_window = deque(maxlen=cfg.max_window_keyframes)  # keep ~8–15 recent keyframes
     last_keyframe_idx = 0
     keyframe_window.append(images[last_keyframe_idx])
 
@@ -221,13 +240,8 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig):
         if img.idx == 0:
             continue
 
-        # print(f"{last_keyframe_idx=}")
-        # if last_kf_img is not None:
-        #     print(f"{last_kf_img.idx=}")
-
-        # last_kf_img = None if last_keyframe_idx == 0 else images[last_keyframe_idx]
         last_kf_img = images[last_keyframe_idx]
-        if not enough_motion_for_keyframe(img, last_kf_img, kp_matcher, max_matches=150):
+        if not enough_motion_for_keyframe(img, last_kf_img, kp_matcher, max_matches=cfg.max_motion_matches):
             continue  # skip non-keyframes (very important at 20 Hz!)
 
         # --- Now we have a new keyframe ---
@@ -250,25 +264,63 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig):
             print("No good reference found — skipping keyframe")
             continue
         add_view(img, ref, K.K(), dist, track_manager, point_cloud, kp_matcher)
+        add_new_keyframe_factors(graph, initial_estimate, isam, img, ref, K, track_manager, point_cloud)
 
-        # --- Now push everything to iSAM2 ---
-        add_new_keyframe_factors(graph, initial_estimate, img, K, track_manager, point_cloud)
+        # === DEBUG: inspect the graph before iSAM2 update ===
+        print("\n=== GRAPH DEBUG AFTER BOOTSTRAP ===")
+        print(f"  Factors in graph: {graph.size()}")
+        print(f"  Initial estimates size: {initial_estimate.size()}")
+
+        # Count observations per landmark
+        from collections import defaultdict
+
+        obs_per_lm = defaultdict(list)
+        for i in range(graph.size()):
+            factor = graph.at(i)
+            if isinstance(factor, gtsam.GenericProjectionFactorCal3_S2):
+                lm_key = factor.keys()[1]  # second key is the landmark
+                obs_per_lm[lm_key].append(factor.keys()[0])  # camera that sees it
+
+        bad_lms = []
+        for lm_key, cams in obs_per_lm.items():
+            if len(cams) < 2:
+                bad_lms.append((lm_key, len(cams)))
+            # Also check initial depth (points near infinity are deadly)
+            if initial_estimate.exists(lm_key):
+                pt = initial_estimate.atPoint3(lm_key)
+                depth = np.linalg.norm(pt)
+                if depth > 100 or depth < 0.1:
+                    print(f"  Suspicious landmark {lm_key} depth = {depth:.2f} m")
+
+        print(f"  Landmarks with <2 observations: {len(bad_lms)}")
+        if bad_lms:
+            print("  →", bad_lms[:10])  # show first 10 bad ones
+
+        # Specifically check the one that failed
+        lmark = L(147)  # or whatever track ID corresponds to the bad landmark
+        if initial_estimate.exists(lmark):
+            pt = initial_estimate.atPoint3(lmark)
+            print(f"  Landmark {lmark} initial position: {pt}, norm = {np.linalg.norm(pt):.2f}")
+
         isam.update(graph, initial_estimate)
         isam.update()  # optional extra iteration
 
         # bookkeeping
+        print(f"DEBUG: keyframe idxs = {[kf.idx for kf in keyframe_window]}, current img idx = {img.idx}")
         last_keyframe_idx = img.idx
 
-        # Show current estimate
-        current_estimate = isam.calculateEstimate()
-        print(f"Frame {img.idx} poses:")
-        for j in range(img.idx + 1):
-            if current_estimate.exists(X(j)):
-                print(X(j), ":", current_estimate.atPose3(X(j)))
+        # # Show current estimate
+        # current_estimate = isam.calculateEstimate()
+        # print(f"Frame {img.idx} poses:")
+        # for j in range(img.idx + 1):
+        #     if current_estimate.exists(X(j)):
+        #         print(X(j), ":", current_estimate.atPose3(X(j)))
         # visual_ISAM2_plot(current_estimate, ax_lim=10, delay_sec=0.5)
 
-        # Clear for next incremental step
-        graph.resize(0)
+        # # Clear for next incremental step
+        # if len(keyframe_window) == keyframe_window.maxlen:
+        #     print("Clearing graph and initial estimates for next batch...")
+        # graph.resize(0)
         initial_estimate.clear()
 
     # plt.ioff()
@@ -276,5 +328,4 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig):
 
 
 if __name__ == "__main__":
-    cfg = SLAMConfig()
-    visual_ISAM2_tumvi_example(cfg)
+    tyro.cli(visual_ISAM2_tumvi_example)

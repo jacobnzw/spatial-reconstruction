@@ -269,6 +269,7 @@ class FeatureStore:
         """Yield images for which we have a pose estimate."""
         yield from (img_data for img_data in self._store if img_data.has_pose)
 
+    # TODO: eventually take out as standalone func for streaming a directory of images without storing all in memory
     def iter_dir_image_data(self) -> Iterable[ImageData]:
         """Yield ImageData objects for all images in the directory."""
         for idx, filepath in enumerate(self._img_paths):

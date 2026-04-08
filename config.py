@@ -96,5 +96,11 @@ class SLAMConfig:
     min_inliers: int = 50
     """Minimum number of inliers to consider two views as overlapping"""
 
-    max_frames: int = 100
+    max_frames: int = 300
     """Maximum number of frames to process from the dataset"""
+
+    max_window_keyframes: int = 10
+    """Maximum number of recent keyframes to keep in the sliding window for optimization"""
+
+    max_motion_matches: int = 120
+    """Maximum number of keypoint matches to judge the motion between frames (if too high, we might add redundant keyframes with little motion)"""
