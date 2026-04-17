@@ -25,6 +25,7 @@ from utils import (
 )
 
 
+# TODO: rename to initialize_from_two_views (to go with "add_view"); improve docstring: bootstrapping SFM process
 def compute_baseline_estimate(
     img_0: ImageData,
     img_1: ImageData,
@@ -124,10 +125,16 @@ def add_view(
     )
     if not pnp_ok:
         raise ValueError("solvePnP failed to estimate pose.")
-    print(f"Pose estimation succeeded with {len(inliers)} inliers")
+    print(
+        f"Pose estimation succeeded with {len(inliers)} inliers (Inlier ratio: {len(inliers) / len(object_points):.2f})"
+    )
     # Estimated pose is relative to 3D point frame (i.e. the world frame); no pose composition required
     R = cv.Rodrigues(rvec)[0]
     img_new.set_pose(R, tvec)
+
+    # Translation vector between the new image and the reference image
+    tvec_baseline = img_ref.R.T @ (img_new.t - img_ref.t)
+    print(f"Baseline translation from ref to new image: {np.linalg.norm(tvec_baseline):.2f}")
 
     # TODO: optionally add reprojection error based KP filtering, followed by PnP re-estimation
 
@@ -143,6 +150,7 @@ def add_view(
     # Triangulate the untracked KPs in the new image
     points_4d = cv.triangulatePoints(P_ref, P_new, pts_ref.T, pts_new.T)
     points_3d = (points_4d[:3] / points_4d[3]).T
+    # TODO: filter for points only in front of both cameras (positive depth) and with low reprojection error;
 
     # Create track for each pair of KPs (ref, new) that were triangulated to a 3D point
     kp_key_pairs = [((img_ref.idx, m[0]), (img_new.idx, m[1])) for m in matches_untracked]

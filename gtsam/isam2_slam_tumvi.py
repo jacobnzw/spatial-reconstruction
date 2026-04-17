@@ -12,7 +12,14 @@ from gtsam.symbol_shorthand import L, X
 
 import gtsam
 from config import SLAMConfig
-from gtsam import Point2, Point3, Pose3, Rot3
+from gtsam import (
+    Point2,
+    Point3,
+    Pose3,
+    Rot3,
+    SmartProjectionParams,
+    SmartProjectionPoseFactorCal3_S2,
+)
 from sfm import add_view, compute_baseline_estimate
 from utils import (
     FeatureExtractor,
@@ -57,15 +64,16 @@ class KeyframeStreamer:
         self.matcher = matcher
         self.max_motion_matches = max_motion_matches
         self.max_read_frames = max_read_frames
-        self._frame_window = deque(maxlen=max_window_keyframes)
+        self._keyframe_window = deque(maxlen=max_window_keyframes)
 
     def _enough_motion_for_keyframe(self, frame: ImageData) -> bool:
-        pnp_min = 4  # PnP needs at least 4 matches to work
+        pnp_min = 40  # PnP needs at least 40 matches to work
 
-        last_kf = self._frame_window[-1]  # pick last keyframe
+        last_kf = self._keyframe_window[-1]  # pick last keyframe
         _, matches = self.matcher(last_kf, frame)
 
         if pnp_min <= len(matches) < self.max_motion_matches:
+            print(f"New keyframe  → {frame.idx=} passed with {len(matches)} matches to {last_kf.idx=}.")
             return True
 
         return False
@@ -82,34 +90,42 @@ class KeyframeStreamer:
 
             # Add 1st frame as keyframe
             if idx == 0:
-                self._frame_window.append(frame)
+                self._keyframe_window.append(frame)
                 continue
 
             # yield only frames that are sufficiently different from the last keyframe
             if self._enough_motion_for_keyframe(frame):
-                self._frame_window.append(frame)
-                yield frame, self._frame_window[-2]
+                self._keyframe_window.append(frame)
+                yield frame, self._keyframe_window[-2]
 
     def find_reference_frame(
         self,
-        frame: ImageData,
+        keyframe: ImageData,
         track_manager: TrackManager,
         K: NDArrayFloat,
         min_inliers: int = 30,
     ) -> ImageData | None:
-        """Pick the reference image that gives the most reliable 3D-2D correspondences."""
+        """Prefer the most recent keyframe, only fall back if it has poor overlap."""
+        # Always try the most recent keyframe first
+        last_kf = self._keyframe_window[-2]
+        is_overlapping, inliers, matches = has_overlap(last_kf, keyframe, K, self.matcher, min_inliers)
+        if is_overlapping and inliers >= 45:
+            return last_kf
+
         best_ref = None
         best_score = -1
 
-        for ref in self._frame_window:
+        for ref in self._keyframe_window:  # exclude the current frame at the end
+            if ref.idx == keyframe.idx:  # don't pick the current keyframe as reference
+                continue
             # Use your existing has_overlap (geometric validation + E-matrix inliers)
-            is_overlapping, inliers, matches = has_overlap(ref, frame, K, self.matcher, min_inliers)
+            is_overlapping, inliers, matches = has_overlap(ref, keyframe, K, self.matcher, min_inliers)
             if not is_overlapping:
                 continue
 
             # Count how many of these inliers are already triangulated tracks
             triangulated_count = 0
-            for m in matches[:inliers]:  # only inliers
+            for m in matches:  # only inliers
                 kp_key_ref = (ref.idx, m[0])  # queryIdx in ref
                 if track_manager.get_track(kp_key_ref) is not None:
                     triangulated_count += 1
@@ -119,8 +135,8 @@ class KeyframeStreamer:
                 best_ref = ref
 
         # Fallback: always prefer the most recent keyframe if it has at least a few points
-        if best_ref is None and len(self._frame_window) > 0:
-            best_ref = self._frame_window[-1]  # most recent is usually the safest geometrically
+        if best_ref is None and len(self._keyframe_window) > 0:
+            best_ref = self._keyframe_window[-2]  # previous keyframe is at -2 since the current keyframe is at -1
 
         return best_ref
 
@@ -260,12 +276,25 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
     dataset_path = Path("data/tum") / cfg.dataset
     image_dir = Path(dataset_path) / "dso" / "cam0" / "images"
 
-    # fx, fy, s, cx, cy
-    k_vec, dist = load_intrinsics(dataset_path)
+    # Camera intrinsics
+    k_vec, dist_vec = load_intrinsics(dataset_path)
     fx, fy, cx, cy = k_vec
     K = gtsam.Cal3_S2(fx, fy, 0.0, cx, cy)
+    # K = gtsam.Cal3Fisheye(fx, fy, 0.0, cx, cy, *dist_vec)
 
-    # iSAM2 parameters
+    # === Smart Projection Setup ===
+    smart_params = SmartProjectionParams()
+    smart_params.setRankTolerance(1e-5)
+    smart_params.setDynamicOutlierRejectionThreshold(True)
+    smart_params.setLandmarkDistanceThreshold(True)
+
+    obs_noise = gtsam.noiseModel.Isotropic.Sigma(2, 5.0)
+
+    # One smart factor per track (landmark)
+    smart_factors: dict[int, SmartProjectionPoseFactorCal3_S2] = {}
+    # smart_factors: dict[int, SmartProjectionPoseFactorCal3Fisheye] = {}
+
+    # iSAM2
     parameters = gtsam.ISAM2Params()
     parameters.setRelinearizeThreshold(0.01)
     parameters.relinearizeSkip = 1
@@ -277,98 +306,116 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
     track_manager = TrackManager()
     point_cloud = PointCloud()
 
-    # Load images
+    # Setup streaming
     extractor = FeatureExtractor(cfg, image_dir, ext="png")
-    image_dir = Path(dataset_path) / "dso" / "cam0" / "images"
-    # images = FeatureStore(image_dir, K.K(), dist, feature_extractor=extractor, ext="png", max_frames=cfg.max_frames)
     kp_matcher = make_keypoint_matcher(cfg)
+
     streamer = KeyframeStreamer(
         image_dir,
         extractor,
         kp_matcher,
         max_motion_matches=cfg.max_motion_matches,
         max_window_keyframes=cfg.max_window_keyframes,
-        max_read_frames=cfg.max_frames,
+        max_read_frames=cfg.max_read_frames,
     )
 
     for keyframe, prev_keyframe in streamer.keyframes():
+        print(f"Processing keyframe {keyframe.idx}: {keyframe.path.name}")
+
+        # === Bootstrap: first two keyframes ===
         if prev_keyframe.idx == 0:
-            print(f"First pair of keyframes: {keyframe.idx=} and {prev_keyframe.idx=}...")
+            print(f"  → Bootstrap with frames {prev_keyframe.idx} and {keyframe.idx}")
             compute_baseline_estimate(prev_keyframe, keyframe, K.K(), track_manager, point_cloud, kp_matcher)
-            # now have: first triang 3d points (landmarks) + keypoints for each image (cam pose)
-            add_initial_factors_and_priors(
-                graph, initial_estimate, K, prev_keyframe, keyframe, track_manager, point_cloud
-            )
+
+            # Add first two poses
+            keyframe_pose, prev_keyframe_pose = gtsam_cam_pose(keyframe), gtsam_cam_pose(prev_keyframe)
+            initial_estimate.insert(X(prev_keyframe.idx), prev_keyframe_pose)
+            initial_estimate.insert(X(keyframe.idx), keyframe_pose)
+
+            # Strong prior on first pose
+            pose_noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.2, 0.2, 0.2, 0.6, 0.6, 0.6]))
+            graph.add(gtsam.PriorFactorPose3(X(prev_keyframe.idx), prev_keyframe_pose, pose_noise))
+
+            # Between factor for baseline
+            between_noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.8, 0.8, 0.8]))
+            graph.add(gtsam.BetweenFactorPose3(X(prev_keyframe.idx), X(keyframe.idx), keyframe_pose, between_noise))
+
+            # Add observations from both bootstrap frames to smart factors
+            for track_id in track_manager.track_to_kps.keys():
+                for img_idx, kp_idx in track_manager.get_keypoints(track_id):
+                    img = prev_keyframe if img_idx == prev_keyframe.idx else keyframe
+                    obs = Point2(img.kp[kp_idx])
+                    if track_id not in smart_factors:
+                        factor = SmartProjectionPoseFactorCal3_S2(obs_noise, K, smart_params)
+                        # factor = SmartProjectionPoseFactorCal3Fisheye(obs_noise, K, smart_params)
+                        smart_factors[track_id] = factor
+                        graph.add(factor)
+                    smart_factors[track_id].add(obs, X(img_idx))
             continue
 
-        print(f"Processing frame {keyframe.idx}: {keyframe.path}")
-
-        # Normal keyframe: pick most overlapping recent keyframe
-        ref = streamer.find_reference_frame(keyframe, track_manager, K.K(), min_inliers=cfg.min_inliers)
+        # === Normal keyframe ===
+        ref = streamer.find_reference_frame(keyframe, track_manager, K.K())
         if ref is None:
-            print("No good reference found — skipping keyframe")
+            print("  → No good reference found, skipping")
             continue
-        add_view(keyframe, ref, K.K(), dist, track_manager, point_cloud, kp_matcher)
-        add_new_keyframe_factors(graph, initial_estimate, isam, keyframe, ref, K, track_manager, point_cloud)
 
-        # === DEBUG: inspect the graph before iSAM2 update ===
-        print("\n=== GRAPH DEBUG AFTER BOOTSTRAP ===")
-        print(f"  Factors in graph: {graph.size()}")
-        print(f"  Initial estimates size: {initial_estimate.size()}")
+        add_view(keyframe, ref, K.K(), dist_vec, track_manager, point_cloud, kp_matcher)
 
-        # Count observations per landmark
-        from collections import defaultdict
+        # === DEPTH FILTER (critical for chirality) ===
+        new_tracks = track_manager.get_triangulated_view_tracks(keyframe.idx)
+        for tid in list(new_tracks):
+            pt = point_cloud.get_point(tid)
+            if pt is None:
+                continue
+            # Transform point to camera frame of the new keyframe
+            cam_pose = gtsam_cam_pose(keyframe)
+            pt_cam = cam_pose.transformTo(Point3(pt))
+            if pt_cam[2] < 0.3:  # behind camera or too close
+                # Optional: remove the track completely (simple but effective)
+                # You can add a remove_track method to TrackManager if you want
+                print(f"  → Removed track {tid} (negative depth {pt_cam[2]:.2f})")
+                # For now just skip adding it to smart factor
+                if tid in smart_factors:
+                    del smart_factors[tid]
 
-        obs_per_lm = defaultdict(list)
-        for i in range(graph.size()):
-            factor = graph.at(i)
-            if isinstance(factor, gtsam.GenericProjectionFactorCal3_S2):
-                lm_key = factor.keys()[1]  # second key is the landmark
-                obs_per_lm[lm_key].append(factor.keys()[0])  # camera that sees it
+        keyframe_pose, ref_pose = gtsam_cam_pose(keyframe), gtsam_cam_pose(ref)
+        # Between factor to reference keyframe (not necessarily the previous keyframe)
+        between_noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.8, 0.8, 0.8]))
+        graph.add(gtsam.BetweenFactorPose3(X(ref.idx), X(keyframe.idx), keyframe_pose.between(ref_pose), between_noise))
 
-        bad_lms = []
-        for lm_key, cams in obs_per_lm.items():
-            if len(cams) < 2:
-                bad_lms.append((lm_key, len(cams)))
-            # Also check initial depth (points near infinity are deadly)
-            if initial_estimate.exists(lm_key):
-                pt = initial_estimate.atPoint3(lm_key)
-                depth = np.linalg.norm(pt)
-                if depth > 100 or depth < 0.1:
-                    print(f"  Suspicious landmark {lm_key} depth = {depth:.2f} m")
+        # Add new observations to existing smart factors
+        for track_id in track_manager.get_triangulated_view_tracks(keyframe.idx):
+            kp_keys = track_manager.get_keypoints(track_id, keyframe.idx)
+            if not kp_keys:
+                continue
+            kp_idx = kp_keys[0][1]
+            obs = Point2(keyframe.kp[kp_idx])
 
-        print(f"  Landmarks with <2 observations: {len(bad_lms)}")
-        if bad_lms:
-            print("  →", bad_lms[:10])  # show first 10 bad ones
+            if track_id not in smart_factors:
+                factor = SmartProjectionPoseFactorCal3_S2(obs_noise, K, smart_params)
+                # factor = SmartProjectionPoseFactorCal3Fisheye(obs_noise, K, smart_params)
+                smart_factors[track_id] = factor
+                graph.add(factor)
 
-        # Specifically check the one that failed
-        lmark = L(147)  # or whatever track ID corresponds to the bad landmark
-        if initial_estimate.exists(lmark):
-            pt = initial_estimate.atPoint3(lmark)
-            print(f"  Landmark {lmark} initial position: {pt}, norm = {np.linalg.norm(pt):.2f}")
+            smart_factors[track_id].add(obs, X(keyframe.idx))
 
+        # Add new pose
+        initial_estimate.insert(X(keyframe.idx), gtsam_cam_pose(keyframe))
+
+        # === Update iSAM2 ===
         isam.update(graph, initial_estimate)
-        isam.update()  # optional extra iteration
+        isam.update()  # extra iteration for better convergence
 
-        # bookkeeping
-        print(f"DEBUG: keyframe window = {[kf.idx for kf in streamer._frame_window]}")
+        initial_estimate.clear()  # Only clear temporary initials
 
-        # # Show current estimate
-        # current_estimate = isam.calculateEstimate()
-        # print(f"Frame {keyframe.idx} poses:")
-        # for j in range(keyframe.idx + 1):
-        #     if current_estimate.exists(X(j)):
-        #         print(X(j), ":", current_estimate.atPose3(X(j)))
-        # visual_ISAM2_plot(current_estimate, ax_lim=10, delay_sec=0.5)
+        print(f"  → Added keyframe {keyframe.idx}, total tracks: {len(smart_factors)}")
 
-        # # Clear for next incremental step
-        # if len(keyframe_window) == keyframe_window.maxlen:
-        #     print("Clearing graph and initial estimates for next batch...")
-        # graph.resize(0)
-        initial_estimate.clear()
+        # Optional visualization every few keyframes
+        if keyframe.idx % 5 == 0:
+            current_estimate = isam.calculateEstimate()
+            visual_ISAM2_plot(current_estimate)
 
-    # plt.ioff()
-    # plt.show()
+    print("Finished processing all keyframes.")
 
 
 if __name__ == "__main__":

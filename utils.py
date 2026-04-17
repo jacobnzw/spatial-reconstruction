@@ -78,7 +78,7 @@ def calibrate_camera(img_dir: Path = Path("data/calibration")):
 
 
 @dataclass
-class ImageData:
+class ImageData:  # TODO: consider renaming to ViewData
     """Represents a single image with extracted features and estimated camera pose.
 
     Stores image metadata, pixel data, extracted keypoints and descriptors,
@@ -101,9 +101,11 @@ class ImageData:
     # Extracted keypoints and descriptors
     kp: NDArrayFloat
     des: NDArrayFloat
+    # TODO: replace with scipy.spatial.transform.RigidTransform for better semantics and utility functions
     # Estimated pose
     R: NDArrayFloat | None = None
     t: NDArrayFloat | None = None
+    # TODO: add K, dist, @property projection_matrix for convenience in reprojection and triangulation
 
     def set_pose(self, R, t):
         self.R = R
@@ -268,13 +270,6 @@ class FeatureStore:
     def iter_images_with_pose(self) -> Iterable[ImageData]:
         """Yield images for which we have a pose estimate."""
         yield from (img_data for img_data in self._store if img_data.has_pose)
-
-    # TODO: eventually take out as standalone func for streaming a directory of images without storing all in memory
-    def iter_dir_image_data(self) -> Iterable[ImageData]:
-        """Yield ImageData objects for all images in the directory."""
-        for idx, filepath in enumerate(self._img_paths):
-            kp, des, img = self._feature_fn(filepath)
-            yield ImageData(idx, filepath, img, kp, des)
 
 
 @dataclass
