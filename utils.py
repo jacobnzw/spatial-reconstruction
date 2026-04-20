@@ -8,7 +8,6 @@ import kornia as K
 import kornia.feature as KF
 import numpy as np
 import torch
-import torch.nn.functional as F
 from numpy.typing import NDArray
 
 from config import SfMConfig, SLAMConfig
@@ -19,6 +18,38 @@ NDArrayFloat = NDArray[np.floating[Any]]
 NDArrayInt = NDArray[np.integer[Any]]
 Point3D = Annotated[NDArrayFloat, Literal[3]]
 KPKey = tuple[int, int]  # Keypoint observation (img_id, kp_idx)
+
+# TODO: turn into ImageLoader chainable with FeatureExtractor, handles scaling, undistortion, color conversion,
+# bit depth normalization, etc. to centralize all image loading logic in one place. Returns ImageData object with idx, path, pixels, and rest set to None.
+# Then FeatureExtractor can take ImageData as input and return updated ImageData with kp, des
+# This would also simplify the logic in FeatureStore and ensure consistent image loading across the pipeline.
+
+
+def load_image(path: Path | str, scale: float = 1.0) -> NDArray[Any]:
+    """Load image robustly, handling 8-bit and 16-bit, grayscale and RGB.
+
+    Args:
+        path: Path to image file
+        scale: Scaling factor to apply (0.0 to 1.0), applies INTER_AREA interpolation
+
+    Returns:
+        Numpy array with shape (H, W, C), preserving original bit depth (uint8 or uint16)
+    """
+    path = Path(path)
+
+    # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order
+    img = cv.imread(str(path), cv.IMREAD_COLOR_RGB)
+
+    if img is None:
+        raise FileNotFoundError(f"Failed to load image: {path}")
+
+    # Apply scaling if needed
+    if scale < 1.0:
+        h, w = img.shape[:2]
+        new_w, new_h = int(w * scale), int(h * scale)
+        img = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
+
+    return img
 
 
 def calibrate_camera(img_dir: Path = Path("data/calibration")):
@@ -97,7 +128,7 @@ class ImageData:  # TODO: consider renaming to ViewData
     idx: int
     path: Path
     # Useful for rendering and debugging
-    pixels: NDArray[Any]
+    pixels: NDArray[Any]  # GRAYs and RBGs as (H, W, C) unit8
     # Extracted keypoints and descriptors
     kp: NDArrayFloat
     des: NDArrayFloat
@@ -134,53 +165,62 @@ class FeatureExtractor:
             raise ValueError(f"No *.{ext} images found in {img_dir}")
 
         # Compute scale based on first image
-        h, w = cv.imread(str(img_paths[0])).shape[:2]
+        first_img = load_image(img_paths[0], scale=1.0)  # (H, W, C)
+        h, w = first_img.shape[0], first_img.shape[1]
         self.scale = cfg.max_size / max(h, w) if max(h, w) > cfg.max_size else 1.0
 
         if cfg.feature_type == "sift":
-            self._extract_fn = self._extract_sift
+            sift = cv.SIFT_create(nfeatures=self.cfg.num_features)  # ty:ignore[unresolved-attribute]
+            self._extract_fn = partial(self._extract_sift, sift=sift)
         elif cfg.feature_type == "disk":
-            self.disk_model = KF.DISK.from_pretrained("depth").eval().to(device)
-            self._extract_fn = self._extract_disk
+            disk_model = KF.DISK.from_pretrained("depth", device=device).eval()
+            self._extract_fn = partial(self._extract_disk, disk_model=disk_model)
         else:
             raise ValueError(f"Unknown feature type {cfg.feature_type} in config!")
 
-    def _extract_sift(self, img_path: Path) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
+    def _extract_sift(self, img_path: Path, sift: cv.SIFT) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
         """Extract SIFT features from a single image."""
-        img = cv.imread(str(img_path))  # (H, W, 3)
-        if self.scale < 1.0:
-            # AREA interpolation friendlier to feature extraction
-            img = cv.resize(img, dsize=None, fx=self.scale, fy=self.scale, interpolation=cv.INTER_AREA)
+        # Load image robustly (handles 8/16-bit, grayscale/RGB) with scaling
+        img_arr = load_image(img_path, scale=self.scale)  # (H, W, C)
 
-        gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-        sift = cv.SIFT_create(nfeatures=self.cfg.num_features)  # ty:ignore[unresolved-attribute]
-        kps, des = sift.detectAndCompute(gray, None)
+        # Ensure grayscale is uint8 for SIFT
+        if len(img_arr.shape) == 3:  # RGB image, convert to grayscale
+            gray = cv.cvtColor(img_arr, cv.COLOR_RGB2GRAY)
+        else:
+            gray = img_arr
+
+        kps, des = sift.detectAndCompute(gray.astype(np.uint8), mask=None)
 
         # Convert list[cv.KeyPoint] to NDArray (N, 2)
         kp = np.array([kp.pt for kp in kps], dtype=np.float32)
 
-        return kp, des, cv.cvtColor(img, cv.COLOR_BGR2RGB)
+        return kp, des, img_arr  # ty:ignore[invalid-return-type]
 
-    def _extract_disk(self, img_path: Path) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
+    def _extract_disk(
+        self, img_path: Path, disk_model: torch.nn.Module
+    ) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
         """Extract DISK features from a single image."""
-        # Load image as (3, H, W)
-        img_tensor = K.io.load_image(img_path, K.io.ImageLoadType.RGB32, device=device)[None, ...]
-        if self.scale < 1.0:
-            img_tensor = F.interpolate(img_tensor, scale_factor=self.scale, mode="area")
+        # Load image robustly (handles 8/16-bit, grayscale/RGB) with scaling
+        img_arr = load_image(img_path, scale=self.scale)  # (H, W, C) or (H, W) depending on color format
 
+        # Convert to float32 in [0, 1]
+        max_val = np.iinfo(img_arr.dtype).max if img_arr.dtype != np.float32 else 1.0
+        img_float = img_arr.astype(np.float32) / max_val
+
+        # Convert to tensor and add batch dimension
+        img_tensor = K.utils.image_to_tensor(img_float, keepdim=False).to(device=device)  # (H, W, C) -> (1, C, H, W)
         # Extract features
         with torch.inference_mode():
-            features = self.disk_model(img_tensor, self.cfg.num_features, pad_if_not_divisible=True)[0]
+            features = disk_model(img_tensor, self.cfg.num_features, pad_if_not_divisible=True)[0]
 
         kp = features.keypoints.cpu().numpy()  # (N, 2)
         des = features.descriptors.cpu().numpy()  # (N, D)
-        img = img_tensor[0].permute(1, 2, 0).cpu().numpy()  # (C, H, W) -> convert to numpy (H, W, C)
 
         # Memory management
         # del img_tensor, features
         # torch.cuda.empty_cache()
 
-        return kp, des, (img * 255).astype(np.uint8)  # [0, 1] -> [0, 255] for PLY export
+        return kp, des, img_arr
 
     def __call__(self, img_path: Path) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
         return self._extract_fn(img_path)
@@ -645,6 +685,7 @@ class ReconIO:
         for track_id, pt in self.point_cloud.items():
             kp_keys = self.track_manager.track_to_kps[track_id]
             # average the colors of all KPs in the track
+            # TODO: ensure unit8 here! not at image loading level
             colors[track_id] = self.images.get_pixels(kp_keys).mean(axis=0)
         return colors
 
