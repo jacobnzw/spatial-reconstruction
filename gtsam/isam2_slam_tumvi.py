@@ -23,6 +23,7 @@ from gtsam import (
 from sfm import add_view, compute_baseline_estimate
 from utils import (
     FeatureExtractor,
+    FrameLoader,
     ImageData,
     NDArrayFloat,
     PointCloud,
@@ -51,19 +52,14 @@ class KeyframeStreamer:
 
     def __init__(
         self,
-        image_dir: Path,
         feature_extractor: FeatureExtractor,
         matcher,
-        ext="png",
         max_motion_matches=120,
         max_window_keyframes=10,
-        max_read_frames=None,
     ):
-        self.image_dir = sorted(list(Path(image_dir).glob(f"*.{ext}")))
         self.extractor = feature_extractor
         self.matcher = matcher
         self.max_motion_matches = max_motion_matches
-        self.max_read_frames = max_read_frames
         self._keyframe_window = deque(maxlen=max_window_keyframes)
 
     def _enough_motion_for_keyframe(self, frame: ImageData) -> bool:
@@ -80,14 +76,7 @@ class KeyframeStreamer:
 
     def keyframes(self):
         """Yields pairs of consecutive keyframes."""
-        for idx, filepath in enumerate(self.image_dir):
-            if self.max_read_frames and idx > self.max_read_frames:
-                print(f"Reached {self.max_read_frames=}, stopping further loading.")
-                break
-
-            kp, des, img = self.extractor(filepath)
-            frame = ImageData(idx, filepath, img, kp, des)
-
+        for idx, frame in enumerate(self.extractor.iter_frames_with_features()):
             # Add 1st frame as keyframe
             if idx == 0:
                 self._keyframe_window.append(frame)
@@ -306,17 +295,15 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
     track_manager = TrackManager()
     point_cloud = PointCloud()
 
-    # Setup streaming
-    extractor = FeatureExtractor(cfg, image_dir, ext="png")
+    # Setup keyframe streaming
+    loader = FrameLoader(image_dir, max_size=cfg.max_size, max_frames=cfg.max_read_frames, ext="png")
+    extractor = FeatureExtractor(cfg, loader)
     kp_matcher = make_keypoint_matcher(cfg)
-
     streamer = KeyframeStreamer(
-        image_dir,
         extractor,
         kp_matcher,
         max_motion_matches=cfg.max_motion_matches,
         max_window_keyframes=cfg.max_window_keyframes,
-        max_read_frames=cfg.max_read_frames,
     )
 
     for keyframe, prev_keyframe in streamer.keyframes():

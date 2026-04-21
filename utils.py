@@ -19,38 +19,6 @@ NDArrayInt = NDArray[np.integer[Any]]
 Point3D = Annotated[NDArrayFloat, Literal[3]]
 KPKey = tuple[int, int]  # Keypoint observation (img_id, kp_idx)
 
-# TODO: turn into ImageLoader chainable with FeatureExtractor, handles scaling, undistortion, color conversion,
-# bit depth normalization, etc. to centralize all image loading logic in one place. Returns ImageData object with idx, path, pixels, and rest set to None.
-# Then FeatureExtractor can take ImageData as input and return updated ImageData with kp, des
-# This would also simplify the logic in FeatureStore and ensure consistent image loading across the pipeline.
-
-
-def load_image(path: Path | str, scale: float = 1.0) -> NDArray[Any]:
-    """Load image robustly, handling 8-bit and 16-bit, grayscale and RGB.
-
-    Args:
-        path: Path to image file
-        scale: Scaling factor to apply (0.0 to 1.0), applies INTER_AREA interpolation
-
-    Returns:
-        Numpy array with shape (H, W, C), preserving original bit depth (uint8 or uint16)
-    """
-    path = Path(path)
-
-    # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order
-    img = cv.imread(str(path), cv.IMREAD_COLOR_RGB)
-
-    if img is None:
-        raise FileNotFoundError(f"Failed to load image: {path}")
-
-    # Apply scaling if needed
-    if scale < 1.0:
-        h, w = img.shape[:2]
-        new_w, new_h = int(w * scale), int(h * scale)
-        img = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
-
-    return img
-
 
 def calibrate_camera(img_dir: Path = Path("data/calibration")):
     """Compute camera intrinsics given a sample of checkerboard photos."""
@@ -109,7 +77,7 @@ def calibrate_camera(img_dir: Path = Path("data/calibration")):
 
 
 @dataclass
-class ImageData:  # TODO: consider renaming to ViewData
+class ImageData:  # TODO: consider renaming to ViewData / FrameData
     """Represents a single image with extracted features and estimated camera pose.
 
     Stores image metadata, pixel data, extracted keypoints and descriptors,
@@ -130,8 +98,8 @@ class ImageData:  # TODO: consider renaming to ViewData
     # Useful for rendering and debugging
     pixels: NDArray[Any]  # GRAYs and RBGs as (H, W, C) unit8
     # Extracted keypoints and descriptors
-    kp: NDArrayFloat
-    des: NDArrayFloat
+    kp: NDArrayFloat | None = None
+    des: NDArrayFloat | None = None
     # TODO: replace with scipy.spatial.transform.RigidTransform for better semantics and utility functions
     # Estimated pose
     R: NDArrayFloat | None = None
@@ -155,33 +123,80 @@ class ImageData:  # TODO: consider renaming to ViewData
         return cv.Rodrigues(self.R)[0].ravel()  # ty:ignore[no-matching-overload]
 
 
-class FeatureExtractor:
-    """Feature extractor class that curries the extraction function based on config."""
+# TODO:  undistortion; pack camera model w/ K and distortion coeffs?
+# TODO:  if downscaling intrinsics need to be adjusted accordingly
+class FrameLoader:
+    """Loads images from a directory and applies preprocessing such as scaling.
 
-    def __init__(self, cfg: SfMConfig | SLAMConfig, img_dir: Path, ext: str = "jpg"):
-        self.cfg = cfg
+    Args:
+        img_dir: Directory containing input images.
+        max_size: Maximum size (in pixels) for the longest edge of the image. Images larger than this will be downscaled.
+        max_frames: Optional maximum number of frames to load. If None, loads all frames in the directory.
+        ext: Image file extension to look for (default "png").
+    """
+
+    def __init__(self, img_dir: Path, max_size: int, max_frames: int | None = None, ext: str = "png"):
         img_paths = sorted(list(Path(img_dir).glob(f"*.{ext}")))
         if not img_paths:
             raise ValueError(f"No *.{ext} images found in {img_dir}")
 
-        # Compute scale based on first image
-        first_img = load_image(img_paths[0], scale=1.0)  # (H, W, C)
-        h, w = first_img.shape[0], first_img.shape[1]
-        self.scale = cfg.max_size / max(h, w) if max(h, w) > cfg.max_size else 1.0
+        self.img_paths = img_paths
+        self._max_frames = max_frames
+        self.max_size = max_size
+
+    def iter_frames(self) -> Iterable[ImageData]:
+        """Yields images as ImageData objects.
+
+        Returns:
+            ImageData object containing the image and its metadata.
+
+            ImageData.pixels contains the loaded image as a (H, W, 3) uint8 array in RGB format,
+            regardless of original format.
+        """
+        for idx, path in enumerate(self.img_paths):
+            if self._max_frames and idx >= self._max_frames:
+                print(f"FrameLoader: Reached max_frames={self._max_frames}, stopping further loading.")
+                break
+
+            # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order
+            img = cv.imread(str(path), cv.IMREAD_COLOR_RGB)
+
+            if img is None:
+                raise FileNotFoundError(f"FrameLoader: Failed to load image: {path}")
+
+            # Compute scale based on first image
+            if idx == 0:
+                h, w = img.shape[:2]
+                self.scale = self.max_size / max(h, w) if max(h, w) > self.max_size else 1.0
+
+            # Apply scaling if needed
+            if self.scale < 1.0:
+                h, w = img.shape[:2]
+                new_w, new_h = int(w * self.scale), int(h * self.scale)
+                img = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
+
+            yield ImageData(idx, path, img)
+
+
+class FeatureExtractor:
+    """Feature extractor class that curries the extraction function based on config."""
+
+    def __init__(self, cfg: SfMConfig | SLAMConfig, loader: FrameLoader):
+        self.cfg = cfg
+        self.loader = loader
 
         if cfg.feature_type == "sift":
-            sift = cv.SIFT_create(nfeatures=self.cfg.num_features)  # ty:ignore[unresolved-attribute]
+            sift = cv.SIFT_create(nfeatures=cfg.num_features)  # ty:ignore[unresolved-attribute]
             self._extract_fn = partial(self._extract_sift, sift=sift)
         elif cfg.feature_type == "disk":
             disk_model = KF.DISK.from_pretrained("depth", device=device).eval()
             self._extract_fn = partial(self._extract_disk, disk_model=disk_model)
         else:
-            raise ValueError(f"Unknown feature type {cfg.feature_type} in config!")
+            raise ValueError(f"FeatureExtractor: Unknown feature type {cfg.feature_type} in config!")
 
-    def _extract_sift(self, img_path: Path, sift: cv.SIFT) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
+    def _extract_sift(self, frame: ImageData, sift: cv.SIFT) -> ImageData:
         """Extract SIFT features from a single image."""
-        # Load image robustly (handles 8/16-bit, grayscale/RGB) with scaling
-        img_arr = load_image(img_path, scale=self.scale)  # (H, W, C)
+        img_arr = frame.pixels  # (H, W, C)
 
         # Ensure grayscale is uint8 for SIFT
         if len(img_arr.shape) == 3:  # RGB image, convert to grayscale
@@ -189,41 +204,43 @@ class FeatureExtractor:
         else:
             gray = img_arr
 
-        kps, des = sift.detectAndCompute(gray.astype(np.uint8), mask=None)
+        keypoints, descriptors = sift.detectAndCompute(gray.astype(np.uint8), mask=None)
 
         # Convert list[cv.KeyPoint] to NDArray (N, 2)
-        kp = np.array([kp.pt for kp in kps], dtype=np.float32)
+        frame.kp = np.array([kp.pt for kp in keypoints], dtype=np.float32)
+        frame.des = descriptors  # ty:ignore[invalid-assignment]
 
-        return kp, des, img_arr  # ty:ignore[invalid-return-type]
+        return frame
 
-    def _extract_disk(
-        self, img_path: Path, disk_model: torch.nn.Module
-    ) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
+    def _extract_disk(self, frame: ImageData, disk_model: torch.nn.Module) -> ImageData:
         """Extract DISK features from a single image."""
-        # Load image robustly (handles 8/16-bit, grayscale/RGB) with scaling
-        img_arr = load_image(img_path, scale=self.scale)  # (H, W, C) or (H, W) depending on color format
+        img_arr = frame.pixels  # (H, W, C)
 
         # Convert to float32 in [0, 1]
         max_val = np.iinfo(img_arr.dtype).max if img_arr.dtype != np.float32 else 1.0
         img_float = img_arr.astype(np.float32) / max_val
 
-        # Convert to tensor and add batch dimension
-        img_tensor = K.utils.image_to_tensor(img_float, keepdim=False).to(device=device)  # (H, W, C) -> (1, C, H, W)
-        # Extract features
+        # Convert to tensor and add batch dimension (H, W, C) -> (1, C, H, W)
+        img_tensor = K.utils.image_to_tensor(img_float, keepdim=False).to(device=device)
         with torch.inference_mode():
             features = disk_model(img_tensor, self.cfg.num_features, pad_if_not_divisible=True)[0]
 
-        kp = features.keypoints.cpu().numpy()  # (N, 2)
-        des = features.descriptors.cpu().numpy()  # (N, D)
+        frame.kp = features.keypoints.cpu().numpy()  # (N, 2)
+        frame.des = features.descriptors.cpu().numpy()  # (N, D)
 
         # Memory management
         # del img_tensor, features
         # torch.cuda.empty_cache()
+        return frame
 
-        return kp, des, img_arr
+    def __call__(self, frame: ImageData) -> ImageData:
+        """Extract features from a single frame using the curried extraction function."""
+        return self._extract_fn(frame)
 
-    def __call__(self, img_path: Path) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
-        return self._extract_fn(img_path)
+    def iter_frames_with_features(self) -> Iterable[ImageData]:
+        """Yields ImageData objects with extracted features."""
+        for frame in self.loader.iter_frames():
+            yield self(frame)
 
 
 class FeatureStore:
@@ -242,34 +259,14 @@ class FeatureStore:
 
     def __init__(
         self,
-        img_dir: Path,
         K: NDArrayFloat,
         dist: NDArrayFloat,
         feature_extractor: FeatureExtractor,
-        ext: str = "jpg",
-        max_frames: int | None = None,
     ):
-        self._store: list[ImageData] = []
-        self._scale = feature_extractor.scale
-        self._feature_fn = feature_extractor
-        self._max_frames = max_frames
+        self._store: list[ImageData] = list(feature_extractor.iter_frames_with_features())
+        self._scale = feature_extractor.loader.scale
         self._K = K
         self._dist = dist
-        self._img_paths = sorted(list(Path(img_dir).glob(f"*.{ext}")))
-        if not self._img_paths:
-            raise ValueError(f"No *.{ext} images found in {img_dir}")
-
-        self._load_dir(self._img_paths)
-
-    def _load_dir(self, img_paths: list[Path]):
-        """Load all images from directory and extract features using the provided feature function."""
-
-        for idx, filepath in enumerate(img_paths):
-            if self._max_frames and idx >= self._max_frames:
-                print(f"Reached max_frames={self._max_frames}, stopping further loading.")
-                break
-            kp, des, img = self._feature_fn(filepath)
-            self._store.append(ImageData(idx, filepath, img, kp, des))
 
     def get_intrisics(self, rescaled=True) -> tuple[NDArrayFloat, NDArrayFloat]:
         """Get camera intrinsics. Optionally return rescaled version if images were downsized."""
@@ -285,7 +282,7 @@ class FeatureStore:
         pixels = np.zeros((len(kp_keys), 3), dtype=np.uint8)
         for i, (img_idx, kp_idx) in enumerate(kp_keys):
             kp_uv = self._store[img_idx].kp[kp_idx].astype(np.uint16)
-            pixels[i] = self._store[img_idx].pixels[*np.flip(kp_uv)]  #
+            pixels[i] = self._store[img_idx].pixels[*np.flip(kp_uv)]  # flip (x, y) to (row, col) for indexing
         return pixels
 
     @property
@@ -296,8 +293,9 @@ class FeatureStore:
         return self._store[img_idx]
 
     def get_keypoint(self, kp_key: KPKey) -> NDArrayFloat:
-        """Get keypoint for a given keypoint key (img_idx, kp_idx)."""
-        return self._store[kp_key[0]].kp[kp_key[1]]
+        """Get keypoint for a given keypoint key."""
+        img_idx, kp_idx = kp_key
+        return self._store[img_idx].kp[kp_idx]
 
     def get_keypoints(self) -> list[NDArrayFloat]:
         """Get keypoints of all images."""

@@ -12,6 +12,7 @@ from config import SfMConfig
 from utils import (
     FeatureExtractor,
     FeatureStore,
+    FrameLoader,
     ImageData,
     NDArrayFloat,
     NDArrayInt,
@@ -263,8 +264,9 @@ def main(cfg: SfMConfig = SfMConfig()):
 
     # Load all images & extract features
     print(f"Extracting {cfg.feature_type.upper()} features from {img_dir}...")
-    feature_extractor = FeatureExtractor(cfg, img_dir)
-    image_store = FeatureStore(img_dir, K, dist, feature_extractor=feature_extractor)
+    loader = FrameLoader(img_dir, max_size=cfg.max_size, ext="jpg")
+    feature_extractor = FeatureExtractor(cfg, loader)
+    image_store = FeatureStore(K, dist, feature_extractor)
     track_manager = TrackManager()
     point_cloud = PointCloud()
     exporter = ReconIO(point_cloud, image_store, track_manager)
