@@ -93,7 +93,7 @@ in homogeneous coordinates, and $\mathbf{K}$ is the intrinsic matrix and rotatio
 and translation vector $\mathbf{t}$ are the extrinsic parameters that determine the camera pose in the world frame.
 
 *In the SE3 variable naming convention the camera pose in the world frame is a transformation 
-from the world frame to the camera frame: `camera_SE3_world`.*
+from the world frame to the camera frame: `camera_SE3_world`. See [this great summary](https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.transform.RigidTransform.html#scipy.spatial.transform.RigidTransform).*
 
 **Caveats:** the rays go through the optical center of the camera and form the same ray bundle geometry, 
 just reflected through the optical center, on the back of the camera. For example, routines for solving a PnP problem
@@ -243,6 +243,21 @@ estimate the camera pose (rotation and translation) that best projects the 3D po
 **EPnP** estimates camera pose using n 3D-to-2D point correspondences by representing the 3D points as a weighted sum 
 of four virtual control points, enabling linear-time computation (O(n)). Non-iterative, closed-form solution. 
 Possibly followed by iterative refinement (Gauss-Newton, Levenberg-Marquardt).
+
+The minimum number of points required for solvePnP depends on the specific algorithm method used and the geometric configuration of the points:
+
+- General Case (Non-Planar): Most methods, including EPnP, DLS, UPnP, and SQPnP, require a minimum of 4 points. 
+- P3P Methods (SOLVEPNP_P3P, SOLVEPNP_AP3P): These require exactly 4 points.  The first three are used to solve the Perspective-Three-Point problem (which can yield up to four solutions), and the fourth point is used to select the best solution by minimizing reprojection error.
+- Iterative Method (SOLVEPNP_ITERATIVE):
+  - With an initial guess (useExtrinsicGuess=true), a minimum of 3 points is sufficient.
+  - Without an initial guess, it requires at least 4 points for planar objects (using homography decomposition) or 6 points for non-planar objects (using DLT initialization). 
+- Planar-Specific Methods:
+  - IPPE and IPPE_SQUARE: Require a minimum of 4 points, and the object points must be coplanar.
+  - SQPnP: Requires 3 or more points. 
+
+Important Note: Using points that are collinear (lying on a single line) or have insufficient variation in 3D space can 
+lead to inaccurate results. It is recommended to use points with good variation across at least two axes.
+
 
 #### Keyframes
 Codec keyframes (I-frames) are built into the video and used for decompression. 

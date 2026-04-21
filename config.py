@@ -76,7 +76,7 @@ class SLAMConfig:
     """Maximum image dimension (images will be resized if larger)"""
 
     # Keypoint matching
-    matcher_type: Literal["bf", "lightglue"] = "bf"
+    matcher_type: Literal["bf", "lightglue"] = "lightglue"
     """Keypoint matching method: 'bf' (brute-force) or 'lightglue'"""
 
     lowe_ratio: float = 0.75
@@ -92,12 +92,12 @@ class SLAMConfig:
     dataset: str = "dataset-corridor4_512_16"
     """Dataset name (subdirectory in data/tum/)"""
 
-    # View graph construction
-    min_inliers: int = 50
-    """Minimum number of inliers to consider two views as overlapping"""
-
     max_read_frames: int | None = None
     """Maximum number of frames to process from the dataset"""
+
+    # Keyframe selection
+    min_inliers: int = 30
+    """Minimum number of inliers to consider when finding reference keyframe for a new keyframe"""
 
     max_window_keyframes: int = 10
     """Maximum number of recent keyframes to keep in the sliding window for optimization"""
