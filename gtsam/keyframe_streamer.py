@@ -8,14 +8,16 @@ with app.setup:
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).parent.parent))
-    import marimo as mo
-    from utils import FeatureExtractor, make_keypoint_matcher, ImageData, has_overlap
-    from config import SLAMConfig
     from collections import deque
-    import matplotlib.pyplot as plt
+
     import cv2 as cv
+    import marimo as mo
+    import matplotlib.pyplot as plt
     import numpy as np
     import yaml
+
+    from config import SLAMConfig
+    from utils import FeatureExtractor, ViewData, has_overlap, make_keypoint_matcher
 
 
 @app.cell
@@ -39,7 +41,7 @@ def _(TrackManager, kp_matcher, self):
             self.max_read_frames = max_read_frames
             self._frame_window = deque(maxlen=max_frames)
 
-        def _enough_motion_for_keyframe(self, frame: ImageData) -> bool:
+        def _enough_motion_for_keyframe(self, frame: ViewData) -> bool:
             pnp_min = 4  # PnP needs at least 4 matches to work
 
             last_kf = self._frame_window[-1]  # pick last keyframe
@@ -58,8 +60,8 @@ def _(TrackManager, kp_matcher, self):
                     break
 
                 kp, des, img = self.extractor(filepath)
-                frame = ImageData(idx, filepath, img, kp, des)
-            
+                frame = ViewData(idx, filepath, img, kp, des)
+
                 # Add 1st frame as keyframe
                 if idx == 0:
                     self._frame_window.append(frame)
@@ -71,36 +73,36 @@ def _(TrackManager, kp_matcher, self):
                     yield frame, self._frame_window[-2]
 
         def find_reference_frame(
-            frame: ImageData,
+            frame: ViewData,
             track_manager: TrackManager,
             K: np.array,
             min_inliers: int = 30,
-        ) -> ImageData | None:
+        ) -> ViewData | None:
             """Pick the reference image that gives the most reliable 3D-2D correspondences."""
             best_ref = None
             best_score = -1
-    
+
             for ref in self._frame_window:
                 # Use your existing has_overlap (geometric validation + E-matrix inliers)
                 is_overlapping, inliers, matches = has_overlap(ref, frame, K, kp_matcher, min_inliers)
                 if not is_overlapping:
                     continue
-    
+
                 # Count how many of these inliers are already triangulated tracks
                 triangulated_count = 0
                 for m in matches[:inliers]:  # only inliers
                     kp_key_ref = (ref.idx, m[0])  # queryIdx in ref
                     if track_manager.get_track(kp_key_ref) is not None:
                         triangulated_count += 1
-    
+
                 if triangulated_count > best_score:
                     best_score = triangulated_count
                     best_ref = ref
-    
+
             # Fallback: always prefer the most recent keyframe if it has at least a few points
             if best_ref is None and len(self._frame_window) > 0:
                 best_ref = self._frame_window[-1]  # most recent is usually the safest geometrically
-    
+
             return best_ref
 
     return (KeyframeStreamer,)
@@ -125,12 +127,7 @@ def _(KeyframeStreamer):
 def _(keyframe_pairs):
     # Create slider to navigate through keyframes
     frame_slider = mo.ui.slider(
-        start=0, 
-        stop=len(keyframe_pairs) - 1,
-        step=1,
-        value=0,
-        show_value=True,
-        label="Keyframe pair"
+        start=0, stop=len(keyframe_pairs) - 1, step=1, value=0, show_value=True, label="Keyframe pair"
     )
     frame_slider
     return (frame_slider,)
@@ -175,14 +172,13 @@ def _(matcher):
     def draw_matches(img0, img1):
         kp0 = [cv.KeyPoint(x=p[0], y=p[1], size=1) for p in img0.kp]
         kp1 = [cv.KeyPoint(x=p[0], y=p[1], size=1) for p in img1.kp]
-    
+
         dist, matches = matcher(img0, img1)
-        matches = [cv.DMatch(_queryIdx=qm, _trainIdx=tm, _imgIdx=0, _distance=0.0) for d, (qm, tm) in zip(dist, matches)]
+        matches = [
+            cv.DMatch(_queryIdx=qm, _trainIdx=tm, _imgIdx=0, _distance=0.0) for d, (qm, tm) in zip(dist, matches)
+        ]
         img_matches = cv.drawMatches(
-            img0.pixels, kp0,
-            img1.pixels, kp1,
-            matches, None,
-            flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
+            img0.pixels, kp0, img1.pixels, kp1, matches, None, flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
         )
         img_matches = cv.cvtColor(img_matches, cv.COLOR_BGR2RGB)
 
@@ -190,20 +186,14 @@ def _(matcher):
 
     def load_intrinsics(dataset_path, cam_key: str = "cam0"):
         camchain_file = yaml.safe_load((Path(dataset_path) / "dso" / "camchain.yaml").open())
-        return np.array(camchain_file[cam_key]["intrinsics"]), np.array(
-            camchain_file[cam_key]["distortion_coeffs"]
-        )
+        return np.array(camchain_file[cam_key]["intrinsics"]), np.array(camchain_file[cam_key]["distortion_coeffs"])
 
-    def undistort_tumvi_image(
-        img: np.ndarray, K: np.ndarray, D: np.ndarray, balance=0.0
-    ) -> np.ndarray:
+    def undistort_tumvi_image(img: np.ndarray, K: np.ndarray, D: np.ndarray, balance=0.0) -> np.ndarray:
         """Proper undistortion for TUM-VI equidistant fisheye."""
         h, w = img.shape[:2]
 
         # Create the undistortion + rectification map once (or cache it)
-        new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(
-            K, D, (w, h), np.eye(3), balance=balance
-        )
+        new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, (w, h), np.eye(3), balance=balance)
 
         map1, map2 = cv.fisheye.initUndistortRectifyMap(K, D, np.eye(3), new_K, (w, h), cv.CV_16SC2)
 
@@ -228,16 +218,20 @@ def _(
     # Undistort images: load camera matrix and distortion coefficients
     k_vec, dist_vec = load_intrinsics(dataset_path)
     fx, fy, cx, cy = k_vec
-    K = np.array([
-        [fx, 0, cx],
-        [0, fy, cy],
-        [0, 0, 1],
-    ])
+    K = np.array(
+        [
+            [fx, 0, cx],
+            [0, fy, cy],
+            [0, 0, 1],
+        ]
+    )
 
     from functools import partial
+
     undistortion_fn = partial(undistort_tumvi_image, K=K, D=dist_vec, balance=0.0)
 
     from copy import deepcopy
+
     img0_undist = deepcopy(img0)
     img0_undist.pixels = undistortion_fn(img0.pixels)
     img1_undist = deepcopy(img1)
@@ -254,15 +248,13 @@ def _(
         ax[1].imshow(img_matches_undist)
         plt.tight_layout()
         plt.show()
-    
+
     plot_matches_compared()
     return
 
 
 @app.cell
 def _():
-
-
 
     return
 

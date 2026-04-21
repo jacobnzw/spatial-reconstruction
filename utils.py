@@ -115,7 +115,7 @@ def calibrate_camera(img_dir: Path = Path("data/calibration")):
 
 
 @dataclass
-class ImageData:  # TODO: consider renaming to ViewData / FrameData
+class ViewData:
     """Represents a single image with extracted features and estimated camera pose.
 
     Stores image metadata, pixel data, extracted keypoints and descriptors,
@@ -208,7 +208,7 @@ class FrameLoader:
         self.camera_model = camera_model
         self.undistort = undistort
 
-    def iter_frames(self) -> Iterable[ImageData]:
+    def iter_frames(self) -> Iterable[ViewData]:
         """Yields images as ImageData objects.
 
         Returns:
@@ -247,7 +247,7 @@ class FrameLoader:
                 camera_model.scale = self.scale
                 # NOTE: camera_model.get_camera_matrix() will handle rescaling K based on self.scale
 
-            yield ImageData(idx, path, img, camera_model=camera_model)
+            yield ViewData(idx, path, img, camera_model=camera_model)
 
     def _undistort_fisheye(self, img: NDArray[Any], balance=0.0, fov_scale=1.0) -> tuple[NDArray[Any], NDArrayFloat]:
         """Undistortion for equidistant fisheye."""
@@ -282,7 +282,7 @@ class FeatureExtractor:
         else:
             raise ValueError(f"FeatureExtractor: Unknown feature type {cfg.feature_type} in config!")
 
-    def _extract_sift(self, frame: ImageData, sift: cv.SIFT) -> ImageData:
+    def _extract_sift(self, frame: ViewData, sift: cv.SIFT) -> ViewData:
         """Extract SIFT features from a single image."""
         img_arr = frame.pixels  # (H, W, C)
 
@@ -300,7 +300,7 @@ class FeatureExtractor:
 
         return frame
 
-    def _extract_disk(self, frame: ImageData, disk_model: torch.nn.Module) -> ImageData:
+    def _extract_disk(self, frame: ViewData, disk_model: torch.nn.Module) -> ViewData:
         """Extract DISK features from a single image."""
         img_arr = frame.pixels  # (H, W, C)
 
@@ -321,11 +321,11 @@ class FeatureExtractor:
         # torch.cuda.empty_cache()
         return frame
 
-    def __call__(self, frame: ImageData) -> ImageData:
+    def __call__(self, frame: ViewData) -> ViewData:
         """Extract features from a single frame using the curried extraction function."""
         return self._extract_fn(frame)
 
-    def iter_frames_with_features(self) -> Iterable[ImageData]:
+    def iter_frames_with_features(self) -> Iterable[ViewData]:
         """Yields ImageData objects with extracted features."""
         for frame in self.loader.iter_frames():
             yield self(frame)
@@ -346,7 +346,7 @@ class FeatureStore:
         self,
         feature_extractor: FeatureExtractor,
     ):
-        self._store: list[ImageData] = list(feature_extractor.iter_frames_with_features())
+        self._store: list[ViewData] = list(feature_extractor.iter_frames_with_features())
 
     def get_pixels(self, kp_keys: list[KPKey]) -> NDArray[np.uint8]:
         """Get pixel color for a given keypoint in an image."""
@@ -360,7 +360,7 @@ class FeatureStore:
     def size(self) -> int:
         return len(self._store)
 
-    def __getitem__(self, img_idx: int) -> ImageData:
+    def __getitem__(self, img_idx: int) -> ViewData:
         return self._store[img_idx]
 
     def get_keypoint(self, kp_key: KPKey) -> NDArrayFloat:
@@ -376,7 +376,7 @@ class FeatureStore:
         """Get descriptors of all images."""
         return [img_data.des for img_data in self._store]
 
-    def iter_images_with_pose(self) -> Iterable[ImageData]:
+    def iter_images_with_pose(self) -> Iterable[ViewData]:
         """Yield images for which we have a pose estimate."""
         yield from (img_data for img_data in self._store if img_data.has_pose)
 
@@ -421,8 +421,8 @@ class ViewGraph:
 
 
 def _match_lightglue_disk(
-    img_from: ImageData,
-    img_to: ImageData,
+    img_from: ViewData,
+    img_to: ViewData,
     lg_matcher: KF.LightGlueMatcher,
     min_dist: float | None = None,
 ) -> tuple[NDArrayFloat, NDArrayInt]:
@@ -448,8 +448,8 @@ def _match_lightglue_disk(
 
 
 def _match_bf(
-    img_from: ImageData,
-    img_to: ImageData,
+    img_from: ViewData,
+    img_to: ViewData,
     lowe_ratio: float | None = None,
     cross_check: bool = False,
 ) -> tuple[NDArrayFloat, NDArrayInt]:
@@ -488,7 +488,7 @@ def _match_bf(
 
 def make_keypoint_matcher(
     cfg: SfMConfig | SLAMConfig,
-) -> Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]]:
+) -> Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]]:
     if cfg.matcher_type == "bf":
         return partial(_match_bf, lowe_ratio=cfg.lowe_ratio, cross_check=cfg.cross_check)
     if cfg.matcher_type == "lightglue":
@@ -499,9 +499,9 @@ def make_keypoint_matcher(
 
 
 def has_overlap(
-    img_from: ImageData,
-    img_to: ImageData,
-    matcher_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]] | None = None,
+    img_from: ViewData,
+    img_to: ViewData,
+    matcher_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]] | None = None,
     min_inliers: int = 50,
 ) -> tuple[bool, int | None, NDArray | None]:
     """Returns True if there is sufficient overlap between two images.
@@ -541,7 +541,7 @@ def has_overlap(
 
 def construct_view_graph(
     image_store: FeatureStore,
-    matcher_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
+    matcher_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
     min_inliers: int = 50,
 ):
     view_graph = ViewGraph()

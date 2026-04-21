@@ -76,7 +76,7 @@ class SLAMConfig:
     """Maximum image dimension (images will be resized if larger)"""
 
     # Keypoint matching
-    matcher_type: Literal["bf", "lightglue"] = "lightglue"
+    matcher_type: Literal["bf", "lightglue"] = "bf"
     """Keypoint matching method: 'bf' (brute-force) or 'lightglue'"""
 
     lowe_ratio: float = 0.75
@@ -94,6 +94,9 @@ class SLAMConfig:
 
     max_read_frames: int | None = None
     """Maximum number of frames to process from the dataset"""
+
+    undistort: bool = False
+    """Whether to undistort images using the provided camera intrinsics and distortion coefficients"""
 
     # Keyframe selection
     min_inliers: int = 30

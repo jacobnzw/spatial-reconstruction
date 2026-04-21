@@ -32,7 +32,7 @@ def bundle_adjustment(
 
     # Get camera intrinsics from first image
     first_img = images[0]
-    K, dist = first_img.get_intrinsics()
+    K, dist = first_img.camera_model.get_camera_matrix(), first_img.camera_model.dist
     # Create pycolmap camera model (OPENCV: fx, fy, cx, cy, k1, k2, p1, p2)
     fx = K[0, 0]
     fy = K[1, 1]

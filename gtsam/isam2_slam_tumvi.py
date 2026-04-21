@@ -21,15 +21,15 @@ from gtsam import (
     SmartProjectionParams,
     SmartProjectionPoseFactorCal3_S2,
 )
-from sfm import add_view, compute_baseline_estimate
+from sfm import add_view, bootstrap_from_two_views
 from utils import (
     CameraModel,
     CameraType,
     FeatureExtractor,
     FrameLoader,
-    ImageData,
     PointCloud,
     TrackManager,
+    ViewData,
     has_overlap,
     make_keypoint_matcher,
 )
@@ -64,7 +64,7 @@ class KeyframeStreamer:
         self.max_motion_matches = max_motion_matches
         self._keyframe_window = deque(maxlen=max_window_keyframes)
 
-    def _enough_motion_for_keyframe(self, frame: ImageData) -> bool:
+    def _enough_motion_for_keyframe(self, frame: ViewData) -> bool:
         pnp_min = 40  # PnP needs at least 40 matches to work
 
         last_kf = self._keyframe_window[-1]  # pick last keyframe
@@ -91,10 +91,10 @@ class KeyframeStreamer:
 
     def find_reference_frame(
         self,
-        keyframe: ImageData,
+        keyframe: ViewData,
         track_manager: TrackManager,
         min_inliers: int = 30,
-    ) -> ImageData | None:
+    ) -> ViewData | None:
         """Prefer the most recent keyframe, only fall back if it has poor overlap."""
         # Always try the most recent keyframe first
         last_kf = self._keyframe_window[-2]
@@ -160,17 +160,17 @@ def visual_ISAM2_plot(result):
     plt.pause(0.5)
 
 
-def gtsam_cam_pose(img: ImageData) -> Pose3:
+def gtsam_cam_pose(img: ViewData) -> Pose3:
     return Pose3(Rot3(img.R), Point3(img.t.squeeze()))
 
 
-def gtsam_landmarks_from_pose(img: ImageData, tm: TrackManager, landmarks: PointCloud) -> list[Point3]:
+def gtsam_landmarks_from_pose(img: ViewData, tm: TrackManager, landmarks: PointCloud) -> list[Point3]:
     """Get landmarks (3D pts) visible from cam pose in img"""
     tids = tm.get_triangulated_view_tracks(img.idx)
     return tids, [Point3(pt) for pt in landmarks.get_points_as_array(tids)]
 
 
-def gtsam_keypoints_from_pose(img: ImageData, tm: TrackManager) -> list[Point3]:
+def gtsam_keypoints_from_pose(img: ViewData, tm: TrackManager) -> list[Point3]:
     """Get keypoints (2D pts) visible from cam pose in img
 
     Observations of landmarks (3D pts) in given image.
@@ -184,8 +184,8 @@ def add_initial_factors_and_priors(
     graph: gtsam.NonlinearFactorGraph,
     initial_estimates,
     K: gtsam.Cal3_S2,
-    img0: ImageData,
-    img1: ImageData,
+    img0: ViewData,
+    img1: ViewData,
     track_manager: TrackManager,
     point_cloud: PointCloud,
 ):
@@ -225,8 +225,8 @@ def add_new_keyframe_factors(
     graph: gtsam.NonlinearFactorGraph,
     initial_estimates: gtsam.Values,
     isam,
-    img_new: ImageData,
-    img_ref: ImageData,
+    img_new: ViewData,
+    img_ref: ViewData,
     K: gtsam.Cal3_S2,
     track_manager: TrackManager,
     point_cloud: PointCloud,
@@ -320,7 +320,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
     # Setup keyframe streaming
     camera_model = CameraModel(model_type=CameraType.FISHEYE, K=K.K(), dist=dist_vec)
     kp_matcher = make_keypoint_matcher(cfg)
-    streamer = make_keyframe_streamer(image_dir, cfg, camera_model, kp_matcher, undistort=False)
+    streamer = make_keyframe_streamer(image_dir, cfg, camera_model, kp_matcher, undistort=cfg.undistort)
 
     for keyframe, prev_keyframe in streamer.keyframes():
         print(f"Processing keyframe {keyframe.idx}: {keyframe.path.name}")
@@ -328,7 +328,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
         # === Bootstrap: first two keyframes ===
         if prev_keyframe.idx == 0:
             print(f"  → Bootstrap with frames {prev_keyframe.idx} and {keyframe.idx}")
-            compute_baseline_estimate(prev_keyframe, keyframe, track_manager, point_cloud, kp_matcher)
+            bootstrap_from_two_views(prev_keyframe, keyframe, track_manager, point_cloud, kp_matcher)
 
             # Add first two poses
             keyframe_pose, prev_keyframe_pose = gtsam_cam_pose(keyframe), gtsam_cam_pose(prev_keyframe)

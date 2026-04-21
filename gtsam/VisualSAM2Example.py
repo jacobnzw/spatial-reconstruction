@@ -5,31 +5,31 @@ app = marimo.App(width="medium")
 
 with app.setup:
     from __future__ import print_function
-    import marimo as mo
-    import glob
-    import os
-    from pathlib import Path
-    import yaml
-    import cv2 as cv
 
-    import gtsam
+    import glob
+    from collections import deque
+    from pathlib import Path
+
+    import cv2 as cv
     import gtsam.utils.plot as gtsam_plot
+    import marimo as mo
     import matplotlib.pyplot as plt
     import numpy as np
-    from gtsam.examples import SFMdata
+    import yaml
     from gtsam.symbol_shorthand import L, X
-    from gtsam import Rot3, Pose3, Point3
-    from utils import (
-        ImageData,
-        FeatureStore,
-        TrackManager,
-        PointCloud,
-        make_keypoint_matcher,
-        has_overlap,
-    )
-    from sfm import compute_baseline_estimate, add_view
+
+    import gtsam
     from config import SfMConfig
-    from collections import deque
+    from gtsam import Point3, Pose3, Rot3
+    from sfm import add_view, bootstrap_from_two_views
+    from utils import (
+        FeatureStore,
+        PointCloud,
+        TrackManager,
+        ViewData,
+        has_overlap,
+        make_keypoint_matcher,
+    )
 
 
 @app.cell
@@ -41,17 +41,11 @@ def _():
     dataset_path = Path("data/tum/dataset-corridor4_512_16")
     image_dir = Path(dataset_path) / "dso" / "cam0" / "images"
 
-
     def load_intrinsics(dataset_path, cam_key: str = "cam0"):
         camchain_file = yaml.safe_load((Path(dataset_path) / "dso" / "camchain.yaml").open())
-        return np.array(camchain_file[cam_key]["intrinsics"]), np.array(
-            camchain_file[cam_key]["distortion_coeffs"]
-        )
+        return np.array(camchain_file[cam_key]["intrinsics"]), np.array(camchain_file[cam_key]["distortion_coeffs"])
 
-
-    def enough_motion_for_keyframe(
-        new_img: ImageData, last_kf_img: ImageData | None, kp_matcher, max_matches=60
-    ) -> bool:
+    def enough_motion_for_keyframe(new_img: ViewData, last_kf_img: ViewData | None, kp_matcher, max_matches=60) -> bool:
         # if last_kf_img is None:  # when processing first image
         #     return True
 
@@ -61,7 +55,6 @@ def _():
             return True
 
         return False
-
 
     # def enough_motion_for_keyframe(
     #     new_img: ImageData,
@@ -82,7 +75,6 @@ def _():
 
     #     # Enough motion + still enough matches for reliable PnP → new keyframe
     #     return n >= min_matches_for_pnp
-
 
     def visual_ISAM2_plot(result):
         """Same plotting function as original"""
@@ -137,19 +129,15 @@ def _():
 
 @app.cell
 def _(Point2, dataset_path, enough_motion_for_keyframe, img0, load_intrinsics):
-    def gtsam_cam_pose(img: ImageData) -> Pose3:
+    def gtsam_cam_pose(img: ViewData) -> Pose3:
         return Pose3(Rot3(img.R), Point3(img.t.squeeze()))
 
-
-    def gtsam_landmarks_from_pose(
-        img: ImageData, tm: TrackManager, landmarks: PointCloud
-    ) -> list[Point3]:
+    def gtsam_landmarks_from_pose(img: ViewData, tm: TrackManager, landmarks: PointCloud) -> list[Point3]:
         """Get landmarks (3D pts) visible from cam pose in img0"""
         tids = tm.get_triangulated_view_tracks(img.idx)
         return tids, [Point3(pt) for pt in landmarks.get_points_as_array(tids)]
 
-
-    def gtsam_keypoints_from_pose(img: ImageData, tm: TrackManager) -> list[Point3]:
+    def gtsam_keypoints_from_pose(img: ViewData, tm: TrackManager) -> list[Point3]:
         """Get keypoints (2D pts) visible from cam pose in img0
 
         Observations of landmarks (3D pts) in given image.
@@ -158,15 +146,14 @@ def _(Point2, dataset_path, enough_motion_for_keyframe, img0, load_intrinsics):
         kpkeys = tm.get_triangulated_view_keypoints(img0.idx)
         return [Point2(img.kp[pt]) for pt in kpkeys]
 
-
     def pick_best_reference(
-        query_img: ImageData,
-        window: deque[ImageData],
+        query_img: ViewData,
+        window: deque[ViewData],
         track_manager: TrackManager,
         K: np.array,
         kp_matcher,
         min_inliers: int = 30,
-    ) -> ImageData | None:
+    ) -> ViewData | None:
         """Pick the reference image that gives the most reliable 3D-2D correspondences."""
         best_ref = None
         best_score = -1
@@ -194,13 +181,12 @@ def _(Point2, dataset_path, enough_motion_for_keyframe, img0, load_intrinsics):
 
         return best_ref
 
-
     def add_initial_factors_and_priors(
         graph: gtsam.NonlinearFactorGraph,
         initial_estimates,
         K: gtsam.Cal3_S2,
-        img0: ImageData,
-        img1: ImageData,
+        img0: ViewData,
+        img1: ViewData,
         track_manager: TrackManager,
         point_cloud: PointCloud,
     ):
@@ -230,16 +216,13 @@ def _(Point2, dataset_path, enough_motion_for_keyframe, img0, load_intrinsics):
             for img_idx, kp_idx in track_manager.get_keypoints(lm_tid):
                 obs = img0.kp[kp_idx] if img_idx == 0 else img1.kp[kp_idx]
                 # Landmark indices are track IDs (addresses to the point_cloud)
-                graph.add(
-                    gtsam.GenericProjectionFactorCal3_S2(obs, obs_noise, X(img_idx), L(lm_tid), K)
-                )
+                graph.add(gtsam.GenericProjectionFactorCal3_S2(obs, obs_noise, X(img_idx), L(lm_tid), K))
             initial_estimates.insert(L(lm_tid), lm)
-
 
     def add_new_keyframe_factors(
         graph: gtsam.NonlinearFactorGraph,
         initial_estimates: gtsam.Values,
-        img: ImageData,
+        img: ViewData,
         K: gtsam.Cal3_S2,
         track_manager: TrackManager,
         point_cloud: PointCloud,
@@ -251,16 +234,13 @@ def _(Point2, dataset_path, enough_motion_for_keyframe, img0, load_intrinsics):
         for tid, lm in zip(tids, lms):
             # Get KP observation of the landmark (lm) in the new view (img)
             kp_keys = track_manager.get_keypoints(tid, img.idx)
-            assert (
-                len(kp_keys) == 1
-            )  # geometrically only 1 KP possible; True for symmetric view-to-view KP matches
+            assert len(kp_keys) == 1  # geometrically only 1 KP possible; True for symmetric view-to-view KP matches
             obs = img.kp[kp_keys[0][1]][:, None]
 
             graph.add(gtsam.GenericProjectionFactorCal3_S2(obs, obs_noise, X(img.idx), L(tid), K))
             if not initial_estimates.exists(L(tid)):
                 initial_estimates.insert(L(tid), lm)
         initial_estimates.insert(X(img.idx), gtsam_cam_pose(img))
-
 
     def visual_ISAM2_tumvi_example(dataset_path, max_frames: int = 40):
         # plt.ion()
@@ -312,9 +292,7 @@ def _(Point2, dataset_path, enough_motion_for_keyframe, img0, load_intrinsics):
             # --- Now we have a new keyframe ---
             if last_keyframe_idx == 0:
                 print(f"First pair of keyframes: {keyframe_window[0].idx=} and {img.idx=}...")
-                compute_baseline_estimate(
-                    keyframe_window[0], img, K.K(), track_manager, point_cloud, kp_matcher
-                )
+                bootstrap_from_two_views(keyframe_window[0], img, K.K(), track_manager, point_cloud, kp_matcher)
                 # now have: first triang 3d points (landmarks) + keypoints for each image (cam pose)
                 add_initial_factors_and_priors(
                     graph, initial_estimate, K, keyframe_window[0], img, track_manager, point_cloud
@@ -357,7 +335,6 @@ def _(Point2, dataset_path, enough_motion_for_keyframe, img0, load_intrinsics):
         # plt.ioff()
         # plt.show()
 
-
     visual_ISAM2_tumvi_example(dataset_path, max_frames=120)
     return
 
@@ -372,22 +349,17 @@ def _():
 
 @app.cell
 def _(dataset_path, image_dir, load_intrinsics):
-    def undistort_tumvi_image(
-        img: np.ndarray, K_np: np.ndarray, D: np.ndarray, balance=0.0
-    ) -> np.ndarray:
+    def undistort_tumvi_image(img: np.ndarray, K_np: np.ndarray, D: np.ndarray, balance=0.0) -> np.ndarray:
         """Proper undistortion for TUM-VI equidistant fisheye."""
         h, w = img.shape[:2]
 
         # Create the undistortion + rectification map once (or cache it)
-        new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(
-            K_np, D, (w, h), np.eye(3), balance=balance
-        )
+        new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(K_np, D, (w, h), np.eye(3), balance=balance)
 
         map1, map2 = cv.fisheye.initUndistortRectifyMap(K_np, D, np.eye(3), new_K, (w, h), cv.CV_16SC2)
 
         undist = cv.remap(img, map1, map2, cv.INTER_LINEAR)
         return undist
-
 
     image_files = sorted(glob.glob(str(image_dir / "*.png")))
     k_vec, dist = load_intrinsics(dataset_path)
@@ -402,7 +374,6 @@ def _(dataset_path, image_dir, load_intrinsics):
     img = plt.imread(image_files[0])
     # img_undist = cv.fisheye.undistortImage(img, K.K(), dist)
     # img_undist = cv.undistort(img, K.K(), dist)
-
 
     fig, ax = plt.subplots(1, 2, figsize=(12, 10))
     ax[0].imshow(img, cmap="gray")

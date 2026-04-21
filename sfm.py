@@ -15,12 +15,12 @@ from utils import (
     FeatureExtractor,
     FeatureStore,
     FrameLoader,
-    ImageData,
     NDArrayFloat,
     NDArrayInt,
     PointCloud,
     ReconIO,
     TrackManager,
+    ViewData,
     ViewEdge,
     calibrate_camera,
     construct_view_graph,
@@ -28,17 +28,42 @@ from utils import (
 )
 
 
-# TODO: rename to initialize_from_two_views (to go with "add_view"); improve docstring: bootstrapping SFM process
-def compute_baseline_estimate(
-    img_0: ImageData,
-    img_1: ImageData,
+def bootstrap_from_two_views(
+    img_0: ViewData,
+    img_1: ViewData,
     track_manager: TrackManager,
     point_cloud: PointCloud,
-    match_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
+    match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
 ):
-    """Computes two-view baseline estimate of 3D points and poses
+    """Computes two-view baseline estimate of 3D points and camera poses.
 
-    First image is at the origin.
+    This function initializes the 3D reconstruction pipeline by:
+    1. Matching keypoints between two images using the provided matching function
+    2. Computing the essential matrix via RANSAC to identify inliers
+    3. Recovering camera pose (rotation and translation) for the second image
+    4. Triangulating 3D points from the matched keypoint pairs
+    5. Creating tracks and adding 3D points to the point cloud
+    6. Setting camera poses (first image at origin, second image at computed pose)
+
+    Args:
+        img_0: First ImageData object (reference frame at origin)
+        img_1: Second ImageData object to match against img_0
+        track_manager: TrackManager instance for managing keypoint tracks
+        point_cloud: PointCloud instance for storing triangulated 3D points
+        match_fn: Callable that takes two ImageData objects and returns a tuple of
+                  (descriptors: NDArrayFloat, matches: NDArrayInt) where matches
+                  contains pairs of keypoint indices [kp_0_idx, kp_1_idx]
+
+    Returns:
+        None. Modifies in-place: updates track_manager with new tracks, point_cloud
+        with 3D points, and camera poses in img_0 and img_1.
+
+    Notes:
+        - The first image is set as the reference frame with identity rotation and
+          zero translation
+        - Only keypoint matches identified as inliers by RANSAC and successfully
+          triangulated are included
+        - Camera intrinsics are extracted from img_0 and assumed to be identical for img_1
     """
     # Get camera intrinsics from img_0
     K = img_0.camera_model.get_camera_matrix()
@@ -84,11 +109,11 @@ def compute_baseline_estimate(
 
 
 def add_view(
-    img_new: ImageData,
-    img_ref: ImageData,
+    img_new: ViewData,
+    img_ref: ViewData,
     track_manager: TrackManager,
     point_cloud: PointCloud,
-    match_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
+    match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
 ):
     """Adds 3D points from new view using PnP and triangulation.
 
@@ -159,11 +184,11 @@ def add_view(
     pts_new = img_new.kp[matches_untracked[:, 1]]
 
     # Projection matrices: from 3D world to each camera 2D image plane
-    P_ref = K @ img_ref.pose_matrix
-    P_new = K @ img_new.pose_matrix
+    # P_ref = K @ img_ref.pose_matrix
+    # P_new = K @ img_new.pose_matrix
     # TODO: replace with
-    # P_ref = img_ref.projection_matrix
-    # P_new = img_new.projection_matrix
+    P_ref = img_ref.projection_matrix
+    P_new = img_new.projection_matrix
 
     # Triangulate the untracked KPs in the new image
     points_4d = cv.triangulatePoints(P_ref, P_new, pts_ref.T, pts_new.T)
@@ -179,7 +204,7 @@ def add_view(
 
 def pick_best_image_pair(
     edges: list[ViewEdge], store: FeatureStore, R: set[int] | None = None
-) -> tuple[ImageData, ImageData, ViewEdge]:
+) -> tuple[ViewData, ViewData, ViewEdge]:
     """Pick best image pair from list of edges.
 
     Assumption: ImageData.idx matches the node indexes, which it should if the graph was constructed correctly.
@@ -196,7 +221,7 @@ def process_graph_component(
     store: FeatureStore,
     track_manager: TrackManager,
     point_cloud: PointCloud,
-    match_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
+    match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
 ) -> tuple[list[ViewEdge], set[int]]:
     # Pick strongest baseline:
     # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
@@ -205,7 +230,7 @@ def process_graph_component(
         f"Establishing baseline ({best_edge.weight} matches) from: {img_0.idx}:{img_0.path.name} and {img_1.idx}:{img_1.path.name}"
     )
     # matches -> E -> pose -> triangulation
-    compute_baseline_estimate(img_0, img_1, track_manager, point_cloud, match_fn)
+    bootstrap_from_two_views(img_0, img_1, track_manager, point_cloud, match_fn)
 
     print(f"After compute_baseline_estimate: {track_manager.is_valid()=}")
 
