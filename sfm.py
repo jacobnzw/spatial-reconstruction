@@ -10,6 +10,8 @@ from rich.pretty import pprint
 from ba import bundle_adjustment
 from config import SfMConfig
 from utils import (
+    CameraModel,
+    CameraType,
     FeatureExtractor,
     FeatureStore,
     FrameLoader,
@@ -30,7 +32,6 @@ from utils import (
 def compute_baseline_estimate(
     img_0: ImageData,
     img_1: ImageData,
-    K: NDArrayFloat,
     track_manager: TrackManager,
     point_cloud: PointCloud,
     match_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
@@ -39,6 +40,8 @@ def compute_baseline_estimate(
 
     First image is at the origin.
     """
+    # Get camera intrinsics from img_0
+    K, _ = img_0.get_intrinsics()
 
     # Match key points (via descriptors)
     print(f"baseline: Computing matches from {img_0.idx}:{img_0.path.name} to {img_1.idx}:{img_1.path.name}")
@@ -83,8 +86,6 @@ def compute_baseline_estimate(
 def add_view(
     img_new: ImageData,
     img_ref: ImageData,
-    K: NDArrayFloat,
-    dist,
     track_manager: TrackManager,
     point_cloud: PointCloud,
     match_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
@@ -92,7 +93,21 @@ def add_view(
     """Adds 3D points from new view using PnP and triangulation.
 
     img_ref is reference image for which we already have 2D-3D pt correspondence in track_manager
+
+    Args:
+        img_new: New image to add.
+        img_ref: Reference image with known pose.
+        K: Camera intrinsic matrix. If None, uses img_new.camera_model.K.
+        dist: Distortion coefficients. If None, uses img_new.camera_model.dist.
+        track_manager: Track manager. Required parameter.
+        point_cloud: Point cloud. Required parameter.
+        match_fn: Keypoint matcher function. Required parameter.
     """
+    if track_manager is None or point_cloud is None or match_fn is None:
+        raise ValueError("track_manager, point_cloud, and match_fn are required")
+
+    K, dist = img_new.get_intrinsics()
+
     # Compute KP matches from ref image to new image
     # Matching from new to ref image: Where does ref img tracked KP match to in new img?
     print(f"add_view: Computing matches from {img_ref.idx}:{img_ref.path.name} to {img_new.idx}:{img_new.path.name}")
@@ -187,9 +202,9 @@ def process_graph_component(
     print(
         f"Establishing baseline ({best_edge.weight} matches) from: {img_0.idx}:{img_0.path.name} and {img_1.idx}:{img_1.path.name}"
     )
-    K, dist = store.get_intrisics()
+    K, dist = img_0.get_intrinsics()
     # matches -> E -> pose -> triangulation
-    compute_baseline_estimate(img_0, img_1, K, track_manager, point_cloud, match_fn)
+    compute_baseline_estimate(img_0, img_1, track_manager, point_cloud, match_fn)
 
     print(f"After compute_baseline_estimate: {track_manager.is_valid()=}")
 
@@ -218,7 +233,7 @@ def process_graph_component(
         )
         try:
             # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
-            add_view(img_new, img_ref, K, dist, track_manager, point_cloud, match_fn)
+            add_view(img_new, img_ref, track_manager=track_manager, point_cloud=point_cloud, match_fn=match_fn)
             print(f"After add_view: {track_manager.is_valid()=}")
 
         except ValueError as e:
@@ -257,6 +272,7 @@ def main(cfg: SfMConfig = SfMConfig()):
     print()
 
     K, dist = calibrate_camera()
+    camera_model = CameraModel(model_type=CameraType.PINHOLE, K=K, dist=dist)
 
     img_dir = Path("data") / "raw" / cfg.dataset
     out_dir = Path("data") / "out" / cfg.dataset
@@ -264,9 +280,9 @@ def main(cfg: SfMConfig = SfMConfig()):
 
     # Load all images & extract features
     print(f"Extracting {cfg.feature_type.upper()} features from {img_dir}...")
-    loader = FrameLoader(img_dir, max_size=cfg.max_size, ext="jpg")
+    loader = FrameLoader(img_dir, max_size=cfg.max_size, ext="jpg", camera_model=camera_model)
     feature_extractor = FeatureExtractor(cfg, loader)
-    image_store = FeatureStore(K, dist, feature_extractor)
+    image_store = FeatureStore(feature_extractor)
     track_manager = TrackManager()
     point_cloud = PointCloud()
     exporter = ReconIO(point_cloud, image_store, track_manager)

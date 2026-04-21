@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import Annotated, Any, Callable, Iterable, Literal
@@ -18,6 +19,28 @@ NDArrayFloat = NDArray[np.floating[Any]]
 NDArrayInt = NDArray[np.integer[Any]]
 Point3D = Annotated[NDArrayFloat, Literal[3]]
 KPKey = tuple[int, int]  # Keypoint observation (img_id, kp_idx)
+
+
+class CameraType(Enum):
+    """Enum for different camera models."""
+
+    PINHOLE = "pinhole"
+    FISHEYE = "fisheye"
+
+
+@dataclass
+class CameraModel:
+    """Camera intrinsic parameters and distortion model.
+
+    Attributes:
+        model_type: Type of camera model (pinhole or fisheye).
+        K: Camera intrinsic matrix (3x3).
+        dist: Distortion coefficients.
+    """
+
+    model_type: CameraType
+    K: NDArrayFloat
+    dist: NDArrayFloat
 
 
 def calibrate_camera(img_dir: Path = Path("data/calibration")):
@@ -91,12 +114,17 @@ class ImageData:  # TODO: consider renaming to ViewData / FrameData
         des: Feature descriptors as (N, D) array where D is descriptor dimension.
         R: 3x3 rotation matrix (camera-to-world or world-to-camera depending on context).
         t: 3x1 translation vector.
+        camera_model: Camera intrinsic model containing K and distortion coefficients.
+        scale: Scaling factor applied to image (1.0 means no scaling).
     """
 
     idx: int
     path: Path
     # Useful for rendering and debugging
     pixels: NDArray[Any]  # GRAYs and RBGs as (H, W, C) unit8
+    # Camera model
+    camera_model: CameraModel
+    scale: float = 1.0
     # Extracted keypoints and descriptors
     kp: NDArrayFloat | None = None
     des: NDArrayFloat | None = None
@@ -104,7 +132,6 @@ class ImageData:  # TODO: consider renaming to ViewData / FrameData
     # Estimated pose
     R: NDArrayFloat | None = None
     t: NDArrayFloat | None = None
-    # TODO: add K, dist, @property projection_matrix for convenience in reprojection and triangulation
 
     def set_pose(self, R, t):
         self.R = R
@@ -122,20 +149,47 @@ class ImageData:  # TODO: consider renaming to ViewData / FrameData
     def rvec(self) -> NDArray[np.float32]:
         return cv.Rodrigues(self.R)[0].ravel()  # ty:ignore[no-matching-overload]
 
+    @property
+    def projection_matrix(self) -> NDArray[np.float32]:
+        """Get the 3x4 projection matrix P = K [R | t] for this image."""
+        if self.R is None or self.t is None:
+            raise ValueError("Pose not set for this image")
+
+        return self.camera_model.K @ np.hstack((self.R, self.t))
+
+    def get_intrinsics(self, rescaled: bool = True) -> tuple[NDArrayFloat, NDArrayFloat]:
+        """Get camera intrinsics. Optionally return rescaled version if images were downsized."""
+        if self.camera_model is None:
+            raise ValueError("Camera model not set for this image")
+
+        if rescaled and self.scale < 1.0:
+            K_rescaled = self.camera_model.K.copy()
+            K_rescaled[0, :] *= self.scale
+            K_rescaled[1, :] *= self.scale
+            return K_rescaled, self.camera_model.dist
+        return self.camera_model.K, self.camera_model.dist
+
 
 # TODO:  undistortion; pack camera model w/ K and distortion coeffs?
-# TODO:  if downscaling intrinsics need to be adjusted accordingly
 class FrameLoader:
     """Loads images from a directory and applies preprocessing such as scaling.
 
     Args:
         img_dir: Directory containing input images.
+        camera_model: camera model to assign to each frame.
         max_size: Maximum size (in pixels) for the longest edge of the image. Images larger than this will be downscaled.
         max_frames: Optional maximum number of frames to load. If None, loads all frames in the directory.
         ext: Image file extension to look for (default "png").
     """
 
-    def __init__(self, img_dir: Path, max_size: int, max_frames: int | None = None, ext: str = "png"):
+    def __init__(
+        self,
+        img_dir: Path,
+        camera_model: CameraModel,
+        max_size: int | None = None,
+        max_frames: int | None = None,
+        ext: str = "png",
+    ):
         img_paths = sorted(list(Path(img_dir).glob(f"*.{ext}")))
         if not img_paths:
             raise ValueError(f"No *.{ext} images found in {img_dir}")
@@ -143,6 +197,7 @@ class FrameLoader:
         self.img_paths = img_paths
         self._max_frames = max_frames
         self.max_size = max_size
+        self.camera_model = camera_model
 
     def iter_frames(self) -> Iterable[ImageData]:
         """Yields images as ImageData objects.
@@ -165,7 +220,8 @@ class FrameLoader:
                 raise FileNotFoundError(f"FrameLoader: Failed to load image: {path}")
 
             # Compute scale based on first image
-            if idx == 0:
+            # Assumption: all images have the same resolution and thus the same scale factor applies to all
+            if idx == 0 and self.max_size is not None:
                 h, w = img.shape[:2]
                 self.scale = self.max_size / max(h, w) if max(h, w) > self.max_size else 1.0
 
@@ -175,7 +231,7 @@ class FrameLoader:
                 new_w, new_h = int(w * self.scale), int(h * self.scale)
                 img = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
 
-            yield ImageData(idx, path, img)
+            yield ImageData(idx, path, img, camera_model=self.camera_model, scale=self.scale)
 
 
 class FeatureExtractor:
@@ -247,35 +303,18 @@ class FeatureStore:
     """Manages feature extraction and storage for multiple images.
 
     Handles loading images from a directory, extracting keypoints and descriptors
-    using a provided FeatureExtractor, and storing the results along with camera
-    intrinsics. Supports automatic image downsampling if images exceed max_size.
+    using a provided FeatureExtractor, and storing the results. Camera intrinsics
+    are stored in each ImageData object.
 
     Attributes:
         _store: List of ImageData objects containing extracted features for each image.
-        _K: Camera intrinsic matrix.
-        _dist: Camera distortion coefficients.
-        _scale: Scaling factor applied to images during feature extraction.
     """
 
     def __init__(
         self,
-        K: NDArrayFloat,
-        dist: NDArrayFloat,
         feature_extractor: FeatureExtractor,
     ):
         self._store: list[ImageData] = list(feature_extractor.iter_frames_with_features())
-        self._scale = feature_extractor.loader.scale
-        self._K = K
-        self._dist = dist
-
-    def get_intrisics(self, rescaled=True) -> tuple[NDArrayFloat, NDArrayFloat]:
-        """Get camera intrinsics. Optionally return rescaled version if images were downsized."""
-        if rescaled and self._scale < 1.0:
-            K_rescaled = self._K.copy()
-            K_rescaled[0, :] *= self._scale
-            K_rescaled[1, :] *= self._scale
-            return K_rescaled, self._dist
-        return self._K, self._dist
 
     def get_pixels(self, kp_keys: list[KPKey]) -> NDArray[np.uint8]:
         """Get pixel color for a given keypoint in an image."""
@@ -430,11 +469,23 @@ def make_keypoint_matcher(
 def has_overlap(
     img_from: ImageData,
     img_to: ImageData,
-    K: NDArray,
-    matcher_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
-    min_inliers: int,
+    matcher_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]] | None = None,
+    min_inliers: int = 50,
 ) -> tuple[bool, int | None, NDArray | None]:
-    """Returns True if there is sufficient overlap between two images."""
+    """Returns True if there is sufficient overlap between two images.
+
+    Args:
+        img_from: Source image.
+        img_to: Target image.
+        K: Camera intrinsic matrix. If None, uses img_from.camera_model.K.
+        matcher_fn: Keypoint matcher function. Required parameter.
+        min_inliers: Minimum number of inliers to consider overlap sufficient.
+    """
+    if matcher_fn is None:
+        raise ValueError("matcher_fn is required")
+
+    K, _ = img_from.get_intrinsics()
+
     _, good = matcher_fn(img_from, img_to)
 
     if len(good) < min_inliers:
@@ -463,7 +514,6 @@ def construct_view_graph(
 ):
     view_graph = ViewGraph()
     kp, des = image_store.get_keypoints(), image_store.get_descriptors()
-    K, _ = image_store.get_intrisics()
     assert len(kp) == len(des)
 
     N = len(kp)
@@ -471,8 +521,8 @@ def construct_view_graph(
         for j in range(i + 1, N):
             img_i, img_j = image_store[i], image_store[j]
             # TODO: 1 direction enough, when matches symmetrical (e.g. crossCheck=True)
-            ok_ij, inliers_ij, _ = has_overlap(img_i, img_j, K, matcher_fn, min_inliers)
-            ok_ji, inliers_ji, _ = has_overlap(img_j, img_i, K, matcher_fn, min_inliers)
+            ok_ij, inliers_ij, _ = has_overlap(img_i, img_j, matcher_fn, min_inliers)
+            ok_ji, inliers_ji, _ = has_overlap(img_j, img_i, matcher_fn, min_inliers)
             # ASK: why the matches should not be preserved ???
             if ok_ij and ok_ji:
                 view_graph.add_edge(i, j, inliers_ij, inliers_ji)
@@ -683,7 +733,6 @@ class ReconIO:
         for track_id, pt in self.point_cloud.items():
             kp_keys = self.track_manager.track_to_kps[track_id]
             # average the colors of all KPs in the track
-            # TODO: ensure unit8 here! not at image loading level
             colors[track_id] = self.images.get_pixels(kp_keys).mean(axis=0)
         return colors
 
@@ -724,8 +773,9 @@ class ReconIO:
         points_tensor = torch.from_numpy(points_3d).float()  # (M, 3)
         colors_tensor = torch.from_numpy(colors).float() / 255.0  # (M, 3), normalized to [0, 1]
 
-        # Get camera intrinsics (rescaled if images were downsampled)
-        K, _ = self.images.get_intrisics(rescaled=True)
+        # Get camera intrinsics (rescaled) from first image with pose
+        first_img = self.images[0]
+        K, _ = first_img.get_intrinsics(rescaled=True)
         intrinsics_tensor = torch.from_numpy(K).float()  # (3, 3)
 
         # Save as .pt file

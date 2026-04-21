@@ -22,6 +22,8 @@ from gtsam import (
 )
 from sfm import add_view, compute_baseline_estimate
 from utils import (
+    CameraModel,
+    CameraType,
     FeatureExtractor,
     FrameLoader,
     ImageData,
@@ -97,7 +99,7 @@ class KeyframeStreamer:
         """Prefer the most recent keyframe, only fall back if it has poor overlap."""
         # Always try the most recent keyframe first
         last_kf = self._keyframe_window[-2]
-        is_overlapping, inliers, matches = has_overlap(last_kf, keyframe, K, self.matcher, min_inliers)
+        is_overlapping, inliers, matches = has_overlap(last_kf, keyframe, self.matcher, min_inliers)
         if is_overlapping and inliers >= 45:
             return last_kf
 
@@ -108,7 +110,7 @@ class KeyframeStreamer:
             if ref.idx == keyframe.idx:  # don't pick the current keyframe as reference
                 continue
             # Use your existing has_overlap (geometric validation + E-matrix inliers)
-            is_overlapping, inliers, matches = has_overlap(ref, keyframe, K, self.matcher, min_inliers)
+            is_overlapping, inliers, matches = has_overlap(ref, keyframe, self.matcher, min_inliers)
             if not is_overlapping:
                 continue
 
@@ -288,7 +290,6 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
     parameters.setRelinearizeThreshold(0.01)
     parameters.relinearizeSkip = 1
     isam = gtsam.ISAM2(parameters)
-
     graph = gtsam.NonlinearFactorGraph()
     initial_estimate = gtsam.Values()
 
@@ -296,7 +297,10 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
     point_cloud = PointCloud()
 
     # Setup keyframe streaming
-    loader = FrameLoader(image_dir, max_size=cfg.max_size, max_frames=cfg.max_read_frames, ext="png")
+    camera_model = CameraModel(model_type=CameraType.PINHOLE, K=K.K(), dist=dist_vec)
+    loader = FrameLoader(
+        image_dir, max_size=cfg.max_size, max_frames=cfg.max_read_frames, ext="png", camera_model=camera_model
+    )
     extractor = FeatureExtractor(cfg, loader)
     kp_matcher = make_keypoint_matcher(cfg)
     streamer = KeyframeStreamer(
@@ -312,7 +316,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
         # === Bootstrap: first two keyframes ===
         if prev_keyframe.idx == 0:
             print(f"  → Bootstrap with frames {prev_keyframe.idx} and {keyframe.idx}")
-            compute_baseline_estimate(prev_keyframe, keyframe, K.K(), track_manager, point_cloud, kp_matcher)
+            compute_baseline_estimate(prev_keyframe, keyframe, track_manager, point_cloud, kp_matcher)
 
             # Add first two poses
             keyframe_pose, prev_keyframe_pose = gtsam_cam_pose(keyframe), gtsam_cam_pose(prev_keyframe)
@@ -346,7 +350,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
             print("  → No good reference found, skipping")
             continue
 
-        add_view(keyframe, ref, K.K(), dist_vec, track_manager, point_cloud, kp_matcher)
+        add_view(keyframe, ref, track_manager, point_cloud, kp_matcher)
 
         # === DEPTH FILTER (critical for chirality) ===
         new_tracks = track_manager.get_triangulated_view_tracks(keyframe.idx)
