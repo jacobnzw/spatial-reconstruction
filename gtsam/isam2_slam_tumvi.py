@@ -9,6 +9,7 @@ import numpy as np
 import tyro
 import yaml
 from gtsam.symbol_shorthand import L, X
+from rich.pretty import pprint
 
 import gtsam
 from config import SLAMConfig
@@ -27,7 +28,6 @@ from utils import (
     FeatureExtractor,
     FrameLoader,
     ImageData,
-    NDArrayFloat,
     PointCloud,
     TrackManager,
     has_overlap,
@@ -93,14 +93,13 @@ class KeyframeStreamer:
         self,
         keyframe: ImageData,
         track_manager: TrackManager,
-        K: NDArrayFloat,
         min_inliers: int = 30,
     ) -> ImageData | None:
         """Prefer the most recent keyframe, only fall back if it has poor overlap."""
         # Always try the most recent keyframe first
         last_kf = self._keyframe_window[-2]
         is_overlapping, inliers, matches = has_overlap(last_kf, keyframe, self.matcher, min_inliers)
-        if is_overlapping and inliers >= 45:
+        if is_overlapping and inliers >= 45:  # TODO: remove inliers cond; already done in has_overlap
             return last_kf
 
         best_ref = None
@@ -263,7 +262,29 @@ def add_new_keyframe_factors(
         initial_estimates.insert(X(img_ref.idx), gtsam_cam_pose(img_ref))
 
 
+def make_keyframe_streamer(image_dir, cfg, camera_model, kp_matcher, undistort=False) -> KeyframeStreamer:
+    loader = FrameLoader(
+        image_dir,
+        max_size=cfg.max_size,
+        max_frames=cfg.max_read_frames,
+        ext="png",
+        camera_model=camera_model,
+        undistort=undistort,
+    )
+    extractor = FeatureExtractor(cfg, loader)
+    return KeyframeStreamer(
+        extractor,
+        kp_matcher,
+        max_motion_matches=cfg.max_motion_matches,
+        max_window_keyframes=cfg.max_window_keyframes,
+    )
+
+
 def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
+    # Display configuration
+    pprint(cfg, expand_all=True)
+    print()
+
     dataset_path = Path("data/tum") / cfg.dataset
     image_dir = Path(dataset_path) / "dso" / "cam0" / "images"
 
@@ -297,18 +318,9 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
     point_cloud = PointCloud()
 
     # Setup keyframe streaming
-    camera_model = CameraModel(model_type=CameraType.PINHOLE, K=K.K(), dist=dist_vec)
-    loader = FrameLoader(
-        image_dir, max_size=cfg.max_size, max_frames=cfg.max_read_frames, ext="png", camera_model=camera_model
-    )
-    extractor = FeatureExtractor(cfg, loader)
+    camera_model = CameraModel(model_type=CameraType.FISHEYE, K=K.K(), dist=dist_vec)
     kp_matcher = make_keypoint_matcher(cfg)
-    streamer = KeyframeStreamer(
-        extractor,
-        kp_matcher,
-        max_motion_matches=cfg.max_motion_matches,
-        max_window_keyframes=cfg.max_window_keyframes,
-    )
+    streamer = make_keyframe_streamer(image_dir, cfg, camera_model, kp_matcher, undistort=False)
 
     for keyframe, prev_keyframe in streamer.keyframes():
         print(f"Processing keyframe {keyframe.idx}: {keyframe.path.name}")
@@ -345,7 +357,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
             continue
 
         # === Normal keyframe ===
-        ref = streamer.find_reference_frame(keyframe, track_manager, K.K())
+        ref = streamer.find_reference_frame(keyframe, track_manager, min_inliers=cfg.min_inliers)
         if ref is None:
             print("  → No good reference found, skipping")
             continue
@@ -353,6 +365,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
         add_view(keyframe, ref, track_manager, point_cloud, kp_matcher)
 
         # === DEPTH FILTER (critical for chirality) ===
+        # TODO: move into add_view
         new_tracks = track_manager.get_triangulated_view_tracks(keyframe.idx)
         for tid in list(new_tracks):
             pt = point_cloud.get_point(tid)

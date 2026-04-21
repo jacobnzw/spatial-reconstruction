@@ -41,7 +41,7 @@ def compute_baseline_estimate(
     First image is at the origin.
     """
     # Get camera intrinsics from img_0
-    K, _ = img_0.get_intrinsics()
+    K = img_0.camera_model.get_camera_matrix()
 
     # Match key points (via descriptors)
     print(f"baseline: Computing matches from {img_0.idx}:{img_0.path.name} to {img_1.idx}:{img_1.path.name}")
@@ -106,8 +106,6 @@ def add_view(
     if track_manager is None or point_cloud is None or match_fn is None:
         raise ValueError("track_manager, point_cloud, and match_fn are required")
 
-    K, dist = img_new.get_intrinsics()
-
     # Compute KP matches from ref image to new image
     # Matching from new to ref image: Where does ref img tracked KP match to in new img?
     print(f"add_view: Computing matches from {img_ref.idx}:{img_ref.path.name} to {img_new.idx}:{img_new.path.name}")
@@ -132,6 +130,7 @@ def add_view(
     assert np.isfinite(img_new_pts_tracked).all(), "Image points must be finite"
 
     print(f"Estimating pose of {img_new.idx}:{img_new.path.name} with {len(object_points)} 3D-2D correspondences...")
+    K, dist = img_new.camera_model.get_camera_matrix(), img_new.camera_model.dist
     pnp_ok, rvec, tvec, inliers = cv.solvePnPRansac(
         object_points,
         img_new_pts_tracked,
@@ -162,6 +161,9 @@ def add_view(
     # Projection matrices: from 3D world to each camera 2D image plane
     P_ref = K @ img_ref.pose_matrix
     P_new = K @ img_new.pose_matrix
+    # TODO: replace with
+    # P_ref = img_ref.projection_matrix
+    # P_new = img_new.projection_matrix
 
     # Triangulate the untracked KPs in the new image
     points_4d = cv.triangulatePoints(P_ref, P_new, pts_ref.T, pts_new.T)
@@ -202,7 +204,6 @@ def process_graph_component(
     print(
         f"Establishing baseline ({best_edge.weight} matches) from: {img_0.idx}:{img_0.path.name} and {img_1.idx}:{img_1.path.name}"
     )
-    K, dist = img_0.get_intrinsics()
     # matches -> E -> pose -> triangulation
     compute_baseline_estimate(img_0, img_1, track_manager, point_cloud, match_fn)
 

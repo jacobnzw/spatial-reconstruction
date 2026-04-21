@@ -41,6 +41,21 @@ class CameraModel:
     model_type: CameraType
     K: NDArrayFloat
     dist: NDArrayFloat
+    scale: float = 1.0  # Scaling factor applied to the image (1.0 means no scaling)
+
+    def get_camera_matrix(self, rescaled: bool = True) -> NDArrayFloat:
+        """Get camera matrix K, rescaled if necessary.
+
+        Args:
+            rescaled: If True, return the rescaled K based on the current scale factor. If False, return the original K.
+        """
+
+        if rescaled and self.scale < 1.0:
+            K_rescaled = self.K.copy()
+            K_rescaled[0, :] *= self.scale
+            K_rescaled[1, :] *= self.scale
+            return K_rescaled
+        return self.K
 
 
 def calibrate_camera(img_dir: Path = Path("data/calibration")):
@@ -110,12 +125,11 @@ class ImageData:  # TODO: consider renaming to ViewData / FrameData
         idx: Unique image index in the reconstruction.
         path: Path to the image file.
         pixels: RGB pixel data for rendering and debugging (H, W, 3).
+        camera_model: Camera intrinsic model containing K and distortion coefficients.
         kp: Extracted keypoint locations as (N, 2) array of (x, y) coordinates.
         des: Feature descriptors as (N, D) array where D is descriptor dimension.
         R: 3x3 rotation matrix (camera-to-world or world-to-camera depending on context).
         t: 3x1 translation vector.
-        camera_model: Camera intrinsic model containing K and distortion coefficients.
-        scale: Scaling factor applied to image (1.0 means no scaling).
     """
 
     idx: int
@@ -124,7 +138,6 @@ class ImageData:  # TODO: consider renaming to ViewData / FrameData
     pixels: NDArray[Any]  # GRAYs and RBGs as (H, W, C) unit8
     # Camera model
     camera_model: CameraModel
-    scale: float = 1.0
     # Extracted keypoints and descriptors
     kp: NDArrayFloat | None = None
     des: NDArrayFloat | None = None
@@ -142,35 +155,27 @@ class ImageData:  # TODO: consider renaming to ViewData / FrameData
         return self.R is not None and self.t is not None
 
     @property
-    def pose_matrix(self) -> NDArray[np.float32]:
-        return np.hstack((self.R, self.t))  # ty:ignore[no-matching-overload]
+    def pose_matrix(self) -> NDArrayFloat:
+        if self.R is None or self.t is None:
+            raise ValueError("Pose not set for this image")
+        return np.hstack((self.R, self.t))
 
     @property
-    def rvec(self) -> NDArray[np.float32]:
+    def rvec(self) -> NDArrayFloat:
         return cv.Rodrigues(self.R)[0].ravel()  # ty:ignore[no-matching-overload]
 
     @property
-    def projection_matrix(self) -> NDArray[np.float32]:
-        """Get the 3x4 projection matrix P = K [R | t] for this image."""
-        if self.R is None or self.t is None:
-            raise ValueError("Pose not set for this image")
+    def projection_matrix(self) -> NDArrayFloat:
+        """Get the 3x4 projection matrix P = K [R | t] for this image.
 
-        return self.camera_model.K @ np.hstack((self.R, self.t))
-
-    def get_intrinsics(self, rescaled: bool = True) -> tuple[NDArrayFloat, NDArrayFloat]:
-        """Get camera intrinsics. Optionally return rescaled version if images were downsized."""
-        if self.camera_model is None:
-            raise ValueError("Camera model not set for this image")
-
-        if rescaled and self.scale < 1.0:
-            K_rescaled = self.camera_model.K.copy()
-            K_rescaled[0, :] *= self.scale
-            K_rescaled[1, :] *= self.scale
-            return K_rescaled, self.camera_model.dist
-        return self.camera_model.K, self.camera_model.dist
+        Note: Effectively camera_P_world
+          - transformation of points from world coordinates to camera image plane coordinates
+        https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.transform.RigidTransform.html
+        """
+        K = self.camera_model.get_camera_matrix(rescaled=True)
+        return K @ self.pose_matrix
 
 
-# TODO:  undistortion; pack camera model w/ K and distortion coeffs?
 class FrameLoader:
     """Loads images from a directory and applies preprocessing such as scaling.
 
@@ -180,6 +185,8 @@ class FrameLoader:
         max_size: Maximum size (in pixels) for the longest edge of the image. Images larger than this will be downscaled.
         max_frames: Optional maximum number of frames to load. If None, loads all frames in the directory.
         ext: Image file extension to look for (default "png").
+        undistort: If True, applies undistortion to fisheye images using the provided camera model parameters.
+        Only applicable if camera_model.model_type is FISHEYE.
     """
 
     def __init__(
@@ -189,6 +196,7 @@ class FrameLoader:
         max_size: int | None = None,
         max_frames: int | None = None,
         ext: str = "png",
+        undistort: bool = True,
     ):
         img_paths = sorted(list(Path(img_dir).glob(f"*.{ext}")))
         if not img_paths:
@@ -198,6 +206,7 @@ class FrameLoader:
         self._max_frames = max_frames
         self.max_size = max_size
         self.camera_model = camera_model
+        self.undistort = undistort
 
     def iter_frames(self) -> Iterable[ImageData]:
         """Yields images as ImageData objects.
@@ -215,9 +224,14 @@ class FrameLoader:
 
             # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order
             img = cv.imread(str(path), cv.IMREAD_COLOR_RGB)
-
             if img is None:
                 raise FileNotFoundError(f"FrameLoader: Failed to load image: {path}")
+
+            camera_model = self.camera_model
+            if self.undistort and self.camera_model.model_type == CameraType.FISHEYE:
+                img, K_undistorted = self._undistort_fisheye(img)
+                # After undistortion, it's pinhole camera with new intrinsics K_undistorted and no distortion
+                camera_model = CameraModel(model_type=CameraType.PINHOLE, K=K_undistorted, dist=np.zeros(4))
 
             # Compute scale based on first image
             # Assumption: all images have the same resolution and thus the same scale factor applies to all
@@ -230,8 +244,26 @@ class FrameLoader:
                 h, w = img.shape[:2]
                 new_w, new_h = int(w * self.scale), int(h * self.scale)
                 img = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
+                camera_model.scale = self.scale
+                # NOTE: camera_model.get_camera_matrix() will handle rescaling K based on self.scale
 
-            yield ImageData(idx, path, img, camera_model=self.camera_model, scale=self.scale)
+            yield ImageData(idx, path, img, camera_model=camera_model)
+
+    def _undistort_fisheye(self, img: NDArray[Any], balance=0.0, fov_scale=1.0) -> tuple[NDArray[Any], NDArrayFloat]:
+        """Undistortion for equidistant fisheye."""
+        h, w = img.shape[:2]
+
+        # Create the undistortion + rectification map once (or cache it)
+        new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(
+            self.camera_model.K, self.camera_model.dist, (w, h), np.eye(3), balance=balance, fov_scale=fov_scale
+        )
+
+        map1, map2 = cv.fisheye.initUndistortRectifyMap(
+            self.camera_model.K, self.camera_model.dist, np.eye(3), new_K, (w, h), cv.CV_16SC2
+        )
+
+        undist = cv.remap(img, map1, map2, cv.INTER_LINEAR)
+        return undist, new_K
 
 
 class FeatureExtractor:
@@ -484,7 +516,7 @@ def has_overlap(
     if matcher_fn is None:
         raise ValueError("matcher_fn is required")
 
-    K, _ = img_from.get_intrinsics()
+    K = img_from.camera_model.get_camera_matrix()
 
     _, good = matcher_fn(img_from, img_to)
 
