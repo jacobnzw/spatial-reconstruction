@@ -156,8 +156,7 @@ class ViewData:
 
     @property
     def pose_matrix(self) -> NDArrayFloat:
-        if self.R is None or self.t is None:
-            raise ValueError("Pose not set for this image")
+        self._check_pose()
         return np.hstack((self.R, self.t))
 
     @property
@@ -174,6 +173,43 @@ class ViewData:
         """
         K = self.camera_model.get_camera_matrix(rescaled=True)
         return K @ self.pose_matrix
+
+    def get_camera_center(self) -> NDArrayFloat:
+        """Get the camera center in world coordinates."""
+        self._check_pose()
+        return -self.R.T @ self.t  # ty:ignore[unsupported-operator,possibly-missing-attribute]
+
+    def transform_to_camera_frame(self, world_pts: NDArrayFloat) -> NDArrayFloat:
+        """Transform points from world coordinates to this camera's coordinate frame."""
+        self._check_pose()
+        return (self.R @ world_pts.T + self.t).T  # ty:ignore[unsupported-operator]
+
+    def transform_to_world_frame(self, camera_pts: NDArrayFloat) -> NDArrayFloat:
+        """Transform points from this camera's coordinate frame to world coordinates.
+
+        Args:
+            camera_pts: (N, 3) array of points in the camera's coordinate frame.
+        """
+        self._check_pose()
+        return (self.R.T @ (camera_pts.T - self.t)).T  # ty:ignore[unsupported-operator,possibly-missing-attribute]
+
+    def project_to_image_plane(self, world_pts: NDArrayFloat) -> NDArrayFloat:
+        """Project 3D world points to this camera's image plane (2D pixel coordinates).
+
+        Args:
+            world_pts: (N, 3) array of points in world coordinates.
+
+        Returns:
+            (N, 2) array of projected points in pixel coordinates.
+        """
+        self._check_pose()
+        K, dist = self.camera_model.get_camera_matrix(), self.camera_model.dist
+        points_2d, _ = cv.projectPoints(world_pts, self.rvec, self.t, K, dist)  # ty:ignore[no-matching-overload]
+        return points_2d.squeeze()  # (N, 1, 2) -> (N, 2)
+
+    def _check_pose(self):
+        if not self.has_pose:
+            raise ValueError("Pose not set for this image")
 
 
 class FrameLoader:
@@ -391,6 +427,9 @@ class ViewEdge:
     @property
     def weight(self) -> int:
         # symmetric weight used for ranking
+        # FIXME: # matches maximized when images identical, so this won't result in good baseline for triangulation
+        # need large-enough relative translation for good baseline + enough plausible matches after geometric verification
+        # see has_overlap()
         return min(self.inliers_ij, self.inliers_ji)
 
 
@@ -620,32 +659,40 @@ class TrackManager:
             self.next_track_id += 1
         return added_track_ids
 
-    def update_tracks(self, img_idx_new: int, img_idx_ref: int, ref2new_matches: NDArrayInt):
-        """Update tracks with new KP observations from img_new.
+    def add_keypoints_to_tracks(self, kp_keys: list[KPKey], track_id: list[int]):
+        """Add given KP observations to the given tracks."""
+        for kp_key, tid in zip(kp_keys, track_id):
+            self._register_keypoint_track(kp_key, tid)
 
-        img_ref is the reference image for which we already have 2D-3D pt correspondence in track_manager.
-        Some of the KPs in img_ref have tracks, some don't. The KPs in img_new that match the tracked KPs in img_ref
-        are added to those tracks. The KPs in img_new that match the untracked KPs in img_ref are added to new tracks.
+    def get_track_observations_for_view(self, img_idx_ref: int, ref2new_matches: NDArrayInt):
+        """Get track observations for a given view.
+
+        Get tracks that are visible from the new view and their corresponding KP indices in
+        the new image via the supplied matches between img_ref and img_new.
+
+        Used for PnP pose estimation of the new view, where 2D-3D correspondences are needed.
+        The 3D points are represented by track_ids, and the 2D points are represented by kp_indices_new.
+
+        Args:
+            img_idx_ref: int Index of the reference image (view).
+            ref2new_matches: NDArrayInt Array of shape (N, 2) containing matches between
+            the reference image and the new image.
         """
         # for each match, if ref KP has a track, add new img KP to track; else create new track
-        kp_idx_new_tracked, track_ids_tracked = [], []
-        matches_untracked = []
-        # I wanna add the new KPs (that have matches to tracked ref KPs) to current tracks
+        kp_indices_new, track_ids, untracked_matches = [], [], []
+        # I wanna record the new KPs (that have matches to tracked ref KPs)
         for match in ref2new_matches:
             kp_idx_ref, kp_idx_new = match
             # if ref KP has a track, add the matching new KP to the same track
             # this means the same 3D object point is now observed by a new 2D KP
-            kp_key_new = (img_idx_new, kp_idx_new)
             kp_key_ref = (img_idx_ref, kp_idx_ref)
             if (track_id := self.get_track(kp_key_ref)) is not None:
-                track_ids_tracked.append(track_id)
-                kp_idx_new_tracked.append(kp_idx_new)
-                self._register_keypoint_track(kp_key_new, track_id)
+                track_ids.append(track_id)
+                kp_indices_new.append(kp_idx_new)
             else:  # ref KP is untracked and therefore its matching KP from img_new is also untracked
-                matches_untracked.append(match)
+                untracked_matches.append(match)
 
-        # return tracked KPs in new img and ref2new matches for untracked KPs for triangulation
-        return track_ids_tracked, kp_idx_new_tracked, np.array(matches_untracked)
+        return np.array(track_ids), np.array(kp_indices_new), np.array(untracked_matches)
 
     def is_valid(self) -> bool:
         """Check consistency of the bi-directional map between track_id and KP_key.

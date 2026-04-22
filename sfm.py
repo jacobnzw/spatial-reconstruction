@@ -73,8 +73,7 @@ def bootstrap_from_two_views(
     _, matches = match_fn(img_0, img_1)
 
     # extract corresponding pixel coordinates
-    pts0 = img_0.kp[matches[:, 0]]
-    pts1 = img_1.kp[matches[:, 1]]
+    pts0, pts1 = img_0.kp[matches[:, 0]], img_1.kp[matches[:, 1]]  # ty:ignore[not-subscriptable]
 
     # compute Essential matrix using camera intrinsics; mask indicates inliers
     E, mask = cv.findEssentialMat(pts0, pts1, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
@@ -108,6 +107,73 @@ def bootstrap_from_two_views(
     print(f"Baseline constructed with {len(points_3d)} 3D points.")
 
 
+def _estimate_pose_pnp(world_points: NDArrayFloat, image_points: NDArrayFloat, img: ViewData):
+    """Estimate camera pose using PnP given 3D-2D correspondences and camera intrinsics."""
+
+    print(f"Estimating pose of {img.idx}:{img.path.name} with {len(world_points)} 3D-2D correspondences...")
+
+    assert len(world_points) >= 4, "At least 4 3D-2D correspondences are required for PnP"
+    assert len(world_points) == len(image_points), "Number of 3D points must match number of 2D points"
+    assert np.isfinite(world_points).all(), "Object points must be finite"
+    assert np.isfinite(image_points).all(), "Image points must be finite"
+
+    K, dist = img.camera_model.get_camera_matrix(), img.camera_model.dist
+    pnp_ok, rvec, tvec, inliers = cv.solvePnPRansac(
+        world_points,
+        image_points,
+        K,
+        dist,
+        reprojectionError=4.0,  # tighter than default 8.0
+        flags=cv.SOLVEPNP_EPNP,
+    )
+    if not pnp_ok:
+        raise ValueError("solvePnP failed to estimate pose.")
+    print(
+        f"Pose estimation succeeded with {len(inliers)} inliers (Inlier ratio: {len(inliers) / len(world_points):.2f})"
+    )
+
+    # Estimated pose is relative to 3D point frame (i.e. the world frame); no pose composition required
+    R = cv.Rodrigues(rvec)[0]
+    img.set_pose(R, tvec)
+
+    return inliers.ravel()
+
+
+def _triangulate_new_points(img_ref: ViewData, img_new: ViewData, untracked_matches: NDArrayInt):
+    """Triangulate new 3D points from untracked matches between reference and new image.
+
+    Args:
+        img_ref: Reference image with known pose.
+        img_new: New image with estimated pose.
+        untracked_matches: Array of shape (N, 2) containing matches between img_ref and img_new that are not
+        associated with any existing track (i.e. new tracks to be added via triangulation).
+    """
+    # Filter out geometric outliers that don't satisfy the epipolar constraint
+    pts_ref, pts_new = img_ref.kp[untracked_matches[:, 0]].T, img_new.kp[untracked_matches[:, 1]].T  # ty:ignore[not-subscriptable]
+    K = img_ref.camera_model.get_camera_matrix()  # assume same intrinsics for both images
+    _, mask = cv.findEssentialMat(pts_ref.T, pts_new.T, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
+    inliers = mask.ravel() > 0
+    # Projection matrices: from 3D world to camera 2D image plane
+    P_ref, P_new = img_ref.projection_matrix, img_new.projection_matrix
+    # Triangulate the untracked KPs in the new image that match to KPs in the ref image, to get new 3D points
+    points_4d = cv.triangulatePoints(P_ref, P_new, pts_ref[:, inliers], pts_new[:, inliers])
+    points_3d = (points_4d[:3] / points_4d[3]).T
+    untracked_matches = untracked_matches[inliers]
+
+    # Depth filter of triangulated points: filter out points that are behind either camera (negative depth)
+    imgref_points_3d = img_ref.transform_to_camera_frame(points_3d)
+    imgnew_points_3d = img_new.transform_to_camera_frame(points_3d)
+    inliers = (imgref_points_3d[:, 2] > 0) & (imgnew_points_3d[:, 2] > 0)
+    points_3d = points_3d[inliers]
+    untracked_matches = untracked_matches[inliers]
+    print(f"Filtered out {np.sum(~inliers)} points that are behind the camera. Remaining points: {len(points_3d)}")
+
+    # Create track for each pair of KPs (ref, new) that were triangulated to a 3D point
+    kp_key_pairs = [((img_ref.idx, m[0]), (img_new.idx, m[1])) for m in untracked_matches]
+
+    return points_3d, kp_key_pairs
+
+
 def add_view(
     img_new: ViewData,
     img_ref: ViewData,
@@ -122,83 +188,38 @@ def add_view(
     Args:
         img_new: New image to add.
         img_ref: Reference image with known pose.
-        K: Camera intrinsic matrix. If None, uses img_new.camera_model.K.
-        dist: Distortion coefficients. If None, uses img_new.camera_model.dist.
         track_manager: Track manager. Required parameter.
         point_cloud: Point cloud. Required parameter.
         match_fn: Keypoint matcher function. Required parameter.
     """
-    if track_manager is None or point_cloud is None or match_fn is None:
-        raise ValueError("track_manager, point_cloud, and match_fn are required")
-
     # Compute KP matches from ref image to new image
-    # Matching from new to ref image: Where does ref img tracked KP match to in new img?
     print(f"add_view: Computing matches from {img_ref.idx}:{img_ref.path.name} to {img_new.idx}:{img_new.path.name}")
     _, matches = match_fn(img_ref, img_new)
 
     # add new img KPs, that are matched to from tracked ref img KPs, to current tracks (3D pts)
     # returns track_ids and (un)tracked KPs in the new image; track_ids used as indices to point cloud
-    track_ids_tracked, kp_idx_new_tracked, matches_untracked = track_manager.update_tracks(
-        img_new.idx, img_ref.idx, matches
-    )
+    track_ids_seen, kp_idx_seen, untracked_matches = track_manager.get_track_observations_for_view(img_ref.idx, matches)
 
     # Estimate pose of new image
-    # Only use object points corresponding to tracked KPs in img_ref for PnP pose estimation
-    object_points = point_cloud.get_points_as_array(track_ids_tracked)
-    # PnP needs tracked KPs from new image (2D) and matching 3D object pts
-    # In other words, new 2D points that observe the same 3D object points as the tracked KPs in the ref image
-    img_new_pts_tracked = img_new.kp[kp_idx_new_tracked]
+    # 3D-to-2D correspondences in new view (via matches w/ ref view) for PnP pose estimation
+    world_points = point_cloud.get_points_as_array(track_ids_seen)
+    image_points = img_new.kp[kp_idx_seen]  # ty:ignore[not-subscriptable]
+    inliers = _estimate_pose_pnp(world_points, image_points, img_new)
+    kp_idx_seen, track_ids_seen = kp_idx_seen[inliers], track_ids_seen[inliers]
 
-    assert len(object_points) >= 4, "At least 4 3D-2D correspondences are required for PnP"
-    assert len(object_points) == len(img_new_pts_tracked), "Number of 3D points must match number of 2D points"
-    assert np.isfinite(object_points).all(), "Object points must be finite"
-    assert np.isfinite(img_new_pts_tracked).all(), "Image points must be finite"
-
-    print(f"Estimating pose of {img_new.idx}:{img_new.path.name} with {len(object_points)} 3D-2D correspondences...")
-    K, dist = img_new.camera_model.get_camera_matrix(), img_new.camera_model.dist
-    pnp_ok, rvec, tvec, inliers = cv.solvePnPRansac(
-        object_points,
-        img_new_pts_tracked,
-        K,
-        dist,
-        flags=cv.SOLVEPNP_EPNP,
-    )
-    if not pnp_ok:
-        raise ValueError("solvePnP failed to estimate pose.")
-    print(
-        f"Pose estimation succeeded with {len(inliers)} inliers (Inlier ratio: {len(inliers) / len(object_points):.2f})"
-    )
-    # Estimated pose is relative to 3D point frame (i.e. the world frame); no pose composition required
-    R = cv.Rodrigues(rvec)[0]
-    img_new.set_pose(R, tvec)
+    # Register the inlier kps to inlier tracks in track manager
+    kp_keys_seen = [(img_new.idx, kp_idx) for kp_idx in kp_idx_seen]
+    track_manager.add_keypoints_to_tracks(kp_keys_seen, track_ids_seen)
 
     # Translation vector between the new image and the reference image
-    tvec_baseline = img_ref.R.T @ (img_new.t - img_ref.t)
+    tvec_baseline = img_ref.R.T @ (img_new.t - img_ref.t)  # ty:ignore[unsupported-operator,possibly-missing-attribute]
     print(f"Baseline translation from ref to new image: {np.linalg.norm(tvec_baseline):.2f}")
 
-    # TODO: optionally add reprojection error based KP filtering, followed by PnP re-estimation
+    points_3d, kp_key_pairs = _triangulate_new_points(img_ref, img_new, untracked_matches)
 
-    # Triangulate untracked KPs in the new image
-    # pts_ref[i] matched to pts_new[i]
-    pts_ref = img_ref.kp[matches_untracked[:, 0]]  # [:, 0] = queryIdx; [:, 1] = trainIdx
-    pts_new = img_new.kp[matches_untracked[:, 1]]
-
-    # Projection matrices: from 3D world to each camera 2D image plane
-    # P_ref = K @ img_ref.pose_matrix
-    # P_new = K @ img_new.pose_matrix
-    # TODO: replace with
-    P_ref = img_ref.projection_matrix
-    P_new = img_new.projection_matrix
-
-    # Triangulate the untracked KPs in the new image
-    points_4d = cv.triangulatePoints(P_ref, P_new, pts_ref.T, pts_new.T)
-    points_3d = (points_4d[:3] / points_4d[3]).T
-    # TODO: filter for points only in front of both cameras (positive depth) and with low reprojection error;
-
-    # Create track for each pair of KPs (ref, new) that were triangulated to a 3D point
-    kp_key_pairs = [((img_ref.idx, m[0]), (img_new.idx, m[1])) for m in matches_untracked]
     track_ids_added = track_manager.add_new_tracks(kp_key_pairs)
     point_cloud.add_points(track_ids_added, points_3d)
+
     print(f"Added {len(points_3d)} 3D points.")
 
 

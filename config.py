@@ -16,7 +16,7 @@ class SfMConfig:
     feature_type: Literal["sift", "disk"] = "sift"
     """Feature extraction method: 'sift' or 'disk'"""
 
-    num_features: int = 10_000
+    num_features: int = 5_000
     """Maximum number of features to extract per image"""
 
     max_size: int = 1024
@@ -33,6 +33,7 @@ class SfMConfig:
     """Whether to use cross-checking for BF matcher (only used when matcher='bf')"""
 
     min_dist: float = 0.0
+    # TODO: clarify the role of this parameter for LightGlue.
     """Minimum distance threshold for LightGlue matcher (only used when matcher='lightglue')"""
 
     # Dataset
