@@ -476,7 +476,7 @@ class ViewGraph:
         return max(self.edges, key=lambda e: e.weight, default=None)
 
 
-def _match_lightglue_disk(
+def _match_lightglue(
     img_from: ViewData,
     img_to: ViewData,
     lg_matcher: KF.LightGlueMatcher,
@@ -503,7 +503,7 @@ def _match_lightglue_disk(
         return dists.detach().cpu().numpy(), idxs.detach().cpu().numpy()
 
 
-def _match_bf(
+def _match_brute_force(
     img_from: ViewData,
     img_to: ViewData,
     lowe_ratio: float | None = None,
@@ -546,10 +546,10 @@ def make_keypoint_matcher(
     cfg: SfMConfig | SLAMConfig,
 ) -> Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]]:
     if cfg.matcher_type == "bf":
-        return partial(_match_bf, lowe_ratio=cfg.lowe_ratio, cross_check=cfg.cross_check)
-    if cfg.matcher_type == "lightglue":
+        return partial(_match_brute_force, lowe_ratio=cfg.bf_lowe_ratio, cross_check=cfg.bf_cross_check)
+    if cfg.matcher_type == "lg":
         lightglue_matcher = KF.LightGlueMatcher("disk").eval().to(device)
-        return partial(_match_lightglue_disk, min_dist=cfg.min_dist, lg_matcher=lightglue_matcher)
+        return partial(_match_lightglue, min_dist=cfg.lg_min_dist, lg_matcher=lightglue_matcher)
     else:
         ValueError(f"Unknown matcher type {cfg.matcher_type=} in config!")
 
