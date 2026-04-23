@@ -85,6 +85,8 @@ class KeyframeStreamer:
                 continue
 
             # yield only frames that are sufficiently different from the last keyframe
+            # TODO: beef up the criteria for keyframe selection:
+            # eg. num untracked kps in new frame, time since last keyframe, relative translation (via E-matrix) etc. see pyslam's heuristics
             if self._enough_motion_for_keyframe(frame):
                 self._keyframe_window.append(frame)
                 yield frame, self._keyframe_window[-2]
