@@ -10,6 +10,8 @@ import kornia.feature as KF
 import numpy as np
 import torch
 from numpy.typing import NDArray
+from scipy.spatial.transform import RigidTransform as SE3Pose
+from scipy.spatial.transform import Rotation
 
 from config import SfMConfig, SLAMConfig
 
@@ -141,27 +143,37 @@ class ViewData:
     # Extracted keypoints and descriptors
     kp: NDArrayFloat | None = None
     des: NDArrayFloat | None = None
-    # TODO: replace with scipy.spatial.transform.RigidTransform for better semantics and utility functions
-    # Estimated pose
-    R: NDArrayFloat | None = None
-    t: NDArrayFloat | None = None
+    # Estimated camera pose; world-to-camera transform
+    cam_T_world: SE3Pose | None = None
 
-    def set_pose(self, R, t):
-        self.R = R
-        self.t = t
+    def _check_pose(self):
+        if not self.has_pose:
+            raise ValueError("Pose not set for this image")
 
     @property
     def has_pose(self) -> bool:
-        return self.R is not None and self.t is not None
+        return self.cam_T_world is not None
+
+    @property
+    def R(self) -> NDArrayFloat:
+        self._check_pose()
+        return self.cam_T_world.rotation.as_matrix()  # ty:ignore[possibly-missing-attribute]
+
+    @property
+    def t(self) -> NDArrayFloat:
+        self._check_pose()
+        return self.cam_T_world.translation.squeeze()  # ty:ignore[possibly-missing-attribute]
+
+    @property
+    def rvec(self) -> NDArrayFloat:
+        self._check_pose()
+        # cv.Rodrigues(R)[0]
+        return self.cam_T_world.rotation.as_rotvec().squeeze()  # ty:ignore[possibly-missing-attribute]
 
     @property
     def pose_matrix(self) -> NDArrayFloat:
         self._check_pose()
-        return np.hstack((self.R, self.t))
-
-    @property
-    def rvec(self) -> NDArrayFloat:
-        return cv.Rodrigues(self.R)[0].ravel()  # ty:ignore[no-matching-overload]
+        return self.cam_T_world.as_matrix()[:3, :]  # 3x4 [R | t]  # ty:ignore[possibly-missing-attribute]
 
     @property
     def projection_matrix(self) -> NDArrayFloat:
@@ -174,15 +186,22 @@ class ViewData:
         K = self.camera_model.get_camera_matrix(rescaled=True)
         return K @ self.pose_matrix
 
+    def set_pose(self, R, t):
+        rotation = Rotation.from_matrix(R)
+        self.cam_T_world = SE3Pose.from_components(t.squeeze(), rotation)
+
     def get_camera_center(self) -> NDArrayFloat:
         """Get the camera center in world coordinates."""
         self._check_pose()
-        return -self.R.T @ self.t  # ty:ignore[unsupported-operator,possibly-missing-attribute]
+        cam_center = np.zeros((3,))  # origin in camera coordinates
+        # -R.T @ t
+        return self.cam_T_world.inv().apply(cam_center)  # ty:ignore[possibly-missing-attribute]
 
     def transform_to_camera_frame(self, world_pts: NDArrayFloat) -> NDArrayFloat:
         """Transform points from world coordinates to this camera's coordinate frame."""
         self._check_pose()
-        return (self.R @ world_pts.T + self.t).T  # ty:ignore[unsupported-operator]
+        # R @ world_pts.T + t
+        return self.cam_T_world.apply(world_pts)  # ty:ignore[possibly-missing-attribute]
 
     def transform_to_world_frame(self, camera_pts: NDArrayFloat) -> NDArrayFloat:
         """Transform points from this camera's coordinate frame to world coordinates.
@@ -191,7 +210,8 @@ class ViewData:
             camera_pts: (N, 3) array of points in the camera's coordinate frame.
         """
         self._check_pose()
-        return (self.R.T @ (camera_pts.T - self.t)).T  # ty:ignore[unsupported-operator,possibly-missing-attribute]
+        # self.R.T @ (camera_pts.T - self.t)
+        return self.cam_T_world.inv().apply(camera_pts)  # ty:ignore[possibly-missing-attribute]
 
     def project_to_image_plane(self, world_pts: NDArrayFloat) -> NDArrayFloat:
         """Project 3D world points to this camera's image plane (2D pixel coordinates).
@@ -204,12 +224,8 @@ class ViewData:
         """
         self._check_pose()
         K, dist = self.camera_model.get_camera_matrix(), self.camera_model.dist
-        points_2d, _ = cv.projectPoints(world_pts, self.rvec, self.t, K, dist)  # ty:ignore[no-matching-overload]
-        return points_2d.squeeze()  # (N, 1, 2) -> (N, 2)
-
-    def _check_pose(self):
-        if not self.has_pose:
-            raise ValueError("Pose not set for this image")
+        points_2d, _ = cv.projectPoints(world_pts, self.rvec, self.t, K, dist)
+        return points_2d.squeeze()  # (N, 1, 2) -> (N, 2)  # ty:ignore[invalid-return-type]
 
 
 class FrameLoader:
@@ -299,7 +315,7 @@ class FrameLoader:
         )
 
         undist = cv.remap(img, map1, map2, cv.INTER_LINEAR)
-        return undist, new_K
+        return undist, new_K  # ty:ignore[invalid-return-type]
 
 
 class FeatureExtractor:
@@ -388,7 +404,7 @@ class FeatureStore:
         """Get pixel color for a given keypoint in an image."""
         pixels = np.zeros((len(kp_keys), 3), dtype=np.uint8)
         for i, (img_idx, kp_idx) in enumerate(kp_keys):
-            kp_uv = self._store[img_idx].kp[kp_idx].astype(np.uint16)
+            kp_uv = self._store[img_idx].kp[kp_idx].astype(np.uint16)  # ty:ignore[not-subscriptable]
             pixels[i] = self._store[img_idx].pixels[*np.flip(kp_uv)]  # flip (x, y) to (row, col) for indexing
         return pixels
 
@@ -402,15 +418,15 @@ class FeatureStore:
     def get_keypoint(self, kp_key: KPKey) -> NDArrayFloat:
         """Get keypoint for a given keypoint key."""
         img_idx, kp_idx = kp_key
-        return self._store[img_idx].kp[kp_idx]
+        return self._store[img_idx].kp[kp_idx]  # ty:ignore[not-subscriptable]
 
     def get_keypoints(self) -> list[NDArrayFloat]:
         """Get keypoints of all images."""
-        return [img_data.kp for img_data in self._store]
+        return [img_data.kp for img_data in self._store]  # ty:ignore[invalid-return-type]
 
     def get_descriptors(self) -> list[NDArrayFloat]:
         """Get descriptors of all images."""
-        return [img_data.des for img_data in self._store]
+        return [img_data.des for img_data in self._store]  # ty:ignore[invalid-return-type]
 
     def iter_images_with_pose(self) -> Iterable[ViewData]:
         """Yield images for which we have a pose estimate."""
@@ -513,9 +529,9 @@ def _match_bf(
     des_from, des_to = img_from.des, img_to.des
     bf = cv.BFMatcher(cv.NORM_L2, crossCheck=cross_check)
     if cross_check:
-        matches = bf.match(des_from, des_to)
+        matches = bf.match(des_from, des_to)  # ty:ignore[no-matching-overload]
     else:
-        matches = bf.knnMatch(des_from, des_to, k=2)
+        matches = bf.knnMatch(des_from, des_to, k=2)  # ty:ignore[no-matching-overload]
         if lowe_ratio:
             matches = [m for m, n in matches if m.distance < lowe_ratio * n.distance]
         else:
@@ -563,8 +579,8 @@ def has_overlap(
         return False, None, None
 
     # geometric validation: rejects matches that cannot arise from a rigid 3D scene
-    pts1 = img_from.kp[good[:, 0]]  # [:, 0] = queryIdx; [:, 1] = trainIdx
-    pts2 = img_to.kp[good[:, 1]]
+    # [:, 0] = queryIdx; [:, 1] = trainIdx
+    pts1, pts2 = img_from.kp[good[:, 0]], img_to.kp[good[:, 1]]  # ty:ignore[not-subscriptable]
 
     E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.RANSAC, threshold=1.0)
 
@@ -835,7 +851,7 @@ class ReconIO:
             # Create 4x4 pose matrix [R | t; 0 0 0 1]
             pose_4x4 = np.eye(4, dtype=np.float32)
             pose_4x4[:3, :3] = img_data.R
-            pose_4x4[:3, 3:4] = img_data.t[..., None]  # ty:ignore[not-subscriptable]
+            pose_4x4[:3, 3:4] = img_data.t[..., None]
             poses_list.append(pose_4x4)
             images_list.append(img_data.pixels)
 

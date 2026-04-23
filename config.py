@@ -22,6 +22,7 @@ class SfMConfig:
     max_size: int = 1024
     """Maximum image dimension (images will be resized if larger)"""
 
+    # TODO: consistency: lightglue -> lg; bf_, lg_ prefixes to relevant fields
     # Keypoint matching
     matcher_type: Literal["bf", "lightglue"] = "bf"
     """Keypoint matching method: 'bf' (brute-force) or 'lightglue'"""

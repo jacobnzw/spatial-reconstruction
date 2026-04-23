@@ -101,7 +101,7 @@ def bootstrap_from_two_views(
     point_cloud.add_points(track_ids_added, points_3d)
 
     # Update image data structs w/ new estimates: img_0 is at origin, img_1 is at (R, t)
-    img_0.set_pose(np.eye(3), np.zeros((3, 1)))
+    img_0.set_pose(np.eye(3), np.zeros((3,)))
     img_1.set_pose(R, t)
 
     print(f"Baseline constructed with {len(points_3d)} 3D points.")
@@ -212,8 +212,12 @@ def add_view(
     track_manager.add_keypoints_to_tracks(kp_keys_seen, track_ids_seen)
 
     # Translation vector between the new image and the reference image
-    tvec_baseline = img_ref.R.T @ (img_new.t - img_ref.t)  # ty:ignore[unsupported-operator,possibly-missing-attribute]
+    tvec_baseline = img_ref.R.T @ (img_new.t - img_ref.t)
+    ref_translation_new = (img_ref.cam_T_world * img_new.cam_T_world.inv()).translation
+    new_translation_ref = (img_new.cam_T_world * img_ref.cam_T_world.inv()).translation
     print(f"Baseline translation from ref to new image: {np.linalg.norm(tvec_baseline):.2f}")
+    print(f"Relative translation from ref to new image: {np.linalg.norm(ref_translation_new):.2f}")
+    print(f"Relative translation from new to ref image: {np.linalg.norm(new_translation_ref):.2f}")
 
     points_3d, kp_key_pairs = _triangulate_new_points(img_ref, img_new, untracked_matches)
 

@@ -365,7 +365,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
         add_view(keyframe, ref, track_manager, point_cloud, kp_matcher)
 
         # === DEPTH FILTER (critical for chirality) ===
-        # TODO: move into add_view
+        # TODO: remove now that it's done in add_view? or keep here as an extra safety check?
         new_tracks = track_manager.get_triangulated_view_tracks(keyframe.idx)
         for tid in list(new_tracks):
             pt = point_cloud.get_point(tid)
