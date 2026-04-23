@@ -16,24 +16,24 @@ class SfMConfig:
     feature_type: Literal["sift", "disk"] = "sift"
     """Feature extraction method: 'sift' or 'disk'"""
 
-    num_features: int = 10_000
+    num_features: int = 5_000
     """Maximum number of features to extract per image"""
 
     max_size: int = 1024
     """Maximum image dimension (images will be resized if larger)"""
 
     # Keypoint matching
-    matcher_type: Literal["bf", "lightglue"] = "bf"
-    """Keypoint matching method: 'bf' (brute-force) or 'lightglue'"""
+    matcher_type: Literal["bf", "lg"] = "bf"
+    """Keypoint matching method: 'bf' (brute-force) or 'lg' (lightglue)"""
 
-    lowe_ratio: float = 0.75
+    bf_lowe_ratio: float = 0.75
     """Lowe's ratio test threshold for BF matcher (only used when matcher='bf' and cross_check=False)"""
 
-    cross_check: bool = True
+    bf_cross_check: bool = True
     """Whether to use cross-checking for BF matcher (only used when matcher='bf')"""
 
-    min_dist: float = 0.0
-    """Minimum distance threshold for LightGlue matcher (only used when matcher='lightglue')"""
+    lg_min_dist: float = 0.1
+    """LightGlue matches with distance below this threshold are filtered out (only used when matcher='lg')"""
 
     # Dataset
     dataset: str = "statue"
@@ -55,3 +55,55 @@ class SfMConfig:
 
     save_gsplat: bool = False
     """Save tensors for gsplat (without BA)"""
+
+
+@dataclass
+class SLAMConfig:
+    """Configuration for GTSAM ISAM2 SLAM pipeline.
+
+    Modify the default values here for experimentation.
+    Command-line overrides: --cfg.param_name value
+    """
+
+    # Feature extraction
+    feature_type: Literal["sift", "disk"] = "sift"
+    """Feature extraction method: 'sift' or 'disk'"""
+
+    num_features: int = 1_000
+    """Maximum number of features to extract per image"""
+
+    max_size: int = 512
+    """Maximum image dimension (images will be resized if larger)"""
+
+    # Keypoint matching
+    matcher_type: Literal["bf", "lg"] = "bf"
+    """Keypoint matching method: 'bf' (brute-force) or 'lg' (lightglue)"""
+
+    bf_lowe_ratio: float = 0.75
+    """Lowe's ratio test threshold for BF matcher (only used when matcher='bf' and cross_check=False)"""
+
+    bf_cross_check: bool = True
+    """Whether to use cross-checking for BF matcher (only used when matcher='bf')"""
+
+    lg_min_dist: float = 0.1
+    """LightGlue matches with distance below this threshold are filtered out (only used when matcher='lg')"""
+
+    # Dataset
+    dataset: str = "dataset-corridor4_512_16"
+    """Dataset name (subdirectory in data/tum/)"""
+
+    max_read_frames: int | None = None
+    """Maximum number of frames to process from the dataset"""
+
+    undistort: bool = False
+    """Whether to undistort images using the provided camera intrinsics and distortion coefficients"""
+
+    # Keyframe selection
+    min_inliers: int = 30
+    """Minimum number of inliers to consider when finding reference keyframe for a new keyframe"""
+
+    max_window_keyframes: int = 10
+    """Maximum number of recent keyframes to keep in the sliding window for optimization"""
+
+    max_motion_matches: int = 85
+    """Maximum number of keypoint matches to judge the motion between frames (if too high, we might add redundant keyframes with little motion)"""
