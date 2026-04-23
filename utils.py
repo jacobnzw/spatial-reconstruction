@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import Annotated, Any, Callable, Iterable, Literal
@@ -8,10 +9,11 @@ import kornia as K
 import kornia.feature as KF
 import numpy as np
 import torch
-import torch.nn.functional as F
 from numpy.typing import NDArray
+from scipy.spatial.transform import RigidTransform as SE3Pose
+from scipy.spatial.transform import Rotation
 
-from config import SfMConfig
+from config import SfMConfig, SLAMConfig
 
 device = K.utils.get_cuda_or_mps_device_if_available()
 
@@ -19,6 +21,43 @@ NDArrayFloat = NDArray[np.floating[Any]]
 NDArrayInt = NDArray[np.integer[Any]]
 Point3D = Annotated[NDArrayFloat, Literal[3]]
 KPKey = tuple[int, int]  # Keypoint observation (img_id, kp_idx)
+
+
+class CameraType(Enum):
+    """Enum for different camera models."""
+
+    PINHOLE = "pinhole"
+    FISHEYE = "fisheye"
+
+
+@dataclass
+class CameraModel:
+    """Camera intrinsic parameters and distortion model.
+
+    Attributes:
+        model_type: Type of camera model (pinhole or fisheye).
+        K: Camera intrinsic matrix (3x3).
+        dist: Distortion coefficients.
+    """
+
+    model_type: CameraType
+    K: NDArrayFloat
+    dist: NDArrayFloat
+    scale: float = 1.0  # Scaling factor applied to the image (1.0 means no scaling)
+
+    def get_camera_matrix(self, rescaled: bool = True) -> NDArrayFloat:
+        """Get camera matrix K, rescaled if necessary.
+
+        Args:
+            rescaled: If True, return the rescaled K based on the current scale factor. If False, return the original K.
+        """
+
+        if rescaled and self.scale < 1.0:
+            K_rescaled = self.K.copy()
+            K_rescaled[0, :] *= self.scale
+            K_rescaled[1, :] *= self.scale
+            return K_rescaled
+        return self.K
 
 
 def calibrate_camera(img_dir: Path = Path("data/calibration")):
@@ -78,7 +117,7 @@ def calibrate_camera(img_dir: Path = Path("data/calibration")):
 
 
 @dataclass
-class ImageData:
+class ViewData:
     """Represents a single image with extracted features and estimated camera pose.
 
     Stores image metadata, pixel data, extracted keypoints and descriptors,
@@ -88,6 +127,7 @@ class ImageData:
         idx: Unique image index in the reconstruction.
         path: Path to the image file.
         pixels: RGB pixel data for rendering and debugging (H, W, 3).
+        camera_model: Camera intrinsic model containing K and distortion coefficients.
         kp: Extracted keypoint locations as (N, 2) array of (x, y) coordinates.
         des: Feature descriptors as (N, D) array where D is descriptor dimension.
         R: 3x3 rotation matrix (camera-to-world or world-to-camera depending on context).
@@ -97,173 +137,299 @@ class ImageData:
     idx: int
     path: Path
     # Useful for rendering and debugging
-    pixels: NDArray[Any]
+    pixels: NDArray[Any]  # GRAYs and RBGs as (H, W, C) unit8
+    # Camera model
+    camera_model: CameraModel
     # Extracted keypoints and descriptors
-    kp: NDArrayFloat
-    des: NDArrayFloat
-    # Estimated pose
-    R: NDArrayFloat | None = None
-    t: NDArrayFloat | None = None
+    kp: NDArrayFloat | None = None
+    des: NDArrayFloat | None = None
+    # Estimated camera pose; world-to-camera transform
+    cam_T_world: SE3Pose | None = None
 
-    def set_pose(self, R, t):
-        self.R = R
-        self.t = t
+    def _check_pose(self):
+        if not self.has_pose:
+            raise ValueError("Pose not set for this image")
 
     @property
     def has_pose(self) -> bool:
-        return self.R is not None and self.t is not None
+        return self.cam_T_world is not None
 
     @property
-    def pose_matrix(self) -> NDArray[np.float32]:
-        return np.hstack((self.R, self.t))  # ty:ignore[no-matching-overload]
+    def R(self) -> NDArrayFloat:
+        self._check_pose()
+        return self.cam_T_world.rotation.as_matrix()  # ty:ignore[possibly-missing-attribute]
 
     @property
-    def rvec(self) -> NDArray[np.float32]:
-        return cv.Rodrigues(self.R)[0].ravel()  # ty:ignore[no-matching-overload]
+    def t(self) -> NDArrayFloat:
+        self._check_pose()
+        return self.cam_T_world.translation.squeeze()  # ty:ignore[possibly-missing-attribute]
+
+    @property
+    def rvec(self) -> NDArrayFloat:
+        self._check_pose()
+        # cv.Rodrigues(R)[0]
+        return self.cam_T_world.rotation.as_rotvec().squeeze()  # ty:ignore[possibly-missing-attribute]
+
+    @property
+    def pose_matrix(self) -> NDArrayFloat:
+        self._check_pose()
+        return self.cam_T_world.as_matrix()[:3, :]  # 3x4 [R | t]  # ty:ignore[possibly-missing-attribute]
+
+    @property
+    def projection_matrix(self) -> NDArrayFloat:
+        """Get the 3x4 projection matrix P = K [R | t] for this image.
+
+        Note: Effectively camera_P_world
+          - transformation of points from world coordinates to camera image plane coordinates
+        https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.transform.RigidTransform.html
+        """
+        K = self.camera_model.get_camera_matrix(rescaled=True)
+        return K @ self.pose_matrix
+
+    def set_pose(self, R, t):
+        rotation = Rotation.from_matrix(R)
+        self.cam_T_world = SE3Pose.from_components(t.squeeze(), rotation)
+
+    def get_camera_center(self) -> NDArrayFloat:
+        """Get the camera center in world coordinates."""
+        self._check_pose()
+        cam_center = np.zeros((3,))  # origin in camera coordinates
+        # -R.T @ t
+        return self.cam_T_world.inv().apply(cam_center)  # ty:ignore[possibly-missing-attribute]
+
+    def transform_to_camera_frame(self, world_pts: NDArrayFloat) -> NDArrayFloat:
+        """Transform points from world coordinates to this camera's coordinate frame."""
+        self._check_pose()
+        # R @ world_pts.T + t
+        return self.cam_T_world.apply(world_pts)  # ty:ignore[possibly-missing-attribute]
+
+    def transform_to_world_frame(self, camera_pts: NDArrayFloat) -> NDArrayFloat:
+        """Transform points from this camera's coordinate frame to world coordinates.
+
+        Args:
+            camera_pts: (N, 3) array of points in the camera's coordinate frame.
+        """
+        self._check_pose()
+        # self.R.T @ (camera_pts.T - self.t)
+        return self.cam_T_world.inv().apply(camera_pts)  # ty:ignore[possibly-missing-attribute]
+
+    def project_to_image_plane(self, world_pts: NDArrayFloat) -> NDArrayFloat:
+        """Project 3D world points to this camera's image plane (2D pixel coordinates).
+
+        Args:
+            world_pts: (N, 3) array of points in world coordinates.
+
+        Returns:
+            (N, 2) array of projected points in pixel coordinates.
+        """
+        self._check_pose()
+        K, dist = self.camera_model.get_camera_matrix(), self.camera_model.dist
+        points_2d, _ = cv.projectPoints(world_pts, self.rvec, self.t, K, dist)
+        return points_2d.squeeze()  # (N, 1, 2) -> (N, 2)  # ty:ignore[invalid-return-type]
+
+
+class FrameLoader:
+    """Loads images from a directory and applies preprocessing such as scaling.
+
+    Args:
+        img_dir: Directory containing input images.
+        camera_model: camera model to assign to each frame.
+        max_size: Maximum size (in pixels) for the longest edge of the image. Images larger than this will be downscaled.
+        max_frames: Optional maximum number of frames to load. If None, loads all frames in the directory.
+        ext: Image file extension to look for (default "png").
+        undistort: If True, applies undistortion to fisheye images using the provided camera model parameters.
+        Only applicable if camera_model.model_type is FISHEYE.
+    """
+
+    def __init__(
+        self,
+        img_dir: Path,
+        camera_model: CameraModel,
+        max_size: int | None = None,
+        max_frames: int | None = None,
+        ext: str = "png",
+        undistort: bool = True,
+    ):
+        img_paths = sorted(list(Path(img_dir).glob(f"*.{ext}")))
+        if not img_paths:
+            raise ValueError(f"No *.{ext} images found in {img_dir}")
+
+        self.img_paths = img_paths
+        self._max_frames = max_frames
+        self.max_size = max_size
+        self.camera_model = camera_model
+        self.undistort = undistort
+
+    def iter_frames(self) -> Iterable[ViewData]:
+        """Yields images as ImageData objects.
+
+        Returns:
+            ImageData object containing the image and its metadata.
+
+            ImageData.pixels contains the loaded image as a (H, W, 3) uint8 array in RGB format,
+            regardless of original format.
+        """
+        for idx, path in enumerate(self.img_paths):
+            if self._max_frames and idx >= self._max_frames:
+                print(f"FrameLoader: Reached max_frames={self._max_frames}, stopping further loading.")
+                break
+
+            # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order
+            img = cv.imread(str(path), cv.IMREAD_COLOR_RGB)
+            if img is None:
+                raise FileNotFoundError(f"FrameLoader: Failed to load image: {path}")
+
+            # TODO: add undistort for pinhole
+            camera_model = self.camera_model
+            if self.undistort and self.camera_model.model_type == CameraType.FISHEYE:
+                img, K_undistorted = self._undistort_fisheye(img)
+                # After undistortion, it's pinhole camera with new intrinsics K_undistorted and no distortion
+                camera_model = CameraModel(model_type=CameraType.PINHOLE, K=K_undistorted, dist=np.zeros(4))
+
+            # Compute scale based on first image
+            # Assumption: all images have the same resolution and thus the same scale factor applies to all
+            if idx == 0 and self.max_size is not None:
+                h, w = img.shape[:2]
+                self.scale = self.max_size / max(h, w) if max(h, w) > self.max_size else 1.0
+
+            # Apply scaling if needed
+            if self.scale < 1.0:
+                h, w = img.shape[:2]
+                new_w, new_h = int(w * self.scale), int(h * self.scale)
+                img = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
+                camera_model.scale = self.scale
+                # NOTE: camera_model.get_camera_matrix() will handle rescaling K based on self.scale
+
+            yield ViewData(idx, path, img, camera_model=camera_model)
+
+    def _undistort_fisheye(self, img: NDArray[Any], balance=0.0, fov_scale=1.0) -> tuple[NDArray[Any], NDArrayFloat]:
+        """Undistortion for equidistant fisheye."""
+        h, w = img.shape[:2]
+
+        # Create the undistortion + rectification map once (or cache it)
+        new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(
+            self.camera_model.K, self.camera_model.dist, (w, h), np.eye(3), balance=balance, fov_scale=fov_scale
+        )
+
+        map1, map2 = cv.fisheye.initUndistortRectifyMap(
+            self.camera_model.K, self.camera_model.dist, np.eye(3), new_K, (w, h), cv.CV_16SC2
+        )
+
+        undist = cv.remap(img, map1, map2, cv.INTER_LINEAR)
+        return undist, new_K  # ty:ignore[invalid-return-type]
+
+
+class FeatureExtractor:
+    """Feature extractor class that curries the extraction function based on config."""
+
+    def __init__(self, cfg: SfMConfig | SLAMConfig, loader: FrameLoader):
+        self.cfg = cfg
+        self.loader = loader
+
+        if cfg.feature_type == "sift":
+            sift = cv.SIFT_create(nfeatures=cfg.num_features)  # ty:ignore[unresolved-attribute]
+            self._extract_fn = partial(self._extract_sift, sift=sift)
+        elif cfg.feature_type == "disk":
+            disk_model = KF.DISK.from_pretrained("depth", device=device).eval()
+            self._extract_fn = partial(self._extract_disk, disk_model=disk_model)
+        else:
+            raise ValueError(f"FeatureExtractor: Unknown feature type {cfg.feature_type} in config!")
+
+    def _extract_sift(self, frame: ViewData, sift: cv.SIFT) -> ViewData:
+        """Extract SIFT features from a single image."""
+        img_arr = frame.pixels  # (H, W, C)
+
+        # Ensure grayscale is uint8 for SIFT
+        if len(img_arr.shape) == 3:  # RGB image, convert to grayscale
+            gray = cv.cvtColor(img_arr, cv.COLOR_RGB2GRAY)
+        else:
+            gray = img_arr
+
+        keypoints, descriptors = sift.detectAndCompute(gray.astype(np.uint8), mask=None)
+
+        # Convert list[cv.KeyPoint] to NDArray (N, 2)
+        frame.kp = np.array([kp.pt for kp in keypoints], dtype=np.float32)
+        frame.des = descriptors  # ty:ignore[invalid-assignment]
+
+        return frame
+
+    def _extract_disk(self, frame: ViewData, disk_model: torch.nn.Module) -> ViewData:
+        """Extract DISK features from a single image."""
+        img_arr = frame.pixels  # (H, W, C)
+
+        # Convert to float32 in [0, 1]
+        max_val = np.iinfo(img_arr.dtype).max if img_arr.dtype != np.float32 else 1.0
+        img_float = img_arr.astype(np.float32) / max_val
+
+        # Convert to tensor and add batch dimension (H, W, C) -> (1, C, H, W)
+        img_tensor = K.utils.image_to_tensor(img_float, keepdim=False).to(device=device)
+        with torch.inference_mode():
+            features = disk_model(img_tensor, self.cfg.num_features, pad_if_not_divisible=True)[0]
+
+        frame.kp = features.keypoints.cpu().numpy()  # (N, 2)
+        frame.des = features.descriptors.cpu().numpy()  # (N, D)
+
+        # Memory management
+        # del img_tensor, features
+        # torch.cuda.empty_cache()
+        return frame
+
+    def __call__(self, frame: ViewData) -> ViewData:
+        """Extract features from a single frame using the curried extraction function."""
+        return self._extract_fn(frame)
+
+    def iter_frames_with_features(self) -> Iterable[ViewData]:
+        """Yields ImageData objects with extracted features."""
+        for frame in self.loader.iter_frames():
+            yield self(frame)
 
 
 class FeatureStore:
     """Manages feature extraction and storage for multiple images.
 
     Handles loading images from a directory, extracting keypoints and descriptors
-    using either SIFT or DISK features, and storing the results along with camera
-    intrinsics. Supports automatic image downsampling if images exceed max_size.
+    using a provided FeatureExtractor, and storing the results. Camera intrinsics
+    are stored in each ImageData object.
 
     Attributes:
         _store: List of ImageData objects containing extracted features for each image.
-        _disk_model: Lazily loaded DISK model (only initialized if method='disk').
-        _max_size: Maximum dimension for image resizing.
-        _K: Camera intrinsic matrix.
-        _dist: Camera distortion coefficients.
-        _scale: Scaling factor applied to images during feature extraction.
     """
 
     def __init__(
         self,
-        img_dir: Path,
-        K: NDArrayFloat,
-        dist: NDArrayFloat,
-        ext: str = "jpg",
-        method: Literal["sift", "disk"] = "sift",
-        num_features: int = 2048,
-        max_size=1024,
+        feature_extractor: FeatureExtractor,
     ):
-        self._store: list[ImageData] = []
-        self._disk_model = None  # Lazy load DISK model
-        self._max_size = max_size
-        self._K = K
-        self._dist = dist
-
-        img_paths = sorted(list(img_dir.glob(f"*.{ext}")))
-        if not img_paths:
-            raise ValueError(f"No *.{ext} images found in {img_dir}")
-
-        # Figure out the size of images and get scale for downsampling if too large
-        h, w = cv.imread(img_paths[0]).shape[:2]
-        if max(h, w) > self._max_size:
-            hn, wn, scale = self._get_capped_resolution((h, w))
-            self._scale = scale
-            print(f"Resizing images from ({h}, {w}) to ({hn}, {wn}) before feature extraction...")
-        else:
-            self._scale = 1.0
-
-        self._load_dir(img_paths, method=method, num_features=num_features)
-
-    def _get_capped_resolution(self, img_hw: tuple[int, int]) -> tuple[int, int, float]:
-        """Calculate resolution preserving aspect ratio, given max_size."""
-        h, w = img_hw
-        scale = self._max_size / max(h, w)
-        return int(h * scale), int(w * scale), scale
-
-    def _extract_sift(self, img_path: Path, num_features: int) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
-        """Extract SIFT features from a single image."""
-        img = cv.imread(str(img_path))  # (H, W, 3)
-        if self._scale < 1.0:
-            # AREA interpolation friendlier to feature extraction
-            img = cv.resize(img, dsize=None, fx=self._scale, fy=self._scale, interpolation=cv.INTER_AREA)
-
-        gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-        sift = cv.SIFT_create(nfeatures=num_features)  # ty:ignore[unresolved-attribute]
-        kps, des = sift.detectAndCompute(gray, None)
-
-        # Convert list[cv.KeyPoint] to NDArray (N, 2)
-        kp = np.array([kp.pt for kp in kps], dtype=np.float32)
-
-        return kp, des, cv.cvtColor(img, cv.COLOR_BGR2RGB)
-
-    def _extract_disk(self, img_path: Path, num_features: int) -> tuple[NDArrayFloat, NDArrayFloat, NDArray[Any]]:
-        """Extract DISK features from a single image."""
-        # Lazy load DISK model
-        if self._disk_model is None:
-            self._disk_model = KF.DISK.from_pretrained("depth").eval().to(device)
-
-        # Load image as (3, H, W)
-        img_tensor = K.io.load_image(img_path, K.io.ImageLoadType.RGB32, device=device)[None, ...]
-        if self._scale < 1.0:
-            img_tensor = F.interpolate(img_tensor, scale_factor=self._scale, mode="area")
-
-        # Extract features
-        with torch.inference_mode():
-            features = self._disk_model(img_tensor, num_features, pad_if_not_divisible=True)[0]
-
-        kp = features.keypoints.cpu().numpy()  # (N, 2)
-        des = features.descriptors.cpu().numpy()  # (N, D)
-        img = img_tensor[0].permute(1, 2, 0).cpu().numpy()  # (C, H, W) -> convert to numpy (H, W, C)
-
-        # Memory management
-        # del img_tensor, features
-        # torch.cuda.empty_cache()
-
-        return kp, des, (img * 255).astype(np.uint8)  # [0, 1] -> [0, 255] for PLY export
-
-    def _load_dir(self, img_paths: list[Path], method: Literal["sift", "disk"], num_features: int, ext: str = "jpg"):
-        """Load all images from directory and extract features using specified method."""
-
-        for idx, filepath in enumerate(img_paths):
-            if method == "sift":
-                kp, des, img = self._extract_sift(filepath, num_features)
-            else:  # disk
-                kp, des, img = self._extract_disk(filepath, num_features)
-
-            self._store.append(ImageData(idx, filepath, img, kp, des))
-
-    def get_intrisics(self, rescaled=True) -> tuple[NDArrayFloat, NDArrayFloat]:
-        """Get camera intrinsics. Optionally return rescaled version if images were downsized."""
-        if rescaled and self._scale < 1.0:
-            K_rescaled = self._K.copy()
-            K_rescaled[0, :] *= self._scale
-            K_rescaled[1, :] *= self._scale
-            return K_rescaled, self._dist
-        return self._K, self._dist
+        self._store: list[ViewData] = list(feature_extractor.iter_frames_with_features())
 
     def get_pixels(self, kp_keys: list[KPKey]) -> NDArray[np.uint8]:
         """Get pixel color for a given keypoint in an image."""
         pixels = np.zeros((len(kp_keys), 3), dtype=np.uint8)
         for i, (img_idx, kp_idx) in enumerate(kp_keys):
-            kp_uv = self._store[img_idx].kp[kp_idx].astype(np.uint16)
-            pixels[i] = self._store[img_idx].pixels[*np.flip(kp_uv)]  #
+            kp_uv = self._store[img_idx].kp[kp_idx].astype(np.uint16)  # ty:ignore[not-subscriptable]
+            pixels[i] = self._store[img_idx].pixels[*np.flip(kp_uv)]  # flip (x, y) to (row, col) for indexing
         return pixels
 
     @property
     def size(self) -> int:
         return len(self._store)
 
-    def __getitem__(self, img_idx: int) -> ImageData:
+    def __getitem__(self, img_idx: int) -> ViewData:
         return self._store[img_idx]
 
     def get_keypoint(self, kp_key: KPKey) -> NDArrayFloat:
-        """Get keypoint for a given keypoint key (img_idx, kp_idx)."""
-        return self._store[kp_key[0]].kp[kp_key[1]]
+        """Get keypoint for a given keypoint key."""
+        img_idx, kp_idx = kp_key
+        return self._store[img_idx].kp[kp_idx]  # ty:ignore[not-subscriptable]
 
     def get_keypoints(self) -> list[NDArrayFloat]:
         """Get keypoints of all images."""
-        return [img_data.kp for img_data in self._store]
+        return [img_data.kp for img_data in self._store]  # ty:ignore[invalid-return-type]
 
     def get_descriptors(self) -> list[NDArrayFloat]:
         """Get descriptors of all images."""
-        return [img_data.des for img_data in self._store]
+        return [img_data.des for img_data in self._store]  # ty:ignore[invalid-return-type]
 
-    def iter_images_with_pose(self) -> Iterable[ImageData]:
+    def iter_images_with_pose(self) -> Iterable[ViewData]:
         """Yield images for which we have a pose estimate."""
         yield from (img_data for img_data in self._store if img_data.has_pose)
 
@@ -278,6 +444,9 @@ class ViewEdge:
     @property
     def weight(self) -> int:
         # symmetric weight used for ranking
+        # FIXME: # matches maximized when images identical, so this won't result in good baseline for triangulation
+        # need large-enough relative translation for good baseline + enough plausible matches after geometric verification
+        # see has_overlap()
         return min(self.inliers_ij, self.inliers_ji)
 
 
@@ -308,8 +477,8 @@ class ViewGraph:
 
 
 def _match_lightglue_disk(
-    img_from: ImageData,
-    img_to: ImageData,
+    img_from: ViewData,
+    img_to: ViewData,
     lg_matcher: KF.LightGlueMatcher,
     min_dist: float | None = None,
 ) -> tuple[NDArrayFloat, NDArrayInt]:
@@ -335,8 +504,8 @@ def _match_lightglue_disk(
 
 
 def _match_bf(
-    img_from: ImageData,
-    img_to: ImageData,
+    img_from: ViewData,
+    img_to: ViewData,
     lowe_ratio: float | None = None,
     cross_check: bool = False,
 ) -> tuple[NDArrayFloat, NDArrayInt]:
@@ -361,9 +530,9 @@ def _match_bf(
     des_from, des_to = img_from.des, img_to.des
     bf = cv.BFMatcher(cv.NORM_L2, crossCheck=cross_check)
     if cross_check:
-        matches = bf.match(des_from, des_to)
+        matches = bf.match(des_from, des_to)  # ty:ignore[no-matching-overload]
     else:
-        matches = bf.knnMatch(des_from, des_to, k=2)
+        matches = bf.knnMatch(des_from, des_to, k=2)  # ty:ignore[no-matching-overload]
         if lowe_ratio:
             matches = [m for m, n in matches if m.distance < lowe_ratio * n.distance]
         else:
@@ -373,7 +542,9 @@ def _match_bf(
     return dist, np.array([(m.queryIdx, m.trainIdx) for m in matches])  # (N, 2)
 
 
-def make_keypoint_matcher(cfg: SfMConfig):
+def make_keypoint_matcher(
+    cfg: SfMConfig | SLAMConfig,
+) -> Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]]:
     if cfg.matcher_type == "bf":
         return partial(_match_bf, lowe_ratio=cfg.lowe_ratio, cross_check=cfg.cross_check)
     if cfg.matcher_type == "lightglue":
@@ -384,21 +555,33 @@ def make_keypoint_matcher(cfg: SfMConfig):
 
 
 def has_overlap(
-    img_from: ImageData,
-    img_to: ImageData,
-    K: NDArray,
-    matcher_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
-    min_inliers: int,
+    img_from: ViewData,
+    img_to: ViewData,
+    matcher_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]] | None = None,
+    min_inliers: int = 50,
 ) -> tuple[bool, int | None, NDArray | None]:
-    """Returns True if there is sufficient overlap between two images."""
+    """Returns True if there is sufficient overlap between two images.
+
+    Args:
+        img_from: Source image.
+        img_to: Target image.
+        K: Camera intrinsic matrix. If None, uses img_from.camera_model.K.
+        matcher_fn: Keypoint matcher function. Required parameter.
+        min_inliers: Minimum number of inliers to consider overlap sufficient.
+    """
+    if matcher_fn is None:
+        raise ValueError("matcher_fn is required")
+
+    K = img_from.camera_model.get_camera_matrix()
+
     _, good = matcher_fn(img_from, img_to)
 
     if len(good) < min_inliers:
         return False, None, None
 
     # geometric validation: rejects matches that cannot arise from a rigid 3D scene
-    pts1 = img_from.kp[good[:, 0]]  # [:, 0] = queryIdx; [:, 1] = trainIdx
-    pts2 = img_to.kp[good[:, 1]]
+    # [:, 0] = queryIdx; [:, 1] = trainIdx
+    pts1, pts2 = img_from.kp[good[:, 0]], img_to.kp[good[:, 1]]  # ty:ignore[not-subscriptable]
 
     E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.RANSAC, threshold=1.0)
 
@@ -414,20 +597,20 @@ def has_overlap(
 
 def construct_view_graph(
     image_store: FeatureStore,
-    matcher_fn: Callable[[ImageData, ImageData], tuple[NDArrayFloat, NDArrayInt]],
+    matcher_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
     min_inliers: int = 50,
 ):
     view_graph = ViewGraph()
     kp, des = image_store.get_keypoints(), image_store.get_descriptors()
-    K, _ = image_store.get_intrisics()
     assert len(kp) == len(des)
 
     N = len(kp)
     for i in range(N):
         for j in range(i + 1, N):
             img_i, img_j = image_store[i], image_store[j]
-            ok_ij, inliers_ij, _ = has_overlap(img_i, img_j, K, matcher_fn, min_inliers)
-            ok_ji, inliers_ji, _ = has_overlap(img_j, img_i, K, matcher_fn, min_inliers)
+            # TODO: 1 direction enough, when matches symmetrical (e.g. crossCheck=True)
+            ok_ij, inliers_ij, _ = has_overlap(img_i, img_j, matcher_fn, min_inliers)
+            ok_ji, inliers_ji, _ = has_overlap(img_j, img_i, matcher_fn, min_inliers)
             # ASK: why the matches should not be preserved ???
             if ok_ij and ok_ji:
                 view_graph.add_edge(i, j, inliers_ij, inliers_ji)
@@ -464,8 +647,24 @@ class TrackManager:
     def get_track(self, kp_key: KPKey) -> int | None:
         return self.kp_to_track.get(kp_key, None)
 
-    def get_keypoints(self, track_id: int) -> list[KPKey]:
-        return self.track_to_kps.get(track_id, [])
+    def get_keypoints(self, track_id: int, img_idx: int | None = None) -> list[KPKey]:
+        kp_keys = self.track_to_kps.get(track_id, [])
+        if img_idx is not None:
+            kp_keys = [kp_key for kp_key in kp_keys if kp_key[0] == img_idx]
+        return kp_keys
+
+    def get_triangulated_view_keypoints(self, image_idx: int) -> list[KPKey]:
+        """Get keys of keypoints triangulated from a given view.
+        image_idx: int Index of the camera view (image).
+        """
+        # return filter(lambda kpkey: kpkey[0] == image_idx, self.kp_to_track.keys())
+        return [kpkey for kpkey in self.kp_to_track.keys() if kpkey[0] == image_idx]
+
+    def get_triangulated_view_tracks(self, image_idx: int) -> list[int]:
+        """Get track_ids of tracks triangulated from a given view."""
+        # FIXME: not quite true; some of these were triangulated from other views: more like "tracks_in_view"
+        kp_keys = self.get_triangulated_view_keypoints(image_idx)
+        return [tid for kp_key in kp_keys if (tid := self.get_track(kp_key)) is not None]
 
     def add_new_tracks(self, kp_pairs: list[tuple[KPKey, KPKey]]):
         """Create new track for every given pair of KP observations."""
@@ -478,32 +677,40 @@ class TrackManager:
             self.next_track_id += 1
         return added_track_ids
 
-    def update_tracks(self, img_idx_new: int, img_idx_ref: int, ref2new_matches: NDArrayInt):
-        """Update tracks with new KP observations from img_new.
+    def add_keypoints_to_tracks(self, kp_keys: list[KPKey], track_id: list[int]):
+        """Add given KP observations to the given tracks."""
+        for kp_key, tid in zip(kp_keys, track_id):
+            self._register_keypoint_track(kp_key, tid)
 
-        img_ref is the reference image for which we already have 2D-3D pt correspondence in track_manager.
-        Some of the KPs in img_ref have tracks, some don't. The KPs in img_new that match the tracked KPs in img_ref
-        are added to those tracks. The KPs in img_new that match the untracked KPs in img_ref are added to new tracks.
+    def get_track_observations_for_view(self, img_idx_ref: int, ref2new_matches: NDArrayInt):
+        """Get track observations for a given view.
+
+        Get tracks that are visible from the new view and their corresponding KP indices in
+        the new image via the supplied matches between img_ref and img_new.
+
+        Used for PnP pose estimation of the new view, where 2D-3D correspondences are needed.
+        The 3D points are represented by track_ids, and the 2D points are represented by kp_indices_new.
+
+        Args:
+            img_idx_ref: int Index of the reference image (view).
+            ref2new_matches: NDArrayInt Array of shape (N, 2) containing matches between
+            the reference image and the new image.
         """
         # for each match, if ref KP has a track, add new img KP to track; else create new track
-        kp_idx_new_tracked, track_ids_tracked = [], []
-        matches_untracked = []
-        # I wanna add the new KPs (that have matches to tracked ref KPs) to current tracks
+        kp_indices_new, track_ids, untracked_matches = [], [], []
+        # I wanna record the new KPs (that have matches to tracked ref KPs)
         for match in ref2new_matches:
             kp_idx_ref, kp_idx_new = match
             # if ref KP has a track, add the matching new KP to the same track
             # this means the same 3D object point is now observed by a new 2D KP
-            kp_key_new = (img_idx_new, kp_idx_new)
             kp_key_ref = (img_idx_ref, kp_idx_ref)
             if (track_id := self.get_track(kp_key_ref)) is not None:
-                track_ids_tracked.append(track_id)
-                kp_idx_new_tracked.append(kp_idx_new)
-                self._register_keypoint_track(kp_key_new, track_id)
+                track_ids.append(track_id)
+                kp_indices_new.append(kp_idx_new)
             else:  # ref KP is untracked and therefore its matching KP from img_new is also untracked
-                matches_untracked.append(match)
+                untracked_matches.append(match)
 
-        # return tracked KPs in new img and ref2new matches for untracked KPs for triangulation
-        return track_ids_tracked, kp_idx_new_tracked, np.array(matches_untracked)
+        return np.array(track_ids), np.array(kp_indices_new), np.array(untracked_matches)
 
     def is_valid(self) -> bool:
         """Check consistency of the bi-directional map between track_id and KP_key.
@@ -646,7 +853,7 @@ class ReconIO:
             # Create 4x4 pose matrix [R | t; 0 0 0 1]
             pose_4x4 = np.eye(4, dtype=np.float32)
             pose_4x4[:3, :3] = img_data.R
-            pose_4x4[:3, 3:4] = img_data.t[..., None]  # ty:ignore[not-subscriptable]
+            pose_4x4[:3, 3:4] = img_data.t[..., None]
             poses_list.append(pose_4x4)
             images_list.append(img_data.pixels)
 
@@ -663,8 +870,8 @@ class ReconIO:
         points_tensor = torch.from_numpy(points_3d).float()  # (M, 3)
         colors_tensor = torch.from_numpy(colors).float() / 255.0  # (M, 3), normalized to [0, 1]
 
-        # Get camera intrinsics (rescaled if images were downsampled)
-        K, _ = self.images.get_intrisics(rescaled=True)
+        # Get camera intrinsics (rescaled) from first image with pose
+        K = self.images[0].camera_model.get_camera_matrix()
         intrinsics_tensor = torch.from_numpy(K).float()  # (3, 3)
 
         # Save as .pt file

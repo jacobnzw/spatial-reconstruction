@@ -4,6 +4,7 @@ import pycolmap
 import pycolmap._core.cost_functions as cost_functions
 
 from utils import (
+    ViewData,
     FeatureStore,
     PointCloud,
     TrackManager,
@@ -30,7 +31,9 @@ def bundle_adjustment(
         fix_first_camera: If True, fixes the first camera pose to avoid gauge freedom
     """
 
-    K, dist = images.get_intrisics()
+    # Get camera intrinsics from first image
+    first_img = images[0]
+    K, dist = first_img.camera_model.get_camera_matrix(), first_img.camera_model.dist
     # Create pycolmap camera model (OPENCV: fx, fy, cx, cy, k1, k2, p1, p2)
     fx = K[0, 0]
     fy = K[1, 1]
@@ -141,7 +144,8 @@ def bundle_adjustment_pycolmap(
 
     # Map your OpenCV calibration to COLMAP parameters
     # OpenCV order: [fx, fy, cx, cy, k1, k2, p1, p2]
-    K, dist = feature_store.get_intrisics()
+    first_img: ViewData = feature_store[0]
+    K, dist = first_img.camera_model.get_camera_matrix(), first_img.camera_model.dist
     fx, fy = K[0, 0], K[1, 1]
     cx, cy = K[0, 2], K[1, 2]
     k1, k2, p1, p2 = dist[0][:4]  # Assuming standard 4-5 params
