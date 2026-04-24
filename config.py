@@ -95,7 +95,7 @@ class SLAMConfig:
     max_read_frames: int | None = None
     """Maximum number of frames to process from the dataset"""
 
-    undistort: bool = False
+    undistort: bool = True
     """Whether to undistort images using the provided camera intrinsics and distortion coefficients"""
 
     # Keyframe selection
@@ -105,5 +105,6 @@ class SLAMConfig:
     max_window_keyframes: int = 10
     """Maximum number of recent keyframes to keep in the sliding window for optimization"""
 
+    # TODO: due to improved KF selection scheme, not used; remove or replace with relevant params
     max_motion_matches: int = 85
     """Maximum number of keypoint matches to judge the motion between frames (if too high, we might add redundant keyframes with little motion)"""

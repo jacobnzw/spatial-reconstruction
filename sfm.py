@@ -148,6 +148,7 @@ def _triangulate_new_points(img_ref: ViewData, img_new: ViewData, untracked_matc
         untracked_matches: Array of shape (N, 2) containing matches between img_ref and img_new that are not
         associated with any existing track (i.e. new tracks to be added via triangulation).
     """
+    assert len(untracked_matches) >= 5, "At least 5 points required for essential matrix estimation"
     # Filter out geometric outliers that don't satisfy the epipolar constraint
     pts_ref, pts_new = img_ref.kp[untracked_matches[:, 0]].T, img_new.kp[untracked_matches[:, 1]].T  # ty:ignore[not-subscriptable]
     K = img_ref.camera_model.get_camera_matrix()  # assume same intrinsics for both images

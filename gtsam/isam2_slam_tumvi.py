@@ -36,20 +36,20 @@ from utils import (
 
 
 class KeyframeStreamer:
-    """Streams keyframes from a directory of images.
+    """Streams keyframes.
 
-    This class handles loading images, extracting features, and determining which frames should be
-    keyframes based on motion. It also provides a method to find the best reference keyframe for a
-    new keyframe based on overlap and triangulated tracks.
+    Handles selection of keyframes. By iterating the `FeatureExtractor`, which in turn iterates `FrameLoader`, the class
+    obtains new frames and subjects them to keyframe selection criteria. Keyframe is judged by time-based criteria
+    as well as keypoint-based motion and track quality criteria.
+    The class also provides a method to find the best reference keyframe from the past frames stored in the window.
 
     Args:
-        image_dir: Directory containing the images.
         feature_extractor: An instance of FeatureExtractor to extract keypoints and descriptors.
         matcher: A keypoint matcher function that takes two ImageData objects and returns matches.
-        ext: Image file extension (default: "png").
+        track_manager: TrackManager object.
         max_motion_matches: Maximum number of matches to consider for judging motion (default: 120).
         max_frames: Maximum number of frames to keep in the sliding window for keyframe selection (default: 10).
-        max_read_frames: Optional maximum number of frames to read from the directory (default: None, meaning read all).
+        fps: Frames per second (Hz) of the read dataset.
     """
 
     def __init__(
@@ -59,29 +59,33 @@ class KeyframeStreamer:
         track_manager: TrackManager,
         max_motion_matches=120,
         max_window_keyframes=10,
+        fps=20,  # for TUM-VI
     ):
         self.extractor = feature_extractor
         self.matcher = matcher
         self.track_manager = track_manager
         self.max_motion_matches = max_motion_matches
+        self.fps = fps
         self._keyframe_window = deque(maxlen=max_window_keyframes)
 
-    def _enough_motion_for_keyframe(self, frame: ViewData) -> bool:
-        pnp_min = 40  # PnP needs at least 40 matches to work
-        fps = 20  # TODO: get from dataset metadata and pass as argument
+    def _is_keyframe(self, frame: ViewData) -> bool:
+        pnp_min = 40  # minimum points for reliable pose estimation using PnP
+        emat_min = 10  # minimum points for reliable essential matrix estimation
 
         last_kf: ViewData = self._keyframe_window[-1]  # pick last keyframe
         # Time-based criteria:
         # Ensure keyframe generated every second (based on FPS),
-        if frame.idx - last_kf.idx > fps:
+        if frame.idx - last_kf.idx > self.fps:
             print(
-                f"DEBUG: New keyframe  → {frame.idx=} passed because time gap {frame.idx - last_kf.idx} > {fps} (FPS)."
+                f"DEBUG: New keyframe  → {frame.idx=} passed because time gap "
+                f"{frame.idx - last_kf.idx} > {self.fps} (FPS)."
             )
             return True
         # Frame considered only after certain time has passed since last keyframe (eg. 0.5 second)
-        if frame.idx - last_kf.idx < fps / 2:
+        if frame.idx - last_kf.idx < self.fps / 2:
             print(
-                f"DEBUG: Not enough time elapsed for new keyframe  → {frame.idx=} failed because time gap {frame.idx - last_kf.idx} < {fps / 2} (half FPS)."
+                f"DEBUG: Not enough time elapsed for new keyframe  → {frame.idx=} failed because time gap "
+                f"{frame.idx - last_kf.idx} < {self.fps / 2} (half FPS)."
             )
             return False
 
@@ -91,32 +95,30 @@ class KeyframeStreamer:
             last_kf.idx, matches
         )
         n_matches = len(matches)
-        # TODO: maybe check immediatelly
-        # if len(matches) < pnp_min or len(matches) >= self.max_motion_matches:
-        #     return False
         n_tracked_matches = len(tracked_matches)
         n_untracked_matches = len(untracked_matches)
         # Need enough matches that correspond to existing tracks (for PnP pose estimation of new keyframe)
-        pnp_cond = n_tracked_matches >= pnp_min
+        estimation_cond = n_tracked_matches >= pnp_min and n_untracked_matches >= emat_min
         # Keyframe should have a good number of new keypoints (to be triangulated as new landmarks) to be worth it
         enough_new_kps = n_untracked_matches / n_matches > 0.5  # TODO: tune this threshold
 
         # Parallax check: ensure sufficient camera motion by checking median displacement of tracked keypoints between last keyframe and new frame
-        # kp_idx_tracked_ref, kp_idx_tracked_new = tracked_matches[:, 0], tracked_matches[:, 1]
-        # pts_tracked_ref = last_kf.kp[kp_idx_tracked_ref]
-        # pts_tracked_new = frame.kp[kp_idx_tracked_new]
-        # displacements = np.linalg.norm(pts_tracked_ref - pts_tracked_new, axis=1)
-        # median_parallax = np.median(displacements)
+        if n_tracked_matches > 10:  # at least 10 samples for median parallax estimate
+            kp_idx_tracked_ref, kp_idx_tracked_new = tracked_matches[:, 0], tracked_matches[:, 1]
+            pts_tracked_ref, pts_tracked_new = last_kf.kp[kp_idx_tracked_ref], frame.kp[kp_idx_tracked_new]  # ty:ignore[not-subscriptable]
+            displacements = np.linalg.norm(pts_tracked_ref - pts_tracked_new, axis=1)
+            median_parallax = np.median(displacements)
 
-        # if median_parallax < 15.0:  # Insufficient camera motion
-        #     print(f"DEBUG: Insufficient parallax {median_parallax:.1f} < 15.0")
-        #     return False
+            if median_parallax < 15.0:  # Insufficient camera motion
+                print(f"DEBUG: Insufficient parallax {median_parallax:.1f} < 15.0")
+                return False
 
-        if pnp_cond and enough_new_kps:
+        if estimation_cond and enough_new_kps:
             print(f"New keyframe  → {frame.idx=} passed with {len(matches)} matches to {last_kf.idx=}.")
             print(f"DEBUG: {n_tracked_matches=} (for PnP) and {n_untracked_matches=} (for new landmarks).")
             return True
 
+        print(f"DEBUG: {estimation_cond=} {enough_new_kps=}")
         return False
 
     def keyframes(self):
@@ -130,7 +132,7 @@ class KeyframeStreamer:
             # yield only frames that are sufficiently different from the last keyframe
             # TODO: beef up the criteria for keyframe selection:
             # eg. num untracked kps in new frame, time since last keyframe, relative translation (via E-matrix) etc. see pyslam's heuristics
-            if self._enough_motion_for_keyframe(frame):
+            if self._is_keyframe(frame):
                 self._keyframe_window.append(frame)
                 yield frame, self._keyframe_window[-2]
 
