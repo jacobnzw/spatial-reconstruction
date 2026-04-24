@@ -215,12 +215,8 @@ def add_view(
     track_manager.add_keypoints_to_tracks(kp_keys_seen, track_ids_seen)
 
     # Translation vector between the new image and the reference image
-    tvec_baseline = img_ref.R.T @ (img_new.t - img_ref.t)
-    ref_translation_new = (img_ref.cam_T_world * img_new.cam_T_world.inv()).translation
-    new_translation_ref = (img_new.cam_T_world * img_ref.cam_T_world.inv()).translation
-    print(f"Baseline translation from ref to new image: {np.linalg.norm(tvec_baseline):.2f}")
-    print(f"Relative translation from ref to new image: {np.linalg.norm(ref_translation_new):.2f}")
-    print(f"Relative translation from new to ref image: {np.linalg.norm(new_translation_ref):.2f}")
+    t_ref_new = (img_ref.cam_T_world * img_new.cam_T_world.inv()).translation  # ty:ignore[possibly-missing-attribute]
+    print(f"DEBUG: Relative translation from ref to new image: {np.linalg.norm(t_ref_new):.2f}")
 
     points_3d, kp_key_pairs = _triangulate_new_points(img_ref, img_new, untracked_matches)
 
