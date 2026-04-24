@@ -685,41 +685,42 @@ class TrackManager:
     def get_track_observations_for_view(self, img_idx_ref: int, ref2new_matches: NDArrayInt):
         """Get track observations for a given view.
 
-        Get tracks that are visible from the new view and their corresponding KP indices in
-        the new image via the supplied matches between img_ref and img_new.
+        Partitions supplied matches in `ref2new_matches` into:
+          - tracked, which join KPs in reference view that have tracks to the KPs in the new view, and
+          - untracked, which join KPs between the reference and the new view for which there are no tracks yet.
 
-        Used for PnP pose estimation of the new view, where 2D-3D correspondences are needed.
-        The 3D points are represented by track_ids, and the 2D points are represented by kp_indices_new.
+        Used for PnP pose estimation of the new view, where 2D-to-3D correspondences are needed.
+        The 3D points are represented by `track_ids`, and the 2D points are represented by `tracked_kp_idxs_new`,
+        which can be extracted from the returned `tracked_matches` by
+
+        ```
+        tracked_kp_idxs_new = tracked_matches[:, 1]
+        ```
 
         Args:
             img_idx_ref: int Index of the reference image (view).
-            ref2new_matches: NDArrayInt Array of shape (N, 2) containing matches between
-            the reference image and the new image.
+            ref2new_matches: NDArrayInt of shape (N, 2) containing matches between the reference image and the new image.
 
         Returns:
-            track_ids: NDArray of shape (M,) containing track IDs visible from the reference and the new view.
+            track_ids: NDArray of shape (M,) containing track IDs visible from both the reference and the new view.
             These are the tracks that can be used for PnP pose estimation of the new view.
-            kp_indices_new: NDArray of shape (M,) containing the corresponding keypoint indices in the new image
-            that have matches to tracked reference keypoints. Used for PnP pose estimation of the new view.
+            tracked_matches: NDArray of shape (M, 2) containing matches of tracked keypoints between the reference
+            and the new view. Used for PnP pose estimation of the new view.
             untracked_matches: NDArray of shape (K, 2) containing matches that do not correspond to any existing track
             (i.e., new tracks that can be triangulated from these matches).
         """
-        # for each match, if ref KP has a track, add new img KP to track; else create new track
-        kp_indices_new, track_ids, untracked_matches = [], [], []
-        # I wanna record the new KPs (that have matches to tracked ref KPs)
+        track_ids, tracked_matches, untracked_matches = [], [], []
         for match in ref2new_matches:
-            kp_idx_ref, kp_idx_new = match
-            # if ref KP has a track, add the matching new KP to the same track
-            # this means the same 3D object point is now observed by a new 2D KP
+            kp_idx_ref, _ = match
             kp_key_ref = (img_idx_ref, kp_idx_ref)
             if (track_id := self.get_track(kp_key_ref)) is not None:
+                # tracked match indicates the same 3D world point is now observed by a new 2D KP
                 track_ids.append(track_id)
-                # TODO: return tracked_matches instead; then kp_indices_new can be obtained from track_matches[:, 1]
-                kp_indices_new.append(kp_idx_new)
-            else:  # ref KP is untracked and therefore its matching KP from img_new is also untracked
+                tracked_matches.append(match)
+            else:  # reference view KP is untracked and therefore its matching KP from the new view is also untracked
                 untracked_matches.append(match)
 
-        return np.array(track_ids), np.array(kp_indices_new), np.array(untracked_matches)
+        return np.array(track_ids), np.array(tracked_matches), np.array(untracked_matches)
 
     def is_valid(self) -> bool:
         """Check consistency of the bi-directional map between track_id and KP_key.

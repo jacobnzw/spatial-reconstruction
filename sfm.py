@@ -198,7 +198,10 @@ def add_view(
 
     # add new img KPs, that are matched to from tracked ref img KPs, to current tracks (3D pts)
     # returns track_ids and (un)tracked KPs in the new image; track_ids used as indices to point cloud
-    track_ids_seen, kp_idx_seen, untracked_matches = track_manager.get_track_observations_for_view(img_ref.idx, matches)
+    track_ids_seen, tracked_matches, untracked_matches = track_manager.get_track_observations_for_view(
+        img_ref.idx, matches
+    )
+    kp_idx_seen = tracked_matches[:, 1]
 
     # Estimate pose of new image
     # 3D-to-2D correspondences in new view (via matches w/ ref view) for PnP pose estimation
