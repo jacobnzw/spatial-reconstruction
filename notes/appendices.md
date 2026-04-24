@@ -55,6 +55,30 @@ that specify the rotation around each of the three (x,y,z) axes.
     - $\det(R) = 1$
     - $R \in \mathbb{R}^{3\times 3}$
 
+##### Trace of a rotation matrix
+defined as the sum of its main diagonal entries, is invariant under coordinate system changes and equals the sum of its eigenvalues. This property allows the rotation angle to be directly extracted from the matrix elements without needing to identify the rotation axis first. 
+
+2D Rotation Matrices
+For a 2×2 rotation matrix representing a rotation by angle $\theta$, the trace is: 
+Tr(R)=2cosθ This formula implies that the angle of rotation can be calculated as 
+$\theta = \arccos\left(\frac{\text{tr}(R)}{2}\right)$. 
+
+3D Rotation Matrices
+For a 3×3 rotation matrix representing a rotation by angle $\theta$ around any axis, the trace is: 
+$$
+\begin{equation}
+   \text{Tr}(R) = 1 + 2\cos\theta
+\end{equation}
+$$
+Consequently, the rotation angle is determined by: 
+$$
+\begin{equation}
+   \cos\theta = 2\text{Tr}(R) − 1 \ \Rightarrow\  \theta = \arccos(2\text{Tr}(R) − 1)
+\end{equation}
+$$
+The eigenvalues for a 3D rotation are $1, e^{i\theta}, e^{-i\theta}$, and their sum $1 + 2\cos\theta$ confirms the trace formula. 
+
+
 #### SE(3)
  - the group of rigid transformations in 3D space, consisting of rotation and translation.
  - 6 degrees of freedom (3 for rotation, 3 for translation)
