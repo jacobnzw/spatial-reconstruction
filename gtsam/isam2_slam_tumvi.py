@@ -129,9 +129,6 @@ class KeyframeStreamer:
                 self._keyframe_window.append(frame)
                 continue
 
-            # yield only frames that are sufficiently different from the last keyframe
-            # TODO: beef up the criteria for keyframe selection:
-            # eg. num untracked kps in new frame, time since last keyframe, relative translation (via E-matrix) etc. see pyslam's heuristics
             if self._is_keyframe(frame):
                 self._keyframe_window.append(frame)
                 yield frame, self._keyframe_window[-2]
@@ -408,15 +405,16 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
             continue
 
         # === Normal keyframe ===
-        ref = streamer.find_reference_frame(keyframe, track_manager, min_inliers=cfg.min_inliers)
-        if ref is None:
-            print("  → No good reference found, skipping")
-            continue
-
+        # ref = streamer.find_reference_frame(keyframe, track_manager, min_inliers=cfg.min_inliers)
+        # if ref is None:
+        #     print("  → No good reference found, skipping")
+        #     continue
+        # Previous keframe as reference: makes sense in sequentially ordered datasets
+        ref = prev_keyframe
         add_view(keyframe, ref, track_manager, point_cloud, kp_matcher)
 
         # === DEPTH FILTER (critical for chirality) ===
-        # TODO: remove now that it's done in add_view? or keep here as an extra safety check?
+        # FIXME: why does this still get tripped up when I'm depth-filtering in _triangulate_new_points() ?!
         new_tracks = track_manager.get_triangulated_view_tracks(keyframe.idx)
         for tid in list(new_tracks):
             pt = point_cloud.get_point(tid)
