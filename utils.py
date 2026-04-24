@@ -695,6 +695,14 @@ class TrackManager:
             img_idx_ref: int Index of the reference image (view).
             ref2new_matches: NDArrayInt Array of shape (N, 2) containing matches between
             the reference image and the new image.
+
+        Returns:
+            track_ids: NDArray of shape (M,) containing track IDs visible from the reference and the new view.
+            These are the tracks that can be used for PnP pose estimation of the new view.
+            kp_indices_new: NDArray of shape (M,) containing the corresponding keypoint indices in the new image
+            that have matches to tracked reference keypoints. Used for PnP pose estimation of the new view.
+            untracked_matches: NDArray of shape (K, 2) containing matches that do not correspond to any existing track
+            (i.e., new tracks that can be triangulated from these matches).
         """
         # for each match, if ref KP has a track, add new img KP to track; else create new track
         kp_indices_new, track_ids, untracked_matches = [], [], []
@@ -706,6 +714,7 @@ class TrackManager:
             kp_key_ref = (img_idx_ref, kp_idx_ref)
             if (track_id := self.get_track(kp_key_ref)) is not None:
                 track_ids.append(track_id)
+                # TODO: return tracked_matches instead; then kp_indices_new can be obtained from track_matches[:, 1]
                 kp_indices_new.append(kp_idx_new)
             else:  # ref KP is untracked and therefore its matching KP from img_new is also untracked
                 untracked_matches.append(match)

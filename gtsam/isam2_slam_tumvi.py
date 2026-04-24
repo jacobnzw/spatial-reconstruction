@@ -56,22 +56,65 @@ class KeyframeStreamer:
         self,
         feature_extractor: FeatureExtractor,
         matcher,
+        track_manager: TrackManager,
         max_motion_matches=120,
         max_window_keyframes=10,
     ):
         self.extractor = feature_extractor
         self.matcher = matcher
+        self.track_manager = track_manager
         self.max_motion_matches = max_motion_matches
         self._keyframe_window = deque(maxlen=max_window_keyframes)
 
     def _enough_motion_for_keyframe(self, frame: ViewData) -> bool:
         pnp_min = 40  # PnP needs at least 40 matches to work
+        fps = 20  # TODO: get from dataset metadata and pass as argument
 
-        last_kf = self._keyframe_window[-1]  # pick last keyframe
+        last_kf: ViewData = self._keyframe_window[-1]  # pick last keyframe
+        # Time-based criteria:
+        # Ensure keyframe generated every second (based on FPS),
+        if frame.idx - last_kf.idx > fps:
+            print(
+                f"DEBUG: New keyframe  → {frame.idx=} passed because time gap {frame.idx - last_kf.idx} > {fps} (FPS)."
+            )
+            return True
+        # Frame considered only after certain time has passed since last keyframe (eg. 0.5 second)
+        if frame.idx - last_kf.idx < fps / 2:
+            print(
+                f"DEBUG: Not enough time elapsed for new keyframe  → {frame.idx=} failed because time gap {frame.idx - last_kf.idx} < {fps / 2} (half FPS)."
+            )
+            return False
+
+        # Keypoint-based criteria:
         _, matches = self.matcher(last_kf, frame)
+        track_ids, tracked_matches, untracked_matches = self.track_manager.get_track_observations_for_view(
+            last_kf.idx, matches
+        )
+        n_matches = len(matches)
+        # TODO: maybe check immediatelly
+        # if len(matches) < pnp_min or len(matches) >= self.max_motion_matches:
+        #     return False
+        n_tracked_matches = len(tracked_matches)
+        n_untracked_matches = len(untracked_matches)
+        # Need enough matches that correspond to existing tracks (for PnP pose estimation of new keyframe)
+        pnp_cond = n_tracked_matches >= pnp_min
+        # Keyframe should have a good number of new keypoints (to be triangulated as new landmarks) to be worth it
+        enough_new_kps = n_untracked_matches / n_matches > 0.5  # TODO: tune this threshold
 
-        if pnp_min <= len(matches) < self.max_motion_matches:
+        # Parallax check: ensure sufficient camera motion by checking median displacement of tracked keypoints between last keyframe and new frame
+        # kp_idx_tracked_ref, kp_idx_tracked_new = tracked_matches[:, 0], tracked_matches[:, 1]
+        # pts_tracked_ref = last_kf.kp[kp_idx_tracked_ref]
+        # pts_tracked_new = frame.kp[kp_idx_tracked_new]
+        # displacements = np.linalg.norm(pts_tracked_ref - pts_tracked_new, axis=1)
+        # median_parallax = np.median(displacements)
+
+        # if median_parallax < 15.0:  # Insufficient camera motion
+        #     print(f"DEBUG: Insufficient parallax {median_parallax:.1f} < 15.0")
+        #     return False
+
+        if pnp_cond and enough_new_kps:
             print(f"New keyframe  → {frame.idx=} passed with {len(matches)} matches to {last_kf.idx=}.")
+            print(f"DEBUG: {n_tracked_matches=} (for PnP) and {n_untracked_matches=} (for new landmarks).")
             return True
 
         return False
@@ -98,6 +141,7 @@ class KeyframeStreamer:
         min_inliers: int = 30,
     ) -> ViewData | None:
         """Prefer the most recent keyframe, only fall back if it has poor overlap."""
+
         # Always try the most recent keyframe first
         last_kf = self._keyframe_window[-2]
         is_overlapping, inliers, matches = has_overlap(last_kf, keyframe, self.matcher, min_inliers)
@@ -107,7 +151,7 @@ class KeyframeStreamer:
         best_ref = None
         best_score = -1
 
-        for ref in self._keyframe_window:  # exclude the current frame at the end
+        for ref in self._keyframe_window:
             if ref.idx == keyframe.idx:  # don't pick the current keyframe as reference
                 continue
             # Use your existing has_overlap (geometric validation + E-matrix inliers)
@@ -264,7 +308,9 @@ def add_new_keyframe_factors(
         initial_estimates.insert(X(img_ref.idx), gtsam_cam_pose(img_ref))
 
 
-def make_keyframe_streamer(image_dir, cfg, camera_model, kp_matcher, undistort=False) -> KeyframeStreamer:
+def make_keyframe_streamer(
+    image_dir, cfg, camera_model, kp_matcher, track_manager, undistort=False
+) -> KeyframeStreamer:
     loader = FrameLoader(
         image_dir,
         max_size=cfg.max_size,
@@ -277,6 +323,7 @@ def make_keyframe_streamer(image_dir, cfg, camera_model, kp_matcher, undistort=F
     return KeyframeStreamer(
         extractor,
         kp_matcher,
+        track_manager,
         max_motion_matches=cfg.max_motion_matches,
         max_window_keyframes=cfg.max_window_keyframes,
     )
@@ -322,7 +369,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
     # Setup keyframe streaming
     camera_model = CameraModel(model_type=CameraType.FISHEYE, K=K.K(), dist=dist_vec)
     kp_matcher = make_keypoint_matcher(cfg)
-    streamer = make_keyframe_streamer(image_dir, cfg, camera_model, kp_matcher, undistort=cfg.undistort)
+    streamer = make_keyframe_streamer(image_dir, cfg, camera_model, kp_matcher, track_manager, undistort=cfg.undistort)
 
     for keyframe, prev_keyframe in streamer.keyframes():
         print(f"Processing keyframe {keyframe.idx}: {keyframe.path.name}")
