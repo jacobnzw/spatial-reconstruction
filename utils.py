@@ -260,6 +260,15 @@ class FrameLoader:
         self.camera_model = camera_model
         self.undistort = undistort
 
+    def __call__(self, idx: int) -> ViewData:
+        """Load frame at given index in internally stored list of image paths."""
+        path = self.img_paths[idx]
+        # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order
+        img = cv.imread(str(path), cv.IMREAD_COLOR_RGB)
+        if img is None:
+            raise FileNotFoundError(f"FrameLoader: Failed to load image: {path}")
+        return ViewData(idx, path, img, self.camera_model)
+
     def iter_frames(self) -> Iterable[ViewData]:
         """Yields images as ImageData objects.
 
@@ -307,16 +316,15 @@ class FrameLoader:
         h, w = img.shape[:2]
 
         # Create the undistortion + rectification map once (or cache it)
-        new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(
-            self.camera_model.K, self.camera_model.dist, (w, h), np.eye(3), balance=balance, fov_scale=fov_scale
-        )
-
-        map1, map2 = cv.fisheye.initUndistortRectifyMap(
-            self.camera_model.K, self.camera_model.dist, np.eye(3), new_K, (w, h), cv.CV_16SC2
-        )
+        # new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(
+        #     self.camera_model.K, self.camera_model.dist, (w, h), np.eye(3), balance=balance, fov_scale=fov_scale
+        # )
+        K, dist = self.camera_model.get_camera_matrix(), self.camera_model.dist
+        new_K = K
+        map1, map2 = cv.fisheye.initUndistortRectifyMap(K, dist, np.eye(3), new_K, (w, h), cv.CV_16SC2)
 
         undist = cv.remap(img, map1, map2, cv.INTER_LINEAR)
-        return undist, new_K  # ty:ignore[invalid-return-type]
+        return undist, new_K
 
 
 class FeatureExtractor:
@@ -334,6 +342,10 @@ class FeatureExtractor:
             self._extract_fn = partial(self._extract_disk, disk_model=disk_model)
         else:
             raise ValueError(f"FeatureExtractor: Unknown feature type {cfg.feature_type} in config!")
+
+    def __call__(self, frame: ViewData) -> ViewData:
+        """Extract features from a single frame using the curried extraction function."""
+        return self._extract_fn(frame)
 
     def _extract_sift(self, frame: ViewData, sift: cv.SIFT) -> ViewData:
         """Extract SIFT features from a single image."""
@@ -373,10 +385,6 @@ class FeatureExtractor:
         # del img_tensor, features
         # torch.cuda.empty_cache()
         return frame
-
-    def __call__(self, frame: ViewData) -> ViewData:
-        """Extract features from a single frame using the curried extraction function."""
-        return self._extract_fn(frame)
 
     def iter_frames_with_features(self) -> Iterable[ViewData]:
         """Yields ImageData objects with extracted features."""
