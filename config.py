@@ -105,6 +105,5 @@ class SLAMConfig:
     max_window_keyframes: int = 10
     """Maximum number of recent keyframes to keep in the sliding window for optimization"""
 
-    # TODO: due to improved KF selection scheme, not used; remove or replace with relevant params
-    max_motion_matches: int = 85
+    max_motion_matches: int = 125
     """Maximum number of keypoint matches to judge the motion between frames (if too high, we might add redundant keyframes with little motion)"""
