@@ -1,7 +1,9 @@
 from __future__ import print_function
 
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 import gtsam.utils.plot as gtsam_plot
 import matplotlib.pyplot as plt
@@ -27,12 +29,24 @@ from utils import (
     CameraType,
     FeatureExtractor,
     FrameLoader,
+    NDArrayInt,
     PointCloud,
     TrackManager,
     ViewData,
     has_overlap,
     make_keypoint_matcher,
 )
+
+
+@dataclass
+class KeyframeInfo:
+    keyframe: ViewData
+    previous_keyframe: ViewData
+    # Matches computed in the course of keyframe assessment
+    matches: NDArrayInt
+    # Number of tracked and untracked keypoints in the current keyframe
+    n_tracked_kps: int | None = None
+    n_untracked_kps: int | None = None
 
 
 class KeyframeStreamer:
@@ -68,9 +82,8 @@ class KeyframeStreamer:
         self.fps = fps
         self._keyframe_window = deque(maxlen=max_window_keyframes)
 
-    def _is_keyframe(self, frame: ViewData) -> bool:
-        # TODO: Combine the two because E-mat and PnP are used together in add_view anyway
-        pnp_min = 40  # minimum points for reliable pose estimation using PnP
+    def _is_keyframe(self, frame: ViewData) -> KeyframeInfo | None:
+        pnp_min = 30  # minimum points for reliable pose estimation using PnP
         emat_min = 10  # minimum points for reliable essential matrix estimation (in triangulation)
 
         last_kf: ViewData = self._keyframe_window[-1]  # pick last keyframe
@@ -81,14 +94,14 @@ class KeyframeStreamer:
             #     f"DEBUG: Not enough time elapsed for new keyframe  → {frame.idx=} failed because time gap "
             #     f"{frame.idx - last_kf.idx} < {self.fps / 2} (half FPS)."
             # )
-            return False
+            return None
         max_delta_cond = frame.idx - last_kf.idx > self.fps  # keyframe every second (based on FPS)
 
         _, matches = self.matcher(last_kf, frame)
         # When searching for second keyframe to bootstrap initial tracks
         n_matches = len(matches)
         if len(self._keyframe_window) < 2 and (emat_min < n_matches < self.max_motion_matches):
-            return True
+            return KeyframeInfo(frame, last_kf, matches, n_tracked_kps=0, n_untracked_kps=n_matches)
 
         track_ids, tracked_matches, untracked_matches = self.track_manager.get_track_observations_for_view(
             last_kf.idx, matches
@@ -102,7 +115,8 @@ class KeyframeStreamer:
         # Need enough matches that correspond to existing tracks (for PnP pose estimation of new keyframe)
         estimation_cond = n_tracked_matches >= pnp_min and n_untracked_matches >= emat_min
         if max_delta_cond and estimation_cond:
-            return True  # Force keyframe every second if estimator has enough data
+            # Force keyframe every second if estimator has enough data
+            return KeyframeInfo(frame, last_kf, matches, n_tracked_matches, n_untracked_matches)
 
         # Keyframe should have a good number of new keypoints (to be triangulated as new landmarks) to be worth it
         enough_new_kps = n_untracked_matches / n_matches > 0.5  # TODO: tune this threshold
@@ -116,32 +130,30 @@ class KeyframeStreamer:
 
             if median_parallax < 15.0:  # Insufficient camera motion
                 print(f"DEBUG: Insufficient parallax {median_parallax:.1f} < 15.0")
-                return False
+                return None
 
         # Enough motion (via KP parallax), new KPs and estimator has enough data
         if estimation_cond and enough_new_kps:
             print(f"New keyframe  → {frame.idx=} passed with {len(matches)} matches to {last_kf.idx=}.")
             print(f"DEBUG: {n_tracked_matches=} (for PnP) and {n_untracked_matches=} (for new landmarks).")
-            return True
+            return KeyframeInfo(frame, last_kf, matches, n_tracked_matches, n_untracked_matches)
 
         print(
             f"DEBUG: {frame.idx=} {estimation_cond=} {enough_new_kps=} {max_delta_cond=} {n_tracked_matches=} {n_untracked_matches=}"
         )
-        return False
+        return None
 
-    def keyframes(self):
+    def keyframes(self) -> Iterable[KeyframeInfo]:
         """Yields pairs of consecutive keyframes."""
 
-        # TODO: consider returning struct with matches & stats between KFs, forward to sfm methods
         for idx, frame in enumerate(self.extractor.iter_frames_with_features()):
             # Add 1st frame as keyframe
             if idx == 0:
                 self._keyframe_window.append(frame)
                 continue
-
-            if self._is_keyframe(frame):
+            if (kf_info := self._is_keyframe(frame)) is not None:
                 self._keyframe_window.append(frame)
-                yield frame, self._keyframe_window[-2]
+                yield kf_info
 
     def find_reference_frame(
         self,
@@ -217,7 +229,7 @@ def visual_ISAM2_plot(result):
 
 def gtsam_world_T_cam(img: ViewData) -> Pose3:
     # Pose3 represents cam in world frame: world_T_cam; unlike ViewData.cam_T_world !
-    world_T_cam = img.cam_T_world.inv()
+    world_T_cam = img.cam_T_world.inv()  # ty:ignore[possibly-missing-attribute]
     R, t = world_T_cam.rotation.as_matrix(), world_T_cam.translation
     return Pose3(Rot3(R), Point3(t))
 
@@ -383,13 +395,14 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
     kp_matcher = make_keypoint_matcher(cfg)
     streamer = make_keyframe_streamer(image_dir, cfg, camera_model, kp_matcher, track_manager, undistort=cfg.undistort)
 
-    for keyframe, prev_keyframe in streamer.keyframes():
+    for kf_info in streamer.keyframes():
+        keyframe, prev_keyframe, matches = kf_info.keyframe, kf_info.previous_keyframe, kf_info.matches
         print(f"Processing keyframe {keyframe.idx}: {keyframe.path.name}")
 
         # === Bootstrap: first two keyframes ===
         if prev_keyframe.idx == 0:
             print(f"  → Bootstrap with frames {prev_keyframe.idx} and {keyframe.idx}")
-            bootstrap_from_two_views(prev_keyframe, keyframe, track_manager, point_cloud, kp_matcher)
+            bootstrap_from_two_views(prev_keyframe, keyframe, track_manager, point_cloud, matches=matches)
 
             # Add first two poses
             keyframe_pose, prev_keyframe_pose = gtsam_world_T_cam(keyframe), gtsam_world_T_cam(prev_keyframe)
@@ -424,7 +437,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
         #     continue
         # Previous keframe as reference: makes sense in sequentially ordered datasets
         ref = prev_keyframe
-        add_view(keyframe, ref, track_manager, point_cloud, kp_matcher)
+        add_view(keyframe, ref, track_manager, point_cloud, matches=matches)
 
         # === DEPTH FILTER (critical for chirality) ===
         # TODO: remove if depth threshold unified with triangulation
