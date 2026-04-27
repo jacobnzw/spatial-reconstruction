@@ -205,8 +205,11 @@ def visual_ISAM2_plot(result):
     plt.pause(0.5)
 
 
-def gtsam_cam_pose(img: ViewData) -> Pose3:
-    return Pose3(Rot3(img.R), Point3(img.t.squeeze()))
+def gtsam_world_T_cam(img: ViewData) -> Pose3:
+    # Pose3 represents cam in world frame: world_SE3_cam; unlike ViewData.cam_T_world !
+    world_T_cam = img.cam_T_world.inv()
+    R, t = world_T_cam.rotation.as_matrix(), world_T_cam.translation
+    return Pose3(Rot3(R), Point3(t))
 
 
 def gtsam_landmarks_from_pose(img: ViewData, tm: TrackManager, landmarks: PointCloud) -> list[Point3]:
@@ -240,11 +243,11 @@ def add_initial_factors_and_priors(
     graph.addPriorPose3(X(img0.idx), origin_pose, pose_noise)
     initial_estimates.insert(X(img0.idx), origin_pose)
 
-    baseline_pose = gtsam_cam_pose(img1)  # img1 is the second keyframe
+    baseline_pose = gtsam_world_T_cam(img1)  # img1 is the second keyframe
     between_noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.2, 0.2, 0.2, 0.5, 0.5, 0.5]))
     graph.add(gtsam.BetweenFactorPose3(X(img0.idx), X(img1.idx), baseline_pose, between_noise))
     # First pose got prior + init value, other poses get only init value
-    initial_estimates.insert(X(img1.idx), gtsam_cam_pose(img1))
+    initial_estimates.insert(X(img1.idx), gtsam_world_T_cam(img1))
 
     # Initials for landmarks from both images (img0 sufficient; no need for img1)
     # When bootstrapping from first two frames, landmarks observed from img0 same as those from img1,
@@ -302,9 +305,9 @@ def add_new_keyframe_factors(
             graph.add(gtsam.PriorFactorPoint3(L(tid), lm, lm_noise))
 
     # Pose initials: for new pose (possibly ref pose if not already in graph)
-    initial_estimates.insert(X(img_new.idx), gtsam_cam_pose(img_new))
+    initial_estimates.insert(X(img_new.idx), gtsam_world_T_cam(img_new))
     if not isam.valueExists(X(img_ref.idx)) and not initial_estimates.exists(X(img_ref.idx)):
-        initial_estimates.insert(X(img_ref.idx), gtsam_cam_pose(img_ref))
+        initial_estimates.insert(X(img_ref.idx), gtsam_world_T_cam(img_ref))
 
 
 def make_keyframe_streamer(
@@ -379,7 +382,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
             bootstrap_from_two_views(prev_keyframe, keyframe, track_manager, point_cloud, kp_matcher)
 
             # Add first two poses
-            keyframe_pose, prev_keyframe_pose = gtsam_cam_pose(keyframe), gtsam_cam_pose(prev_keyframe)
+            keyframe_pose, prev_keyframe_pose = gtsam_world_T_cam(keyframe), gtsam_world_T_cam(prev_keyframe)
             initial_estimate.insert(X(prev_keyframe.idx), prev_keyframe_pose)
             initial_estimate.insert(X(keyframe.idx), keyframe_pose)
 
@@ -417,21 +420,21 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
         # FIXME: why does this still get tripped up when I'm depth-filtering in _triangulate_new_points() ?!
         new_tracks = track_manager.get_triangulated_view_tracks(keyframe.idx)
         for tid in list(new_tracks):
-            pt = point_cloud.get_point(tid)
-            if pt is None:
+            pt_world = point_cloud.get_point(tid)
+            if pt_world is None:
                 continue
-            # Transform point to camera frame of the new keyframe
-            cam_pose = gtsam_cam_pose(keyframe)
-            pt_cam = cam_pose.transformTo(Point3(pt))
-            if pt_cam[2] < 0.3:  # behind camera or too close
+
+            # Transform point to camera frame; depth = z-coordinate
+            depth_cam = keyframe.transform_to_camera_frame(pt_world)[2]
+            if depth_cam < 0.3:  # behind camera or too close
                 # Optional: remove the track completely (simple but effective)
                 # You can add a remove_track method to TrackManager if you want
-                print(f"  → Removed track {tid} (negative depth {pt_cam[2]:.2f})")
+                print(f"  → Removed track {tid} (negative depth {depth_cam:.2f})")
                 # For now just skip adding it to smart factor
                 if tid in smart_factors:
                     del smart_factors[tid]
 
-        keyframe_pose, ref_pose = gtsam_cam_pose(keyframe), gtsam_cam_pose(ref)
+        keyframe_pose, ref_pose = gtsam_world_T_cam(keyframe), gtsam_world_T_cam(ref)
         # Between factor to reference keyframe (not necessarily the previous keyframe)
         between_noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.3, 0.3, 0.3, 0.8, 0.8, 0.8]))
         graph.add(gtsam.BetweenFactorPose3(X(ref.idx), X(keyframe.idx), keyframe_pose.between(ref_pose), between_noise))
@@ -453,7 +456,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
             smart_factors[track_id].add(obs, X(keyframe.idx))
 
         # Add new pose
-        initial_estimate.insert(X(keyframe.idx), gtsam_cam_pose(keyframe))
+        initial_estimate.insert(X(keyframe.idx), gtsam_world_T_cam(keyframe))
 
         # === Update iSAM2 ===
         isam.update(graph, initial_estimate)
