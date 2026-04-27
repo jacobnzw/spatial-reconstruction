@@ -33,6 +33,7 @@ def bootstrap_from_two_views(
     img_1: ViewData,
     track_manager: TrackManager,
     point_cloud: PointCloud,
+    # TODO: avoid match recompute: add matches = None, make match_fn=None, one required
     match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
 ):
     """Computes two-view baseline estimate of 3D points and camera poses.
@@ -180,6 +181,7 @@ def add_view(
     img_ref: ViewData,
     track_manager: TrackManager,
     point_cloud: PointCloud,
+    # TODO: avoid match recompute: add matches = None, make match_fn=None, one required
     match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
 ):
     """Adds 3D points from new view using PnP and triangulation.
@@ -193,6 +195,7 @@ def add_view(
         point_cloud: Point cloud. Required parameter.
         match_fn: Keypoint matcher function. Required parameter.
     """
+    # TODO: Really need to recompute matches ??
     # Compute KP matches from ref image to new image
     print(f"add_view: Computing matches from {img_ref.idx}:{img_ref.path.name} to {img_new.idx}:{img_new.path.name}")
     _, matches = match_fn(img_ref, img_new)

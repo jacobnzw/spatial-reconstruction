@@ -130,8 +130,7 @@ class ViewData:
         camera_model: Camera intrinsic model containing K and distortion coefficients.
         kp: Extracted keypoint locations as (N, 2) array of (x, y) coordinates.
         des: Feature descriptors as (N, D) array where D is descriptor dimension.
-        R: 3x3 rotation matrix (camera-to-world or world-to-camera depending on context).
-        t: 3x1 translation vector.
+        cam_T_world: Pose of the world in camera frame.
     """
 
     idx: int
@@ -247,6 +246,7 @@ class FrameLoader:
         camera_model: CameraModel,
         max_size: int | None = None,
         max_frames: int | None = None,
+        # TODO: add offset to skip first N images in dataset (skip calibration phase)
         ext: str = "png",
         undistort: bool = True,
     ):

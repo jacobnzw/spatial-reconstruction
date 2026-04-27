@@ -3,6 +3,9 @@
 from dataclasses import dataclass
 from typing import Literal
 
+# TODO: think about composable configs to avoid repeating fields
+# TODO: add SfM fields for depth-filter, pre-triangulation geometric masking, etc.
+
 
 @dataclass
 class SfMConfig:
