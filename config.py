@@ -98,6 +98,9 @@ class SLAMConfig:
     max_read_frames: int | None = None
     """Maximum number of frames to process from the dataset"""
 
+    offset_frames: int | None = 500
+    """Index of a frame to from which to progressively start loading the dataset."""
+
     undistort: bool = True
     """Whether to undistort images using the provided camera intrinsics and distortion coefficients"""
 

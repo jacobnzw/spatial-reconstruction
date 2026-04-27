@@ -235,9 +235,9 @@ class FrameLoader:
         camera_model: camera model to assign to each frame.
         max_size: Maximum size (in pixels) for the longest edge of the image. Images larger than this will be downscaled.
         max_frames: Optional maximum number of frames to load. If None, loads all frames in the directory.
+        offset_frames: Optional skip first offset_frames images in dataset.
         ext: Image file extension to look for (default "png").
-        undistort: If True, applies undistortion to fisheye images using the provided camera model parameters.
-        Only applicable if camera_model.model_type is FISHEYE.
+        undistort: If True, applies undistortion to images using the provided camera model parameters.
     """
 
     def __init__(
@@ -246,7 +246,7 @@ class FrameLoader:
         camera_model: CameraModel,
         max_size: int | None = None,
         max_frames: int | None = None,
-        # TODO: add offset to skip first N images in dataset (skip calibration phase)
+        offset_frames: int | None = None,
         ext: str = "png",
         undistort: bool = True,
     ):
@@ -255,8 +255,10 @@ class FrameLoader:
             raise ValueError(f"No *.{ext} images found in {img_dir}")
 
         self.img_paths = img_paths
-        self._max_frames = max_frames
+        self.max_frames = max_frames
+        self.offset_frames = offset_frames if offset_frames is not None else 0
         self.max_size = max_size
+        self.scale = 1.0
         self.camera_model = camera_model
         self.undistort = undistort
 
@@ -278,9 +280,9 @@ class FrameLoader:
             ImageData.pixels contains the loaded image as a (H, W, 3) uint8 array in RGB format,
             regardless of original format.
         """
-        for idx, path in enumerate(self.img_paths):
-            if self._max_frames and idx >= self._max_frames:
-                print(f"FrameLoader: Reached max_frames={self._max_frames}, stopping further loading.")
+        for idx, path in enumerate(self.img_paths[self.offset_frames :], start=self.offset_frames):
+            if self.max_frames and idx >= self.max_frames:
+                print(f"FrameLoader: Reached max_frames={self.max_frames}, stopping further loading.")
                 break
 
             # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order
@@ -288,16 +290,21 @@ class FrameLoader:
             if img is None:
                 raise FileNotFoundError(f"FrameLoader: Failed to load image: {path}")
 
-            # TODO: add undistort for pinhole
             camera_model = self.camera_model
-            if self.undistort and self.camera_model.model_type == CameraType.FISHEYE:
-                img, K_undistorted = self._undistort_fisheye(img)
+            if self.undistort:
+                if self.camera_model.model_type == CameraType.FISHEYE:
+                    img, K_undistorted = self._undistort_fisheye(img)
+                elif self.camera_model.model_type == CameraType.PINHOLE:
+                    img, K_undistorted = self._undistort_pinhole(img)
+                else:
+                    raise ValueError(f"Uknown {camera_model=}! Only PINHOLE and FISHEYE supported.")
+
                 # After undistortion, it's pinhole camera with new intrinsics K_undistorted and no distortion
                 camera_model = CameraModel(model_type=CameraType.PINHOLE, K=K_undistorted, dist=np.zeros(4))
 
             # Compute scale based on first image
             # Assumption: all images have the same resolution and thus the same scale factor applies to all
-            if idx == 0 and self.max_size is not None:
+            if idx == self.offset_frames and self.max_size is not None:
                 h, w = img.shape[:2]
                 self.scale = self.max_size / max(h, w) if max(h, w) > self.max_size else 1.0
 
@@ -325,6 +332,15 @@ class FrameLoader:
 
         undist = cv.remap(img, map1, map2, cv.INTER_LINEAR)
         return undist, new_K
+
+    def _undistort_pinhole(self, img: NDArray[Any]) -> tuple[NDArray[Any], NDArrayFloat]:
+        """Undistortion for pinhole camera model."""
+        h, w = img.shape[:2]
+
+        K, dist = self.camera_model.get_camera_matrix(), self.camera_model.dist
+        img_undist, K_new = cv.undistort(img, K, dist)
+
+        return img_undist, K_new
 
 
 class FeatureExtractor:

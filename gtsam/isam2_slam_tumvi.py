@@ -339,6 +339,7 @@ def make_keyframe_streamer(
         image_dir,
         max_size=cfg.max_size,
         max_frames=cfg.max_read_frames,
+        offset_frames=cfg.offset_frames,
         ext="png",
         camera_model=camera_model,
         undistort=undistort,
@@ -400,7 +401,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
         print(f"Processing keyframe {keyframe.idx}: {keyframe.path.name}")
 
         # === Bootstrap: first two keyframes ===
-        if prev_keyframe.idx == 0:
+        if prev_keyframe.idx == streamer.extractor.loader.offset_frames:
             print(f"  → Bootstrap with frames {prev_keyframe.idx} and {keyframe.idx}")
             bootstrap_from_two_views(prev_keyframe, keyframe, track_manager, point_cloud, matches=matches)
 
