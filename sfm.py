@@ -33,8 +33,8 @@ def bootstrap_from_two_views(
     img_1: ViewData,
     track_manager: TrackManager,
     point_cloud: PointCloud,
-    # TODO: avoid match recompute: add matches = None, make match_fn=None, one required
-    match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
+    match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]] | None = None,
+    matches: NDArrayInt | None = None,
 ):
     """Computes two-view baseline estimate of 3D points and camera poses.
 
@@ -54,6 +54,7 @@ def bootstrap_from_two_views(
         match_fn: Callable that takes two ImageData objects and returns a tuple of
                   (descriptors: NDArrayFloat, matches: NDArrayInt) where matches
                   contains pairs of keypoint indices [kp_0_idx, kp_1_idx]
+        matches: Matches between keypoints in views in img_0 and img_1.
 
     Returns:
         None. Modifies in-place: updates track_manager with new tracks, point_cloud
@@ -66,12 +67,16 @@ def bootstrap_from_two_views(
           triangulated are included
         - Camera intrinsics are extracted from img_0 and assumed to be identical for img_1
     """
+    if matches is None and match_fn is None:
+        raise ValueError("One of matches or match_fn must be supplied.")
+
     # Get camera intrinsics from img_0
     K = img_0.camera_model.get_camera_matrix()
 
-    # Match key points (via descriptors)
-    print(f"baseline: Computing matches from {img_0.idx}:{img_0.path.name} to {img_1.idx}:{img_1.path.name}")
-    _, matches = match_fn(img_0, img_1)
+    # Match key points (via descriptors) if not given
+    if matches is None:
+        print(f"baseline: Computing matches from {img_0.idx}:{img_0.path.name} to {img_1.idx}:{img_1.path.name}")
+        _, matches = match_fn(img_0, img_1)
 
     # extract corresponding pixel coordinates
     pts0, pts1 = img_0.kp[matches[:, 0]], img_1.kp[matches[:, 1]]  # ty:ignore[not-subscriptable]
@@ -181,8 +186,8 @@ def add_view(
     img_ref: ViewData,
     track_manager: TrackManager,
     point_cloud: PointCloud,
-    # TODO: avoid match recompute: add matches = None, make match_fn=None, one required
-    match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
+    match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]] | None = None,
+    matches: NDArrayInt | None = None,
 ):
     """Adds 3D points from new view using PnP and triangulation.
 
@@ -194,11 +199,17 @@ def add_view(
         track_manager: Track manager. Required parameter.
         point_cloud: Point cloud. Required parameter.
         match_fn: Keypoint matcher function. Required parameter.
+        matches: Matches between keypoints in views in img_0 and img_1.
     """
-    # TODO: Really need to recompute matches ??
-    # Compute KP matches from ref image to new image
-    print(f"add_view: Computing matches from {img_ref.idx}:{img_ref.path.name} to {img_new.idx}:{img_new.path.name}")
-    _, matches = match_fn(img_ref, img_new)
+    if matches is None and match_fn is None:
+        raise ValueError("One of matches or match_fn must be supplied.")
+
+    # Compute KP matches from ref image to new image if not supplied
+    if matches is None:
+        print(
+            f"add_view: Computing matches from {img_ref.idx}:{img_ref.path.name} to {img_new.idx}:{img_new.path.name}"
+        )
+        _, matches = match_fn(img_ref, img_new)
 
     # add new img KPs, that are matched to from tracked ref img KPs, to current tracks (3D pts)
     # returns track_ids and (un)tracked KPs in the new image; track_ids used as indices to point cloud
