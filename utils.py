@@ -121,7 +121,7 @@ class ViewData:
     """Represents a single image with extracted features and estimated camera pose.
 
     Stores image metadata, pixel data, extracted keypoints and descriptors,
-    and the estimated camera pose (rotation and translation).
+    and the estimated camera extrinsics (world-to-camera transformation).
 
     Attributes:
         idx: Unique image index in the reconstruction.
@@ -130,7 +130,7 @@ class ViewData:
         camera_model: Camera intrinsic model containing K and distortion coefficients.
         kp: Extracted keypoint locations as (N, 2) array of (x, y) coordinates.
         des: Feature descriptors as (N, D) array where D is descriptor dimension.
-        cam_T_world: Pose of the world in camera frame.
+        cam_T_world: World-to-camera transformation (camera extrinsics). Transforms world points to camera frame: X_cam = R @ X_world + t
     """
 
     idx: int
@@ -142,7 +142,7 @@ class ViewData:
     # Extracted keypoints and descriptors
     kp: NDArrayFloat | None = None
     des: NDArrayFloat | None = None
-    # Estimated camera pose; world-to-camera transform
+    # Estimated camera extrinsics, i.e world-to-camera transform; output of cv.solvePnP etc.
     cam_T_world: SE3Pose | None = None
 
     def _check_pose(self):
@@ -152,6 +152,11 @@ class ViewData:
     @property
     def has_pose(self) -> bool:
         return self.cam_T_world is not None
+
+    @property
+    def world_T_cam(self) -> SE3Pose:
+        """Camera's pose in world frame."""
+        return self.cam_T_world.inv()  # ty:ignore[possibly-missing-attribute]
 
     @property
     def R(self) -> NDArrayFloat:
@@ -185,16 +190,15 @@ class ViewData:
         K = self.camera_model.get_camera_matrix(rescaled=True)
         return K @ self.pose_matrix
 
-    def set_pose(self, R, t):
+    def set_extrinsics(self, R, t):
+        """Set camera extrinsics, i.e. cam_T_world."""
         rotation = Rotation.from_matrix(R)
         self.cam_T_world = SE3Pose.from_components(t.squeeze(), rotation)
 
     def get_camera_center(self) -> NDArrayFloat:
         """Get the camera center in world coordinates."""
         self._check_pose()
-        cam_center = np.zeros((3,))  # origin in camera coordinates
-        # -R.T @ t
-        return self.cam_T_world.inv().apply(cam_center)  # ty:ignore[possibly-missing-attribute]
+        return self.world_T_cam.translation  # -R.T @ t
 
     def transform_to_camera_frame(self, world_pts: NDArrayFloat) -> NDArrayFloat:
         """Transform points from world coordinates to this camera's coordinate frame."""
@@ -210,7 +214,7 @@ class ViewData:
         """
         self._check_pose()
         # self.R.T @ (camera_pts.T - self.t)
-        return self.cam_T_world.inv().apply(camera_pts)  # ty:ignore[possibly-missing-attribute]
+        return self.world_T_cam.apply(camera_pts)
 
     def project_to_image_plane(self, world_pts: NDArrayFloat) -> NDArrayFloat:
         """Project 3D world points to this camera's image plane (2D pixel coordinates).
@@ -323,6 +327,7 @@ class FrameLoader:
         h, w = img.shape[:2]
 
         # Create the undistortion + rectification map once (or cache it)
+        # FIXME: might need to re-enable this
         # new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(
         #     self.camera_model.K, self.camera_model.dist, (w, h), np.eye(3), balance=balance, fov_scale=fov_scale
         # )
@@ -335,6 +340,7 @@ class FrameLoader:
 
     def _undistort_pinhole(self, img: NDArray[Any]) -> tuple[NDArray[Any], NDArrayFloat]:
         """Undistortion for pinhole camera model."""
+        # FIXME: per opencv tutorial
         h, w = img.shape[:2]
 
         K, dist = self.camera_model.get_camera_matrix(), self.camera_model.dist
@@ -792,6 +798,7 @@ class PointCloud:
         yield from self._data.items()
 
 
+# TODO: use the new ViewData convenience funcs to express the calculations
 class ReconIO:
     """Handles saving and loading of reconstruction data (PLY files and gsplat tensors)."""
 

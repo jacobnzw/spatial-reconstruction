@@ -84,7 +84,7 @@ def bootstrap_from_two_views(
     # compute Essential matrix using camera intrinsics; mask indicates inliers
     E, mask = cv.findEssentialMat(pts0, pts1, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
 
-    # estimate camera pose & triangulate 3D points; mask refined to include only triangulatable points
+    # Estimate camera extrinsics & triangulate 3D points; mask for inliers passing epipolar constraint
     retval, R, t, mask, points_4d = cv.recoverPose(
         E=E,
         points1=pts0,
@@ -106,9 +106,11 @@ def bootstrap_from_two_views(
 
     point_cloud.add_points(track_ids_added, points_3d)
 
-    # Update image data structs w/ new estimates: img_0 is at origin, img_1 is at (R, t)
-    img_0.set_pose(np.eye(3), np.zeros((3,)))
-    img_1.set_pose(R, t)
+    # Estimated camera extrinsics, i.e. world-to-camera transform, conventionally named cam_T_world
+    # This is NOT the camera's pose in the world frame!
+    # img_0 is set to be at the world origin, img_1 is at (R, t)
+    img_0.set_extrinsics(np.eye(3), np.zeros((3,)))
+    img_1.set_extrinsics(R, t)
 
     print(f"Baseline constructed with {len(points_3d)} 3D points.")
 
@@ -138,9 +140,10 @@ def _estimate_pose_pnp(world_points: NDArrayFloat, image_points: NDArrayFloat, i
         f"Pose estimation succeeded with {len(inliers)} inliers (Inlier ratio: {len(inliers) / len(world_points):.2f})"
     )
 
-    # Estimated pose is relative to 3D point frame (i.e. the world frame); no pose composition required
+    # Estimated camera extrinsics, i.e. world-to-camera transform, conventionally named cam_T_world
+    # This is NOT the camera's pose in the world frame!
     R = cv.Rodrigues(rvec)[0]
-    img.set_pose(R, tvec)
+    img.set_extrinsics(R, tvec)
 
     return inliers.ravel()
 
@@ -230,7 +233,7 @@ def add_view(
     track_manager.add_keypoints_to_tracks(kp_keys_seen, track_ids_seen)
 
     # Translation vector between the new image and the reference image
-    t_ref_new = (img_ref.cam_T_world * img_new.cam_T_world.inv()).translation  # ty:ignore[possibly-missing-attribute]
+    t_ref_new = (img_ref.cam_T_world * img_new.world_T_cam).translation  # ty:ignore[possibly-missing-attribute]
     print(f"DEBUG: Relative translation from ref to new image: {np.linalg.norm(t_ref_new):.2f}")
 
     points_3d, kp_key_pairs = _triangulate_new_points(img_ref, img_new, untracked_matches)
@@ -345,7 +348,7 @@ def main(cfg: SfMConfig = SfMConfig()):
 
     # Load all images & extract features
     print(f"Extracting {cfg.feature_type.upper()} features from {img_dir}...")
-    loader = FrameLoader(img_dir, max_size=cfg.max_size, ext="jpg", camera_model=camera_model)
+    loader = FrameLoader(img_dir, max_size=cfg.max_size, ext="jpg", camera_model=camera_model, undistort=cfg.undistort)
     feature_extractor = FeatureExtractor(cfg, loader)
     image_store = FeatureStore(feature_extractor)
     track_manager = TrackManager()

@@ -83,7 +83,7 @@ class KeyframeStreamer:
         self._keyframe_window = deque(maxlen=max_window_keyframes)
 
     def _is_keyframe(self, frame: ViewData) -> KeyframeInfo | None:
-        pnp_min = 30  # minimum points for reliable pose estimation using PnP
+        pnp_min = 20  # minimum points for reliable pose estimation using PnP
         emat_min = 10  # minimum points for reliable essential matrix estimation (in triangulation)
 
         last_kf: ViewData = self._keyframe_window[-1]  # pick last keyframe
@@ -229,8 +229,7 @@ def visual_ISAM2_plot(result):
 
 def gtsam_world_T_cam(img: ViewData) -> Pose3:
     # Pose3 represents cam in world frame: world_T_cam; unlike ViewData.cam_T_world !
-    world_T_cam = img.cam_T_world.inv()  # ty:ignore[possibly-missing-attribute]
-    R, t = world_T_cam.rotation.as_matrix(), world_T_cam.translation
+    R, t = img.world_T_cam.rotation.as_matrix(), img.world_T_cam.translation
     return Pose3(Rot3(R), Point3(t))
 
 
@@ -442,6 +441,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
 
         # === DEPTH FILTER (critical for chirality) ===
         # TODO: remove if depth threshold unified with triangulation
+        # might get triggered if ISAM2 re-estimates the camera poses and some points get moved behind
         new_tracks = track_manager.get_triangulated_view_tracks(keyframe.idx)
         for tid in list(new_tracks):
             pt_world = point_cloud.get_point(tid)

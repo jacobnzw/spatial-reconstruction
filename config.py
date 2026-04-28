@@ -42,6 +42,9 @@ class SfMConfig:
     dataset: str = "statue"
     """Dataset name (subdirectory in data/raw/)"""
 
+    undistort: bool = True
+    """Whether to undistort images using the provided camera intrinsics and distortion coefficients"""
+
     # View graph construction
     min_inliers: int = 50
     """Minimum number of inliers to consider two views as overlapping"""

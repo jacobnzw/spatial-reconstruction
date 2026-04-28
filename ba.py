@@ -4,10 +4,10 @@ import pycolmap
 import pycolmap._core.cost_functions as cost_functions
 
 from utils import (
-    ViewData,
     FeatureStore,
     PointCloud,
     TrackManager,
+    ViewData,
 )
 
 
@@ -120,7 +120,7 @@ def bundle_adjustment(
         # Convert quaternion back to rotation matrix
         R = pose.rotation.matrix()
         t = pose.translation
-        images[img_idx].set_pose(R, t)
+        images[img_idx].set_extrinsics(R, t)
 
     # Update 3D points
     for track_id, point_3d in point_params.items():
@@ -233,4 +233,4 @@ def bundle_adjustment_pycolmap(
         # Extract optimized R and t
         opt_R = image.cam_from_world().rotation.matrix()
         opt_t = image.cam_from_world().translation
-        feature_store[image_id].set_pose(opt_R, opt_t)
+        feature_store[image_id].set_extrinsics(opt_R, opt_t)

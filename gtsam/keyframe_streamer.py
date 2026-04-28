@@ -19,6 +19,9 @@ with app.setup:
     from config import SLAMConfig
     from utils import CameraModel, CameraType, FrameLoader, FeatureExtractor, TrackManager, ViewData, has_overlap, make_keypoint_matcher
 
+    from functools import partial
+    from copy import deepcopy
+
 
 @app.cell
 def _():
@@ -208,19 +211,20 @@ def _():
 @app.cell
 def _():
     def draw_matches(img0, img1, matcher, K=None):
-        kp0 = [cv.KeyPoint(x=p[0], y=p[1], size=1) for p in img0.kp]
-        kp1 = [cv.KeyPoint(x=p[0], y=p[1], size=1) for p in img1.kp]
-
         dist, matches = matcher(img0, img1)
         print(f"Found {len(matches)} matches")
         if K is not None:
-            _, mask = cv.findEssentialMat(img0.kp.T, img1.kp.T, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
+            # print(f"{img0.kp.shape=} {img1.kp.shape=}")
+            pts0, pts1 = img0.kp[matches[:, 0]], img1.kp[matches[:, 1]]
+            _, mask = cv.findEssentialMat(pts0, pts1, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
             matches = matches[mask.ravel() > 0]
-        print(f"{len(matches)} matches after geometric filtering")
+            print(f"{len(matches)} matches after geometric filtering")
     
         matches = [
-            cv.DMatch(_queryIdx=qm, _trainIdx=tm, _imgIdx=0, _distance=0.0) for d, (qm, tm) in zip(dist, matches)
+            cv.DMatch(_queryIdx=qm, _trainIdx=tm, _imgIdx=0, _distance=d) for d, (qm, tm) in zip(dist, matches)
         ]
+        kp0 = [cv.KeyPoint(x=p[0], y=p[1], size=1) for p in img0.kp]
+        kp1 = [cv.KeyPoint(x=p[0], y=p[1], size=1) for p in img1.kp]
         img_matches = cv.drawMatches(
             img0.pixels, kp0, img1.pixels, kp1, matches, None, flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
         )
@@ -232,31 +236,18 @@ def _():
         camchain_file = yaml.safe_load((Path(dataset_path) / "dso" / "camchain.yaml").open())
         return np.array(camchain_file[cam_key]["intrinsics"]), np.array(camchain_file[cam_key]["distortion_coeffs"])
 
-    def undistort_tumvi_image(img: np.ndarray, K: np.ndarray, D: np.ndarray, balance=0.0) -> np.ndarray:
+    def undistort_tumvi_image(img: np.ndarray, K: np.ndarray, D: np.ndarray, balance=0.0, fov_scale=1.0) -> np.ndarray:
         """Proper undistortion for TUM-VI equidistant fisheye."""
         h, w = img.shape[:2]
 
         # Create the undistortion + rectification map once (or cache it)
-        # new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, (w, h), np.eye(3), balance=balance)
-        new_K = K
+        new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, (w, h), np.eye(3), balance=balance, fov_scale=fov_scale)
+        # new_K = K
         map1, map2 = cv.fisheye.initUndistortRectifyMap(K, D, np.eye(3), new_K, (w, h), cv.CV_16SC2)
 
         undist = cv.remap(img, map1, map2, cv.INTER_LINEAR)
         return undist
 
-    return draw_matches, load_intrinsics, undistort_tumvi_image
-
-
-@app.cell
-def _(
-    cfg,
-    dataset_path,
-    draw_matches,
-    image_dir,
-    kp_matcher,
-    load_intrinsics,
-    undistort_tumvi_image,
-):
     def load_image_pair(img0_idx, img1_idx, image_dir, cfg, camera_model):
         loader = FrameLoader(
             image_dir,
@@ -267,12 +258,43 @@ def _(
             undistort=False,
         )
         extractor = FeatureExtractor(cfg, loader)
-
-        img0, img1 = extractor(loader(0)), extractor(loader(1))
-
+        img0, img1 = extractor(loader(img0_idx)), extractor(loader(img1_idx))
         return img0, img1
 
+    def plot_img_compared(img0, img1, vertical=True):
+        """Image comparison plot"""
+        if vertical:
+            fig, ax = plt.subplots(2, 1, figsize=(14, 10))
+        else:
+            fig, ax = plt.subplots(1, 2, figsize=(10, 14))
+        ax[0].axis("off")
+        ax[0].imshow(img0)
+        ax[1].axis("off")
+        ax[1].imshow(img1)
+        plt.tight_layout()
+        plt.show()
 
+    return (
+        draw_matches,
+        load_image_pair,
+        load_intrinsics,
+        plot_img_compared,
+        undistort_tumvi_image,
+    )
+
+
+@app.cell
+def _(
+    cfg,
+    dataset_path,
+    draw_matches,
+    image_dir,
+    kp_matcher,
+    load_image_pair,
+    load_intrinsics,
+    plot_img_compared,
+    undistort_tumvi_image,
+):
     # Undistort images: load camera matrix and distortion coefficients
     k_vec, dist_vec = load_intrinsics(dataset_path)
     fx, fy, cx, cy = k_vec
@@ -285,36 +307,25 @@ def _(
     )
 
     # img0, img1 = keyframe_pairs[0]
-    idx0, idx1 = 0, 231
+    idx0, idx1 = 530, 540
     camera_model = CameraModel(CameraType.FISHEYE, K, dist_vec)
     img0, img1 = load_image_pair(idx0, idx1, image_dir, cfg, camera_model)
     img_matches = draw_matches(img0, img1, kp_matcher, K)
 
-
-    from functools import partial
-
-    undistortion_fn = partial(undistort_tumvi_image, K=K, D=dist_vec, balance=0.0)
-
-    from copy import deepcopy
-
-    img0_undist = deepcopy(img0)
+    undistortion_fn = partial(undistort_tumvi_image, K=K, D=dist_vec, balance=0.0, fov_scale=0.5)
+    img0_undist, img1_undist = deepcopy(img0), deepcopy(img1)
     img0_undist.pixels = undistortion_fn(img0.pixels)
-    img1_undist = deepcopy(img1)
     img1_undist.pixels = undistortion_fn(img1.pixels)
 
     img_matches_undist = draw_matches(img0_undist, img1_undist, kp_matcher, K)
 
-    # Plot vertically stacked
-    def plot_matches_compared():
-        fig, ax = plt.subplots(2, 1, figsize=(14, 10))
-        ax[0].axis("off")
-        ax[0].imshow(img_matches)
-        ax[1].axis("off")
-        ax[1].imshow(img_matches_undist)
-        plt.tight_layout()
-        plt.show()
+    plot_img_compared(img_matches, img_matches_undist)
+    return img0, img1
 
-    plot_matches_compared()
+
+@app.cell
+def _(img0, img1, plot_img_compared):
+    plot_img_compared(img0.pixels, img1.pixels, vertical=False)
     return
 
 
