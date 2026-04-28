@@ -85,6 +85,7 @@ def bootstrap_from_two_views(
     E, mask = cv.findEssentialMat(pts0, pts1, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
 
     # Estimate camera extrinsics & triangulate 3D points; mask for inliers passing epipolar constraint
+    # t known only up to scale -> unit length!
     retval, R, t, mask, points_4d = cv.recoverPose(
         E=E,
         points1=pts0,
@@ -112,7 +113,7 @@ def bootstrap_from_two_views(
     img_0.set_extrinsics(np.eye(3), np.zeros((3,)))
     img_1.set_extrinsics(R, t)
 
-    print(f"Baseline constructed with {len(points_3d)} 3D points.")
+    print(f"Bootstrapped with {len(points_3d)} 3D points.")
 
 
 def _estimate_pose_pnp(world_points: NDArrayFloat, image_points: NDArrayFloat, img: ViewData):
@@ -234,7 +235,7 @@ def add_view(
 
     # Translation vector between the new image and the reference image
     t_ref_new = (img_ref.cam_T_world * img_new.world_T_cam).translation  # ty:ignore[possibly-missing-attribute]
-    print(f"DEBUG: Relative translation from ref to new image: {np.linalg.norm(t_ref_new):.2f}")
+    print(f"DEBUG: Baseline between ref and new image: {np.linalg.norm(t_ref_new):.2f}")
 
     points_3d, kp_key_pairs = _triangulate_new_points(img_ref, img_new, untracked_matches)
 

@@ -195,6 +195,19 @@ class ViewData:
         rotation = Rotation.from_matrix(R)
         self.cam_T_world = SE3Pose.from_components(t.squeeze(), rotation)
 
+    def set_pose(self, R, t):
+        """Set pose of camera in world frame, i.e. world_T_cam.
+
+        Args:
+            R: rotation matrix of the camera in world frame.
+            t: translation vector of the camera in world frame.
+        """
+        # The input R and t in relate to the camera pose, not the extrinsics!
+        # But since we store only extrinsics, we need .inv()
+        rotation = Rotation.from_matrix(R)
+        world_T_cam = SE3Pose.from_components(t.squeeze(), rotation)
+        self.cam_T_world = world_T_cam.inv()
+
     def get_camera_center(self) -> NDArrayFloat:
         """Get the camera center in world coordinates."""
         self._check_pose()
