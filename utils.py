@@ -213,6 +213,23 @@ class ViewData:
         self._check_pose()
         return self.world_T_cam.translation  # -R.T @ t
 
+    def get_undistorted_keypoints(self) -> NDArrayFloat:
+        """Undistort keypoint pixel coordinates.
+
+        Returns:
+            (N, 2) array of undistorted keypoint coordinates in pixel space.
+        """
+        K, dist = self.camera_model.get_camera_matrix(), self.camera_model.dist
+
+        if self.camera_model.model_type == CameraType.FISHEYE:
+            # undistortPoints returns normalized coords, need to reproject to pixels
+            kp_normalized = cv.fisheye.undistortPoints(self.kp, K, dist, R=None, P=K)
+            return kp_normalized.squeeze()  # (N, 1, 2) -> (N, 2)
+        else:  # PINHOLE
+            # Same for pinhole: P=K to get pixel coordinates back
+            kp_normalized = cv.undistortPoints(self.kp, K, dist, R=None, P=K)
+            return kp_normalized.squeeze()  # (N, 1, 2) -> (N, 2)
+
     def transform_to_camera_frame(self, world_pts: NDArrayFloat) -> NDArrayFloat:
         """Transform points from world coordinates to this camera's coordinate frame."""
         self._check_pose()
@@ -336,30 +353,37 @@ class FrameLoader:
             yield ViewData(idx, path, img, camera_model=camera_model)
 
     def _undistort_fisheye(self, img: NDArray[Any], balance=0.0, fov_scale=1.0) -> tuple[NDArray[Any], NDArrayFloat]:
-        """Undistortion for equidistant fisheye."""
+        """Undistortion for equidistant fisheye.
+
+        Args:
+            balance: float A value of 0.0 crops aggressively to remove all black borders, keeping only the "good"
+            pixels. A value of 1.0 tries to preserve the entire original field of view, resulting in a larger,
+            more zoomed-out image with significant black areas in the corners.
+        """
         h, w = img.shape[:2]
 
         # Create the undistortion + rectification map once (or cache it)
-        # FIXME: might need to re-enable this
-        # new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(
-        #     self.camera_model.K, self.camera_model.dist, (w, h), np.eye(3), balance=balance, fov_scale=fov_scale
-        # )
+        new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(
+            self.camera_model.K, self.camera_model.dist, (w, h), np.eye(3), balance=balance, fov_scale=fov_scale
+        )
         K, dist = self.camera_model.get_camera_matrix(), self.camera_model.dist
-        new_K = K
-        map1, map2 = cv.fisheye.initUndistortRectifyMap(K, dist, np.eye(3), new_K, (w, h), cv.CV_16SC2)
+        img_undist = cv.fisheye.undistortImage(img, K, dist, Knew=new_K, new_size=(w, h))
+        return img_undist, new_K  # ty:ignore[invalid-return-type]
 
-        undist = cv.remap(img, map1, map2, cv.INTER_LINEAR)
-        return undist, new_K
+    def _undistort_pinhole(self, img: NDArray[Any], alpha=0.0) -> tuple[NDArray[Any], NDArrayFloat]:
+        """Undistortion for pinhole camera model.
 
-    def _undistort_pinhole(self, img: NDArray[Any]) -> tuple[NDArray[Any], NDArrayFloat]:
-        """Undistortion for pinhole camera model."""
-        # FIXME: per opencv tutorial
+        Args:
+            alpha: float  If the scaling parameter alpha=0, it returns undistorted image with minimum unwanted pixels.
+            So it may even remove some pixels at image corners. If alpha=1, all pixels are retained with some extra
+            black borders.
+        """
         h, w = img.shape[:2]
-
         K, dist = self.camera_model.get_camera_matrix(), self.camera_model.dist
-        img_undist, K_new = cv.undistort(img, K, dist)
+        new_K, roi = cv.getOptimalNewCameraMatrix(K, dist, (w, h), alpha=alpha, newImgSize=(w, h))
+        img_undist = cv.undistort(img, K, dist, newCameraMatrix=new_K)
 
-        return img_undist, K_new
+        return img_undist, new_K  # ty:ignore[invalid-return-type]
 
 
 class FeatureExtractor:

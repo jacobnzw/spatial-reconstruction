@@ -76,10 +76,13 @@ def bootstrap_from_two_views(
     # Match key points (via descriptors) if not given
     if matches is None:
         print(f"baseline: Computing matches from {img_0.idx}:{img_0.path.name} to {img_1.idx}:{img_1.path.name}")
-        _, matches = match_fn(img_0, img_1)
+        _, matches = match_fn(img_0, img_1)  # ty:ignore[call-non-callable]
 
     # extract corresponding pixel coordinates
     pts0, pts1 = img_0.kp[matches[:, 0]], img_1.kp[matches[:, 1]]  # ty:ignore[not-subscriptable]
+    # FIXME: undistorted keypoints cause mess on statue_orbit
+    # pts0, pts1 = img_0.get_undistorted_keypoints(), img_1.get_undistorted_keypoints()
+    # pts0, pts1 = pts0[matches[:, 0]], pts1[matches[:, 1]]  # ty:ignore[not-subscriptable]
 
     # compute Essential matrix using camera intrinsics; mask indicates inliers
     E, mask = cv.findEssentialMat(pts0, pts1, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
@@ -159,15 +162,22 @@ def _triangulate_new_points(img_ref: ViewData, img_new: ViewData, untracked_matc
         associated with any existing track (i.e. new tracks to be added via triangulation).
     """
     assert len(untracked_matches) >= 5, "At least 5 points required for essential matrix estimation"
+
     # Filter out geometric outliers that don't satisfy the epipolar constraint
-    pts_ref, pts_new = img_ref.kp[untracked_matches[:, 0]].T, img_new.kp[untracked_matches[:, 1]].T  # ty:ignore[not-subscriptable]
+    # alternative: only cv.fisheye.undistortPoints() then find E-mat w/ cameraMatrix=np.eye(3)
+    # pts_ref, pts_new = img_ref.get_undistorted_keypoints(), img_new.get_undistorted_keypoints()  # ty:ignore[not-subscriptable]
+    # pts_ref, pts_new = pts_ref[untracked_matches[:, 0]], pts_new[untracked_matches[:, 1]]
+    pts_ref, pts_new = img_ref.kp[untracked_matches[:, 0]], img_new.kp[untracked_matches[:, 1]]  # ty:ignore[not-subscriptable]
+
+    # If undistortion applied during image loading, K is the corrected camera matrix for the undistorted image
     K = img_ref.camera_model.get_camera_matrix()  # assume same intrinsics for both images
-    _, mask = cv.findEssentialMat(pts_ref.T, pts_new.T, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
+    _, mask = cv.findEssentialMat(pts_ref, pts_new, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
     inliers = mask.ravel() > 0
+
     # Projection matrices: from 3D world to camera 2D image plane
     P_ref, P_new = img_ref.projection_matrix, img_new.projection_matrix
     # Triangulate the untracked KPs in the new image that match to KPs in the ref image, to get new 3D points
-    points_4d = cv.triangulatePoints(P_ref, P_new, pts_ref[:, inliers], pts_new[:, inliers])
+    points_4d = cv.triangulatePoints(P_ref, P_new, pts_ref[inliers].T, pts_new[inliers].T)
     points_3d = (points_4d[:3] / points_4d[3]).T
     untracked_matches = untracked_matches[inliers]
 
