@@ -257,6 +257,8 @@ def _():
             camera_model=camera_model,
             undistort=False,
         )
+        cfg.feature_type = "disk"
+        cfg.matcher_type = "lg"
         extractor = FeatureExtractor(cfg, loader)
         img0, img1 = extractor(loader(img0_idx)), extractor(loader(img1_idx))
         return img0, img1
@@ -320,7 +322,7 @@ def _(
     img_matches_undist = draw_matches(img0_undist, img1_undist, kp_matcher, K)
 
     plot_img_compared(img_matches, img_matches_undist)
-    return img0, img1
+    return K, dist_vec, img0, img1
 
 
 @app.cell
@@ -330,7 +332,30 @@ def _(img0, img1, plot_img_compared):
 
 
 @app.cell
-def _():
+def _(K, dist_vec, img0):
+    # print(f"{img0.kp.shape=} {img0.kp.dtype=} {K.dtype=}, {dist_vec.dtype=}")
+
+    img0_kp = img0.kp[:, np.newaxis, :]
+    img0_kp_undist = cv.fisheye.undistortPoints(img0_kp, K, dist_vec, P=K).squeeze()
+    print(f"{img0_kp_undist.shape=} {img0_kp.shape=}")
+    # img0_kp_undist = cv.undistortPoints(img0.kp, K, dist_vec, R=np.eye(3), P=K).squeeze()
+
+    # diff_undist = np.linalg.norm(img0_kp_undist - img0.kp, axis=1)
+    diff_undist = np.abs(img0_kp_undist - img0.kp)
+    np.min(diff_undist), np.median(diff_undist), np.max(diff_undist)
+    print(f"{K=}\n{img0.kp.max()=}\n{img0_kp_undist.max()=}")
+    # extremes = diff_undist > 1e4
+    # diff_undist[extremes]
+    # img0_kp[extremes]
+    # img0_kp_undist[extremes]
+    # np.percentile(diff_undist, [0, 25, 50, 75, 100])
+    # plt.hist(diff_undist, log=True)
+    return
+
+
+@app.cell
+def _(img0):
+    img0.pixels.shape
     return
 
 
