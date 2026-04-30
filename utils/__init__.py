@@ -11,7 +11,7 @@ All public APIs are re-exported at the package level for backward compatibility.
 from .camera import CameraModel, CameraType, NDArrayFloat, NDArrayInt, calibrate_camera
 
 # Features module
-from .features import FeatureExtractor, FeatureStore, KPKey, device, make_keypoint_matcher
+from .features import FeatureExtractor, FeatureStore, KPKey, make_keypoint_matcher
 
 # View graph module
 from .graph import ViewEdge, ViewGraph, construct_view_graph, has_overlap
@@ -42,7 +42,6 @@ __all__ = [
     "FeatureExtractor",
     "FeatureStore",
     "make_keypoint_matcher",
-    "device",
     "KPKey",
     # Tracks
     "TrackManager",

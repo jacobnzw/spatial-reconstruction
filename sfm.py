@@ -10,10 +10,6 @@ from rich.pretty import pprint
 from ba import bundle_adjustment
 from config import SfMConfig
 from utils import (
-    CameraModel,
-    CameraType,
-    FeatureExtractor,
-    FeatureStore,
     FrameLoader,
     NDArrayFloat,
     NDArrayInt,
@@ -21,11 +17,9 @@ from utils import (
     ReconIO,
     TrackManager,
     ViewData,
-    ViewEdge,
-    calibrate_camera,
-    construct_view_graph,
-    make_keypoint_matcher,
 )
+from utils.features import FeatureExtractor, FeatureStore, make_keypoint_matcher
+from utils.graph import ViewEdge, construct_view_graph
 
 
 def bootstrap_from_two_views(
@@ -338,7 +332,8 @@ def process_graph_component(
     return leftover_edges, U
 
 
-# TODO: nice logging by levels
+# TODO: nicer logging by levels via loguru; think about what to log, consistent per-frame processed stats?
+# TODO: log camera intrinsics
 def main(cfg: SfMConfig = SfMConfig()):
     """Run Structure from Motion pipeline with configurable feature extraction and matching.
 
@@ -350,24 +345,20 @@ def main(cfg: SfMConfig = SfMConfig()):
     pprint(cfg, expand_all=True)
     print()
 
-    K, dist = calibrate_camera()  # High sensitivity to K! Even K*= 0.999 makes huge diff sometimes!
-    camera_model = CameraModel(model_type=CameraType.PINHOLE, K=K, dist=dist)
-
-    img_dir = Path("data") / "raw" / cfg.dataset
-    out_dir = Path("data") / "out" / cfg.dataset
+    out_dir = Path("data") / "out" / cfg.loader.dataset
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Load all images & extract features
-    print(f"Extracting {cfg.feature_type.upper()} features from {img_dir}...")
-    loader = FrameLoader(img_dir, max_size=cfg.max_size, ext="jpg", camera_model=camera_model, undistort=cfg.undistort)
-    feature_extractor = FeatureExtractor(cfg, loader)
+    print(f"Extracting {cfg.features.feature_type.upper()} features from {cfg.loader.img_dir}...")
+    loader = FrameLoader(cfg.loader)
+    feature_extractor = FeatureExtractor(cfg.features, loader)
     image_store = FeatureStore(feature_extractor)
     track_manager = TrackManager()
     point_cloud = PointCloud()
     exporter = ReconIO(point_cloud, image_store, track_manager)
 
     # Create keypoint matcher with appropriate parameters
-    kp_matcher = make_keypoint_matcher(cfg)
+    kp_matcher = make_keypoint_matcher(cfg.matcher)
 
     print("Constructing view graph...")
     view_graph = construct_view_graph(image_store, kp_matcher, min_inliers=cfg.min_inliers)
@@ -385,7 +376,7 @@ def main(cfg: SfMConfig = SfMConfig()):
     #     if not U:
     #         break
 
-    basename = f"{cfg.dataset}_{cfg.feature_type}_{cfg.matcher_type}"
+    basename = f"{cfg.loader.dataset}_{cfg.features.feature_type}_{cfg.matcher.matcher_type}"
     print(f"Saving initial reconstruction to {out_dir / f'{basename}.ply'}...")
     exporter.save_ply(filename=out_dir / f"{basename}.ply")
 

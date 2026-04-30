@@ -12,6 +12,41 @@ from .camera import CameraModel, CameraType, NDArrayFloat
 
 
 @dataclass
+class FrameLoaderConfig:
+    camera_model: CameraModel
+
+    # Dataset
+    pre_path: str
+    """Path pre-fix"""
+    dataset: str
+    """Dataset name"""
+    post_path: str
+    """Path post-fix"""
+    ext: str
+    """Image file extension to expect in img_dir_path directory"""
+
+    @property
+    def img_dir(self) -> Path:
+        return Path(self.pre_path) / self.dataset / self.post_path
+
+    @property
+    def img_paths(self) -> list[Path]:
+        return sorted(list(Path(self.img_dir).glob(f"*.{self.ext}")))
+
+    max_read_frames: int | None = None
+    """Maximum number of frames to process from the dataset"""
+
+    offset_frames: int | None = None
+    """Index of a frame to from which to progressively start loading the dataset."""
+
+    undistort: bool = True
+    """Whether to undistort images using the provided camera intrinsics and distortion coefficients"""
+
+    max_size: int = 1024
+    """Maximum image dimension (images will be resized if larger)"""
+
+
+@dataclass
 class ViewData:
     """Represents a single image with extracted features and estimated camera pose.
 
@@ -169,27 +204,18 @@ class FrameLoader:
         undistort: If True, applies undistortion to images using the provided camera model parameters.
     """
 
-    def __init__(
-        self,
-        img_dir: Path,
-        camera_model: CameraModel,
-        max_size: int | None = None,
-        max_frames: int | None = None,
-        offset_frames: int | None = None,
-        ext: str = "png",
-        undistort: bool = True,
-    ):
-        img_paths = sorted(list(Path(img_dir).glob(f"*.{ext}")))
+    def __init__(self, cfg: FrameLoaderConfig):
+        img_paths = cfg.img_paths
         if not img_paths:
-            raise ValueError(f"No *.{ext} images found in {img_dir}")
+            raise ValueError(f"No *.{cfg.ext} images found in {cfg.img_dir}")
 
         self.img_paths = img_paths
-        self.max_frames = max_frames
-        self.offset_frames = offset_frames if offset_frames is not None else 0
-        self.max_size = max_size
+        self.max_frames = cfg.max_read_frames
+        self.offset_frames = cfg.offset_frames if cfg.offset_frames is not None else 0
+        self.max_size = cfg.max_size
         self.scale = 1.0
-        self.camera_model = camera_model
-        self.undistort = undistort
+        self.camera_model = cfg.camera_model
+        self.undistort = cfg.undistort
 
     def __call__(self, idx: int) -> ViewData:
         """Load frame at given index in internally stored list of image paths."""

@@ -1,5 +1,6 @@
+from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Callable, Iterable
+from typing import Callable, Iterable, Literal
 
 import cv2 as cv
 import kornia as K
@@ -8,27 +9,44 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
-from config import SfMConfig, SLAMConfig
-
 from .camera import NDArrayFloat, NDArrayInt
-from .view import ViewData
-
-if TYPE_CHECKING:
-    from .view import FrameLoader
+from .tracks import KPKey
+from .view import FrameLoader, ViewData
 
 # Initialize device for Kornia/PyTorch operations
 device = K.utils.get_cuda_or_mps_device_if_available()
 
-# Type alias for keypoint observation (img_id, kp_idx)
-KPKey = tuple[int, int]
+
+@dataclass
+class FeatureExtractorConfig:
+    feature_type: Literal["sift", "disk"] = "sift"
+    """Feature extraction method: 'sift' or 'disk'"""
+
+    num_features: int = 5_000
+    """Maximum number of features to extract per image"""
+
+
+@dataclass
+class MatcherConfig:
+    matcher_type: Literal["bf", "lg"] = "bf"
+    """Keypoint matching method: 'bf' (brute-force) or 'lg' (lightglue)"""
+
+    bf_lowe_ratio: float = 0.75
+    """Lowe's ratio test threshold for BF matcher"""
+
+    bf_cross_check: bool = True
+    """Whether to use cross-checking for BF matcher"""
+
+    lg_min_dist: float = 0.1
+    """LightGlue matches with distance below this threshold are filtered out"""
 
 
 class FeatureExtractor:
     """Feature extractor class that curries the extraction function based on config."""
 
-    def __init__(self, cfg: SfMConfig | SLAMConfig, loader: "FrameLoader"):  # noqa: F821
-        self.cfg = cfg
+    def __init__(self, cfg: FeatureExtractorConfig, loader: FrameLoader):  # noqa: F821
         self.loader = loader
+        self.num_features = cfg.num_features
 
         if cfg.feature_type == "sift":
             sift = cv.SIFT_create(nfeatures=cfg.num_features)  # ty:ignore[unresolved-attribute]
@@ -72,7 +90,7 @@ class FeatureExtractor:
         # Convert to tensor and add batch dimension (H, W, C) -> (1, C, H, W)
         img_tensor = K.utils.image_to_tensor(img_float, keepdim=False).to(device=device)
         with torch.inference_mode():
-            features = disk_model(img_tensor, self.cfg.num_features, pad_if_not_divisible=True)[0]
+            features = disk_model(img_tensor, self.num_features, pad_if_not_divisible=True)[0]
 
         frame.kp = features.keypoints.cpu().numpy()  # (N, 2)
         frame.des = features.descriptors.cpu().numpy()  # (N, D)
@@ -99,10 +117,7 @@ class FeatureStore:
         _store: List of ImageData objects containing extracted features for each image.
     """
 
-    def __init__(
-        self,
-        feature_extractor: FeatureExtractor,
-    ):
+    def __init__(self, feature_extractor: FeatureExtractor):
         self._store: list[ViewData] = list(feature_extractor.iter_frames_with_features())
 
     def get_pixels(self, kp_keys: list[KPKey]) -> NDArray[np.uint8]:
@@ -205,7 +220,7 @@ def _match_brute_force(
 
 
 def make_keypoint_matcher(
-    cfg: SfMConfig | SLAMConfig,
+    cfg: MatcherConfig,
 ) -> Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]]:
     if cfg.matcher_type == "bf":
         return partial(_match_brute_force, lowe_ratio=cfg.bf_lowe_ratio, cross_check=cfg.bf_cross_check)

@@ -1,55 +1,85 @@
 """Configuration for Structure from Motion pipeline."""
 
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict
 
-# TODO: think about composable configs to avoid repeating fields
+import numpy as np
+import yaml
+
+from utils.camera import CameraModel, CameraType, calibrate_camera
+from utils.features import FeatureExtractorConfig, MatcherConfig
+from utils.view import FrameLoaderConfig
+
 # TODO: add SfM fields for depth-filter, pre-triangulation geometric masking, etc.
+
+
+def _default_camera() -> CameraModel:
+    K, dist = calibrate_camera()
+    return CameraModel(CameraType.PINHOLE, K, dist)
+
+
+def _tumvi_camera(calib_yaml_path: str, cam_key: str = "cam0") -> CameraModel:
+
+    camchain_file = yaml.safe_load(Path(calib_yaml_path).open())
+    k, dist = np.array(camchain_file[cam_key]["intrinsics"]), np.array(camchain_file[cam_key]["distortion_coeffs"])
+    fx, fy, cx, cy = k
+
+    return CameraModel(
+        CameraType.FISHEYE,
+        K=np.array(
+            [
+                [fx, 0, cx],
+                [0, fy, cy],
+                [0, 0, 1],
+            ]
+        ),
+        dist=dist,
+    )
+
+
+def preset(id: str, dataset: str) -> Dict:
+    if id == "tumvi":
+        return {
+            "camera_model": _tumvi_camera("data/tum/dataset-corridor4_512_16/dso/camchain.yaml"),
+            "pre_path": "data/tum/",
+            "dataset": dataset,
+            "post_path": "dso/cam0/images",
+            "ext": "png",
+        }
+    elif id == "default":
+        return {
+            "camera_model": _default_camera(),
+            "pre_path": "data/raw",
+            "dataset": dataset,
+            "post_path": "",
+            "ext": "jpg",
+        }
+    else:
+        raise ValueError(f"Unknown preset {id=}")
 
 
 @dataclass
 class SfMConfig:
-    """Configuration for Structure from Motion pipeline.
+    """Configuration for Structure from Motion pipeline."""
 
-    Modify the default values here for experimentation.
-    Command-line overrides: --cfg.param_name value
-    """
+    loader: FrameLoaderConfig = field(
+        default_factory=lambda: FrameLoaderConfig(
+            **preset(id="default", dataset="statue")
+            # camera_model=_tumvi_camera("data/tum/dataset-corridor4_512_16/dso/camchain.yaml"),
+            # pre_path="data/raw",
+            # dataset="corridor",
+            # post_path="",
+            # ext="png",
+        )
+    )
+    features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(feature_type="sift"))
+    matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig(matcher_type="bf"))
 
-    # Feature extraction
-    feature_type: Literal["sift", "disk"] = "sift"
-    """Feature extraction method: 'sift' or 'disk'"""
-
-    num_features: int = 5_000
-    """Maximum number of features to extract per image"""
-
-    max_size: int = 1024
-    """Maximum image dimension (images will be resized if larger)"""
-
-    # Keypoint matching
-    matcher_type: Literal["bf", "lg"] = "bf"
-    """Keypoint matching method: 'bf' (brute-force) or 'lg' (lightglue)"""
-
-    bf_lowe_ratio: float = 0.75
-    """Lowe's ratio test threshold for BF matcher (only used when matcher='bf' and cross_check=False)"""
-
-    bf_cross_check: bool = True
-    """Whether to use cross-checking for BF matcher (only used when matcher='bf')"""
-
-    lg_min_dist: float = 0.1
-    """LightGlue matches with distance below this threshold are filtered out (only used when matcher='lg')"""
-
-    # Dataset
-    dataset: str = "statue"
-    """Dataset name (subdirectory in data/raw/)"""
-
-    undistort: bool = True
-    """Whether to undistort images using the provided camera intrinsics and distortion coefficients"""
-
-    # View graph construction
+    # SfM-specific fields
     min_inliers: int = 50
     """Minimum number of inliers to consider two views as overlapping"""
 
-    # Optimization
     run_ba: bool = True
     """Run bundle adjustment optimization after initial reconstruction"""
 
@@ -65,47 +95,17 @@ class SfMConfig:
 
 @dataclass
 class SLAMConfig:
-    """Configuration for GTSAM ISAM2 SLAM pipeline.
+    """Configuration for GTSAM ISAM2 SLAM pipeline."""
 
-    Modify the default values here for experimentation.
-    Command-line overrides: --cfg.param_name value
-    """
-
-    # Feature extraction
-    feature_type: Literal["sift", "disk"] = "sift"
-    """Feature extraction method: 'sift' or 'disk'"""
-
-    num_features: int = 1_000
-    """Maximum number of features to extract per image"""
-
-    max_size: int = 512
-    """Maximum image dimension (images will be resized if larger)"""
-
-    # Keypoint matching
-    matcher_type: Literal["bf", "lg"] = "bf"
-    """Keypoint matching method: 'bf' (brute-force) or 'lg' (lightglue)"""
-
-    bf_lowe_ratio: float = 0.75
-    """Lowe's ratio test threshold for BF matcher (only used when matcher='bf' and cross_check=False)"""
-
-    bf_cross_check: bool = True
-    """Whether to use cross-checking for BF matcher (only used when matcher='bf')"""
-
-    lg_min_dist: float = 0.1
-    """LightGlue matches with distance below this threshold are filtered out (only used when matcher='lg')"""
-
-    # Dataset
-    dataset: str = "dataset-corridor4_512_16"
-    """Dataset name (subdirectory in data/tum/)"""
-
-    max_read_frames: int | None = None
-    """Maximum number of frames to process from the dataset"""
-
-    offset_frames: int | None = 500
-    """Index of a frame to from which to progressively start loading the dataset."""
-
-    undistort: bool = True
-    """Whether to undistort images using the provided camera intrinsics and distortion coefficients"""
+    loader: FrameLoaderConfig = field(
+        default_factory=lambda: FrameLoaderConfig(
+            **preset(id="tumvi", dataset="dataset-corridor4_512_16"),
+            max_read_frames=800,
+            max_size=512,
+        )
+    )
+    features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(num_features=1_000))
+    matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig())
 
     # Keyframe selection
     min_inliers: int = 30
