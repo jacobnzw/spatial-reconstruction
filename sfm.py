@@ -350,7 +350,7 @@ def main(cfg: SfMConfig = SfMConfig()):
     pprint(cfg, expand_all=True)
     print()
 
-    K, dist = calibrate_camera()
+    K, dist = calibrate_camera()  # High sensitivity to K! Even K*= 0.999 makes huge diff sometimes!
     camera_model = CameraModel(model_type=CameraType.PINHOLE, K=K, dist=dist)
 
     img_dir = Path("data") / "raw" / cfg.dataset
