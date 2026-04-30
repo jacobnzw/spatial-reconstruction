@@ -33,7 +33,6 @@ from utils import (
     PointCloud,
     TrackManager,
     ViewData,
-    has_overlap,
     make_keypoint_matcher,
 )
 
@@ -159,41 +158,38 @@ class KeyframeStreamer:
         self,
         keyframe: ViewData,
         track_manager: TrackManager,
-        min_inliers: int = 30,
+        min_inliers: int = 30,  # TODO: remove? unused
     ) -> ViewData | None:
-        """Prefer the most recent keyframe, only fall back if it has poor overlap."""
-
-        # Always try the most recent keyframe first
-        last_kf = self._keyframe_window[-2]
-        is_overlapping, inliers, matches = has_overlap(last_kf, keyframe, self.matcher, min_inliers)
-        if is_overlapping and inliers >= 45:  # TODO: remove inliers cond; already done in has_overlap
-            return last_kf
 
         best_ref = None
         best_score = -1
 
-        for ref in self._keyframe_window:
-            if ref.idx == keyframe.idx:  # don't pick the current keyframe as reference
-                continue
-            # Use your existing has_overlap (geometric validation + E-matrix inliers)
-            is_overlapping, inliers, matches = has_overlap(ref, keyframe, self.matcher, min_inliers)
-            if not is_overlapping:
+        for ref in reversed(self._keyframe_window):
+            if ref.idx == keyframe.idx:
+                # skip if ref==keyframe; need this because can't slice deque to exclude current keyframe
                 continue
 
-            # Count how many of these inliers are already triangulated tracks
-            triangulated_count = 0
-            for m in matches:  # only inliers
-                kp_key_ref = (ref.idx, m[0])  # queryIdx in ref
-                if track_manager.get_track(kp_key_ref) is not None:
-                    triangulated_count += 1
+            _, matches = self.matcher(ref, keyframe)
 
-            if triangulated_count > best_score:
-                best_score = triangulated_count
+            if len(matches) < 15:
+                continue
+
+            track_ids, tracked, untracked = self.track_manager.get_track_observations_for_view(ref.idx, matches)
+
+            n_tracked = len(tracked)
+            n_untracked = len(untracked)
+
+            if n_tracked < 20:
+                continue
+
+            score = 2.0 * n_tracked + 1.0 * n_untracked
+
+            if score > best_score:
+                best_score = score
                 best_ref = ref
 
-        # Fallback: always prefer the most recent keyframe if it has at least a few points
-        if best_ref is None and len(self._keyframe_window) > 0:
-            best_ref = self._keyframe_window[-2]  # previous keyframe is at -2 since the current keyframe is at -1
+        if best_ref is None:
+            best_ref = self._keyframe_window[-2]
 
         return best_ref
 
@@ -431,12 +427,12 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
             continue
 
         # === Normal keyframe ===
-        # ref = streamer.find_reference_frame(keyframe, track_manager, min_inliers=cfg.min_inliers)
-        # if ref is None:
-        #     print("  → No good reference found, skipping")
-        #     continue
+        ref = streamer.find_reference_frame(keyframe, track_manager, min_inliers=cfg.min_inliers)
+        if ref is None:
+            print("  → No good reference found, skipping")
+            continue
         # Previous keframe as reference: makes sense in sequentially ordered datasets
-        ref = prev_keyframe
+        # ref = prev_keyframe
         add_view(keyframe, ref, track_manager, point_cloud, matches=matches)
 
         # === DEPTH FILTER (critical for chirality) ===
