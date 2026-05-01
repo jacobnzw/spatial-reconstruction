@@ -435,7 +435,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
 
             # Transform point to camera frame; depth = z-coordinate
             depth_cam = keyframe.transform_to_camera_frame(pt_world)[2]
-            if depth_cam < 0.3:  # behind camera or too close
+            if depth_cam < cfg.depth_threshold:  # behind camera or too close
                 # Optional: remove the track completely (simple but effective)
                 # You can add a remove_track method to TrackManager if you want
                 print(f"  → Removed track {tid} (negative depth {depth_cam:.2f})")

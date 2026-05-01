@@ -146,7 +146,9 @@ def _estimate_pose_pnp(world_points: NDArrayFloat, image_points: NDArrayFloat, i
     return inliers.ravel()
 
 
-def _triangulate_new_points(img_ref: ViewData, img_new: ViewData, untracked_matches: NDArrayInt):
+def _triangulate_new_points(
+    img_ref: ViewData, img_new: ViewData, untracked_matches: NDArrayInt, depth_threshold: float
+):
     """Triangulate new 3D points from untracked matches between reference and new image.
 
     Args:
@@ -178,7 +180,7 @@ def _triangulate_new_points(img_ref: ViewData, img_new: ViewData, untracked_matc
     # Depth filter of triangulated points: filter out points that are behind either camera (negative depth)
     imgref_points_3d = img_ref.transform_to_camera_frame(points_3d)
     imgnew_points_3d = img_new.transform_to_camera_frame(points_3d)
-    inliers = (imgref_points_3d[:, 2] > 0) & (imgnew_points_3d[:, 2] > 0)
+    inliers = (imgref_points_3d[:, 2] > depth_threshold) & (imgnew_points_3d[:, 2] > depth_threshold)
     points_3d = points_3d[inliers]
     untracked_matches = untracked_matches[inliers]
     print(f"Filtered out {np.sum(~inliers)} points that are behind the camera. Remaining points: {len(points_3d)}")
@@ -196,6 +198,7 @@ def add_view(
     point_cloud: PointCloud,
     match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]] | None = None,
     matches: NDArrayInt | None = None,
+    depth_threshold: float = 0.0,
 ):
     """Adds 3D points from new view using PnP and triangulation.
 
@@ -208,6 +211,7 @@ def add_view(
         point_cloud: Point cloud. Required parameter.
         match_fn: Keypoint matcher function. Required parameter.
         matches: Matches between keypoints in views in img_0 and img_1.
+        depth_threshold: Triangulated points closer than this in either camera (ref or new) are filtered out.
     """
     if matches is None and match_fn is None:
         raise ValueError("One of matches or match_fn must be supplied.")
@@ -217,7 +221,7 @@ def add_view(
         print(
             f"add_view: Computing matches from {img_ref.idx}:{img_ref.path.name} to {img_new.idx}:{img_new.path.name}"
         )
-        _, matches = match_fn(img_ref, img_new)
+        _, matches = match_fn(img_ref, img_new)  # ty:ignore[call-non-callable]
 
     # add new img KPs, that are matched to from tracked ref img KPs, to current tracks (3D pts)
     # returns track_ids and (un)tracked KPs in the new image; track_ids used as indices to point cloud
@@ -238,10 +242,10 @@ def add_view(
     track_manager.add_keypoints_to_tracks(kp_keys_seen, track_ids_seen)
 
     # Translation vector between the new image and the reference image
-    t_ref_new = (img_ref.cam_T_world * img_new.world_T_cam).translation  # ty:ignore[possibly-missing-attribute]
+    t_ref_new = (img_ref.cam_T_world * img_new.world_T_cam).translation  # ty:ignore[unsupported-operator]
     print(f"DEBUG: Baseline between ref and new image: {np.linalg.norm(t_ref_new):.2f}")
 
-    points_3d, kp_key_pairs = _triangulate_new_points(img_ref, img_new, untracked_matches)
+    points_3d, kp_key_pairs = _triangulate_new_points(img_ref, img_new, untracked_matches, depth_threshold)
 
     track_ids_added = track_manager.add_new_tracks(kp_key_pairs)
     point_cloud.add_points(track_ids_added, points_3d)
@@ -269,6 +273,7 @@ def process_graph_component(
     track_manager: TrackManager,
     point_cloud: PointCloud,
     match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
+    depth_threshold: float,
 ) -> tuple[list[ViewEdge], set[int]]:
     # Pick strongest baseline:
     # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
@@ -306,7 +311,7 @@ def process_graph_component(
         )
         try:
             # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
-            add_view(img_new, img_ref, track_manager=track_manager, point_cloud=point_cloud, match_fn=match_fn)
+            add_view(img_new, img_ref, track_manager, point_cloud, match_fn=match_fn, depth_threshold=depth_threshold)
             print(f"After add_view: {track_manager.is_valid()=}")
 
         except ValueError as e:
@@ -365,7 +370,9 @@ def main(cfg: SfMConfig = SfMConfig()):
 
     # Process the first component
     print("Processing graph component...")
-    process_graph_component(view_graph.edges.copy(), image_store, track_manager, point_cloud, kp_matcher)
+    process_graph_component(
+        view_graph.edges.copy(), image_store, track_manager, point_cloud, kp_matcher, cfg.depth_threshold
+    )
 
     # Process all connected components of the view graph
     # Each component will lead to a point cloud with its own reference frame

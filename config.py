@@ -76,6 +76,9 @@ class SfMConfig:
     features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(feature_type="sift"))
     matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig(matcher_type="bf"))
 
+    depth_threshold: float = 0.3  # TODO: how to solve duplication in SLAMConfig?
+    """Minimum depth (along z-axis) in camera frame for the triangulated points."""
+
     # SfM-specific fields
     min_inliers: int = 50
     """Minimum number of inliers to consider two views as overlapping"""
@@ -104,8 +107,13 @@ class SLAMConfig:
             max_size=512,
         )
     )
-    features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(num_features=1_000))
-    matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig())
+    features: FeatureExtractorConfig = field(
+        default_factory=lambda: FeatureExtractorConfig(feature_type="disk", num_features=1_000)
+    )
+    matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig(matcher_type="lg"))
+
+    depth_threshold: float = 0.3
+    """Minimum depth (along z-axis) in camera frame for the triangulated points."""
 
     # Keyframe selection
     min_inliers: int = 30
