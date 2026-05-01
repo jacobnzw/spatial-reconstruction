@@ -39,7 +39,7 @@ def bundle_adjustment(
     fy = K[1, 1]
     cx = K[0, 2]
     cy = K[1, 2]
-    k1, k2, p1, p2 = dist[0][:4]
+    k1, k2, p1, p2 = dist[:4]
     cam_params = np.array([fx, fy, cx, cy, k1, k2, p1, p2], dtype=np.float64)
     camera_model = pycolmap.CameraModelId.OPENCV
 

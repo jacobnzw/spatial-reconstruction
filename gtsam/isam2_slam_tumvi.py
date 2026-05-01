@@ -25,16 +25,13 @@ from gtsam import (
 )
 from sfm import add_view, bootstrap_from_two_views
 from utils import (
-    CameraModel,
-    CameraType,
-    FeatureExtractor,
     FrameLoader,
     NDArrayInt,
     PointCloud,
     TrackManager,
     ViewData,
-    make_keypoint_matcher,
 )
+from utils.features import FeatureExtractor, make_keypoint_matcher
 
 
 @dataclass
@@ -327,19 +324,9 @@ def add_new_keyframe_factors(
         initial_estimates.insert(X(img_ref.idx), gtsam_world_T_cam(img_ref))
 
 
-def make_keyframe_streamer(
-    image_dir, cfg, camera_model, kp_matcher, track_manager, undistort=False
-) -> KeyframeStreamer:
-    loader = FrameLoader(
-        image_dir,
-        max_size=cfg.max_size,
-        max_frames=cfg.max_read_frames,
-        offset_frames=cfg.offset_frames,
-        ext="png",
-        camera_model=camera_model,
-        undistort=undistort,
-    )
-    extractor = FeatureExtractor(cfg, loader)
+def make_keyframe_streamer(image_dir, cfg, kp_matcher, track_manager, undistort=False) -> KeyframeStreamer:
+    loader = FrameLoader(cfg.loader)
+    extractor = FeatureExtractor(cfg.features, loader)
     return KeyframeStreamer(
         extractor,
         kp_matcher,
@@ -354,14 +341,16 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
     pprint(cfg, expand_all=True)
     print()
 
-    dataset_path = Path("data/tum") / cfg.dataset
-    image_dir = Path(dataset_path) / "dso" / "cam0" / "images"
+    # dataset_path = Path("data/tum") / cfg.loader.dataset
+    # image_dir = Path(dataset_path) / "dso" / "cam0" / "images"
+    image_dir = cfg.loader.img_dir
 
     # Camera intrinsics
-    k_vec, dist_vec = load_intrinsics(dataset_path)
-    fx, fy, cx, cy = k_vec
-    K = gtsam.Cal3_S2(fx, fy, 0.0, cx, cy)
+    # k_vec, dist_vec = load_intrinsics(dataset_path)
+    # fx, fy, cx, cy = k_vec
     # K = gtsam.Cal3Fisheye(fx, fy, 0.0, cx, cy, *dist_vec)
+    K = cfg.loader.camera_model.get_camera_matrix()
+    gtsam_K = gtsam.Cal3_S2(K[0, 0], K[1, 1], 0.0, K[0, 2], K[1, 2])
 
     # === Smart Projection Setup ===
     smart_params = SmartProjectionParams()
@@ -387,9 +376,9 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
     point_cloud = PointCloud()
 
     # Setup keyframe streaming
-    camera_model = CameraModel(model_type=CameraType.FISHEYE, K=K.K(), dist=dist_vec)
-    kp_matcher = make_keypoint_matcher(cfg)
-    streamer = make_keyframe_streamer(image_dir, cfg, camera_model, kp_matcher, track_manager, undistort=cfg.undistort)
+    # camera_model = CameraModel(model_type=CameraType.FISHEYE, K=K, dist=dist_vec)
+    kp_matcher = make_keypoint_matcher(cfg.matcher)
+    streamer = make_keyframe_streamer(image_dir, cfg, kp_matcher, track_manager)
 
     for kf_info in streamer.keyframes():
         keyframe, prev_keyframe, matches = kf_info.keyframe, kf_info.previous_keyframe, kf_info.matches
@@ -419,8 +408,8 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
                     img = prev_keyframe if img_idx == prev_keyframe.idx else keyframe
                     obs = Point2(img.kp[kp_idx])
                     if track_id not in smart_factors:
-                        factor = SmartProjectionPoseFactorCal3_S2(obs_noise, K, smart_params)
-                        # factor = SmartProjectionPoseFactorCal3Fisheye(obs_noise, K, smart_params)
+                        factor = SmartProjectionPoseFactorCal3_S2(obs_noise, gtsam_K, smart_params)
+                        # factor = SmartProjectionPoseFactorCal3Fisheye(obs_noise, gtsam_K, smart_params)
                         smart_factors[track_id] = factor
                         graph.add(factor)
                     smart_factors[track_id].add(obs, X(img_idx))
@@ -446,7 +435,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
 
             # Transform point to camera frame; depth = z-coordinate
             depth_cam = keyframe.transform_to_camera_frame(pt_world)[2]
-            if depth_cam < 0.3:  # behind camera or too close
+            if depth_cam < cfg.depth_threshold:  # behind camera or too close
                 # Optional: remove the track completely (simple but effective)
                 # You can add a remove_track method to TrackManager if you want
                 print(f"  → Removed track {tid} (negative depth {depth_cam:.2f})")
@@ -468,7 +457,7 @@ def visual_ISAM2_tumvi_example(cfg: SLAMConfig = SLAMConfig()):
             obs = Point2(keyframe.kp[kp_idx])
 
             if track_id not in smart_factors:
-                factor = SmartProjectionPoseFactorCal3_S2(obs_noise, K, smart_params)
+                factor = SmartProjectionPoseFactorCal3_S2(obs_noise, gtsam_K, smart_params)
                 # factor = SmartProjectionPoseFactorCal3Fisheye(obs_noise, K, smart_params)
                 smart_factors[track_id] = factor
                 graph.add(factor)
