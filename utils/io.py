@@ -2,10 +2,11 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from loguru import logger
 from numpy.typing import NDArray
 
-from .pointcloud import PointCloud
 from .features import FeatureStore
+from .pointcloud import PointCloud
 from .tracks import TrackManager
 
 
@@ -138,13 +139,13 @@ class ReconIO:
             filename,
         )
 
-        print("Saved reconstruction for gsplat:")
-        print(f"  - {len(poses_list)} camera poses: {poses_tensor.shape}")
-        print(f"  - {len(images_list)} images: {images_tensor.shape}")
-        print(f"  - {self.point_cloud.size} 3D points: {points_tensor.shape}")
-        print(f"  - Colors: {colors_tensor.shape}")
-        print(f"  - Intrinsics: {intrinsics_tensor.shape}")
-        print(f"  -> {filename}")
+        logger.info("Saved reconstruction for gsplat:")
+        logger.info(f"  - {len(poses_list)} camera poses: {poses_tensor.shape}")
+        logger.info(f"  - {len(images_list)} images: {images_tensor.shape}")
+        logger.info(f"  - {self.point_cloud.size} 3D points: {points_tensor.shape}")
+        logger.info(f"  - Colors: {colors_tensor.shape}")
+        logger.info(f"  - Intrinsics: {intrinsics_tensor.shape}")
+        logger.info(f"  -> {filename}")
 
     @staticmethod
     def load_for_gsplat(
@@ -176,13 +177,13 @@ class ReconIO:
         # Tile intrinsics to match number of cameras (N, 3, 3)
         intrinsics = intrinsics_single.unsqueeze(0).expand(N, 3, 3)
 
-        print(f"Loaded reconstruction from {filename}:")
-        print(f"  - {N} camera poses: {poses.shape}")
-        print(f"  - {N} images: {images.shape}")
-        print(f"  - {points.shape[0]} 3D points: {points.shape}")
-        print(f"  - Colors: {colors.shape}")
-        print(f"  - Intrinsics (tiled): {intrinsics.shape}")
-        print(f"  - Image size: {W} x {H}")
+        logger.info(f"Loaded reconstruction from {filename}:")
+        logger.info(f"  - {N} camera poses: {poses.shape}")
+        logger.info(f"  - {N} images: {images.shape}")
+        logger.info(f"  - {points.shape[0]} 3D points: {points.shape}")
+        logger.info(f"  - Colors: {colors.shape}")
+        logger.info(f"  - Intrinsics (tiled): {intrinsics.shape}")
+        logger.info(f"  - Image size: {W} x {H}")
 
         return poses.to(device), images.to(device), points.to(device), colors.to(device), intrinsics.to(device), W, H
 
@@ -216,17 +217,14 @@ class ReconIO:
         num_vertices = len(df_filtered) + len(vertices)
         num_edges = len(edges)
         # --- DEBUG --- sanity checks
-        # TODO: nicer stats
-        print()
-        print(f"{df.shape = }")
-        print(f"# nans: {df.isna().sum().sum()}")
-        print(f"# infs: {np.isinf(df.values).sum()}")
+        logger.debug(f"{df.shape = }")
+        logger.debug(f"# nans: {df.isna().sum().sum()}")
+        logger.debug(f"# infs: {np.isinf(df.values).sum()}")
         norms = np.linalg.norm(df.values, axis=1)
-        print(f"{norms.min() = }\n{norms.max() = }")
-        print()
-        print(f"{df_filtered.shape = }")
+        logger.debug(f"{norms.min() = :.4f}")
+        logger.debug(f"{norms.max() = :.4f}")
+        logger.debug(f"{df_filtered.shape = }")
 
-        print(f"Writing {len(df_filtered)} points to {filename}")
         filename.parent.mkdir(exist_ok=True, parents=True)
         with open(filename, "w") as f:
             f.write("ply\n")

@@ -5,6 +5,7 @@ import cv2 as cv
 import joblib
 import numpy as np
 import tyro
+from loguru import logger
 from rich.pretty import pprint
 
 from ba import bundle_adjustment
@@ -69,7 +70,7 @@ def bootstrap_from_two_views(
 
     # Match key points (via descriptors) if not given
     if matches is None:
-        print(f"baseline: Computing matches from {img_0.idx}:{img_0.path.name} to {img_1.idx}:{img_1.path.name}")
+        logger.debug(f"baseline: Computing matches from {img_0.idx}:{img_0.path.name} to {img_1.idx}:{img_1.path.name}")
         _, matches = match_fn(img_0, img_1)  # ty:ignore[call-non-callable]
 
     # extract corresponding pixel coordinates
@@ -110,13 +111,13 @@ def bootstrap_from_two_views(
     img_0.set_extrinsics(np.eye(3), np.zeros((3,)))
     img_1.set_extrinsics(R, t)
 
-    print(f"Bootstrapped with {len(points_3d)} 3D points.")
+    logger.success(f"Bootstrapped with {len(points_3d)} 3D points.")
 
 
 def _estimate_pose_pnp(world_points: NDArrayFloat, image_points: NDArrayFloat, img: ViewData):
     """Estimate camera pose using PnP given 3D-2D correspondences and camera intrinsics."""
 
-    print(f"Estimating pose of {img.idx}:{img.path.name} with {len(world_points)} 3D-2D correspondences...")
+    logger.info(f"Estimating pose of {img.idx}:{img.path.name} with {len(world_points)} 3D-2D correspondences...")
 
     assert len(world_points) >= 4, "At least 4 3D-2D correspondences are required for PnP"
     assert len(world_points) == len(image_points), "Number of 3D points must match number of 2D points"
@@ -134,7 +135,7 @@ def _estimate_pose_pnp(world_points: NDArrayFloat, image_points: NDArrayFloat, i
     )
     if not pnp_ok:
         raise ValueError("solvePnP failed to estimate pose.")
-    print(
+    logger.success(
         f"Pose estimation succeeded with {len(inliers)} inliers (Inlier ratio: {len(inliers) / len(world_points):.2f})"
     )
 
@@ -183,7 +184,9 @@ def _triangulate_new_points(
     inliers = (imgref_points_3d[:, 2] > depth_threshold) & (imgnew_points_3d[:, 2] > depth_threshold)
     points_3d = points_3d[inliers]
     untracked_matches = untracked_matches[inliers]
-    print(f"Filtered out {np.sum(~inliers)} points that are behind the camera. Remaining points: {len(points_3d)}")
+    logger.debug(
+        f"Filtered out {np.sum(~inliers)} points that are behind the camera. Remaining points: {len(points_3d)}"
+    )
 
     # Create track for each pair of KPs (ref, new) that were triangulated to a 3D point
     kp_key_pairs = [((img_ref.idx, m[0]), (img_new.idx, m[1])) for m in untracked_matches]
@@ -218,7 +221,7 @@ def add_view(
 
     # Compute KP matches from ref image to new image if not supplied
     if matches is None:
-        print(
+        logger.debug(
             f"add_view: Computing matches from {img_ref.idx}:{img_ref.path.name} to {img_new.idx}:{img_new.path.name}"
         )
         _, matches = match_fn(img_ref, img_new)  # ty:ignore[call-non-callable]
@@ -243,14 +246,14 @@ def add_view(
 
     # Translation vector between the new image and the reference image
     t_ref_new = (img_ref.cam_T_world * img_new.world_T_cam).translation  # ty:ignore[unsupported-operator]
-    print(f"DEBUG: Baseline between ref and new image: {np.linalg.norm(t_ref_new):.2f}")
+    logger.debug(f"Baseline between ref and new image: {np.linalg.norm(t_ref_new):.2f}")
 
     points_3d, kp_key_pairs = _triangulate_new_points(img_ref, img_new, untracked_matches, depth_threshold)
 
     track_ids_added = track_manager.add_new_tracks(kp_key_pairs)
     point_cloud.add_points(track_ids_added, points_3d)
 
-    print(f"Added {len(points_3d)} 3D points.")
+    logger.success(f"Added {len(points_3d)} 3D points.")
 
 
 def pick_best_image_pair(
@@ -278,13 +281,13 @@ def process_graph_component(
     # Pick strongest baseline:
     # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
     img_0, img_1, best_edge = pick_best_image_pair(edges, store)
-    print(
+    logger.info(
         f"Establishing baseline ({best_edge.weight} matches) from: {img_0.idx}:{img_0.path.name} and {img_1.idx}:{img_1.path.name}"
     )
     # matches -> E -> pose -> triangulation
     bootstrap_from_two_views(img_0, img_1, track_manager, point_cloud, match_fn)
 
-    print(f"After compute_baseline_estimate: {track_manager.is_valid()=}")
+    logger.debug(f"After compute_baseline_estimate: {track_manager.is_valid()=}")
 
     R = set((img_0.idx, img_1.idx))
     U = {node for e in edges for node in (e.i, e.j)}
@@ -299,27 +302,27 @@ def process_graph_component(
 
         if not candidate_edges:
             # U could still be non-empty (disconnected graph)
-            print(f"No more candidate edges. Exiting. {len(U)} images left.")
+            logger.info(f"No more candidate edges. Exiting. {len(U)} images left.")
             break
 
         img_ref, img_new, best_edge = pick_best_image_pair(candidate_edges, store, R)
-        print(
+        logger.info(
             (
-                f"\nAdding view {img_new.idx}:{img_new.path.name} w/ ref {img_ref.idx}:{img_ref.path.name}"
-                f"(matches: {best_edge.weight})"
+                f"Adding view {img_new.idx}:{img_new.path.name} w/ ref {img_ref.idx}:{img_ref.path.name}"
+                f" (matches: {best_edge.weight})"
             )
         )
         try:
             # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
             add_view(img_new, img_ref, track_manager, point_cloud, match_fn=match_fn, depth_threshold=depth_threshold)
-            print(f"After add_view: {track_manager.is_valid()=}")
+            logger.debug(f"After add_view: {track_manager.is_valid()=}")
 
         except ValueError as e:
             # failed to add new view: indicate the (img_ref, img_new) pair as bad and move on
             # best_edge was the best chance to add img_new (don't consider next best edge w/ img_new)
             U.remove(img_new.idx)
             leftover_edges.remove(best_edge)
-            print(
+            logger.warning(
                 f"Failed to add view: {img_new.idx}:{img_new.path.name} with ref: {img_ref.idx}:{img_ref.path.name} due to {e}"
             )
             continue
@@ -331,14 +334,13 @@ def process_graph_component(
 
     # Filter out any remaining edges that connect registered views/images
     leftover_edges = [e for e in leftover_edges if not (e.i in R and e.j in R)]
-    print(f"{R = }\n{U = }")
-    print(f"leftover_edges {[(e.i, e.j) for e in leftover_edges]}")
+    logger.debug(f"{R = }")
+    logger.debug(f"{U = }")
+    logger.debug(f"leftover_edges = {[(e.i, e.j) for e in leftover_edges]}")
 
     return leftover_edges, U
 
 
-# TODO: nicer logging by levels via loguru; think about what to log, consistent per-frame processed stats?
-# TODO: log camera intrinsics
 def main(cfg: SfMConfig = SfMConfig()):
     """Run Structure from Motion pipeline with configurable feature extraction and matching.
 
@@ -348,13 +350,12 @@ def main(cfg: SfMConfig = SfMConfig()):
 
     # Display configuration
     pprint(cfg, expand_all=True)
-    print()
 
     out_dir = Path("data") / "out" / cfg.loader.dataset
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Load all images & extract features
-    print(f"Extracting {cfg.features.feature_type.upper()} features from {cfg.loader.img_dir}...")
+    logger.info(f"Extracting {cfg.features.feature_type.upper()} features from {cfg.loader.img_dir}...")
     loader = FrameLoader(cfg.loader)
     feature_extractor = FeatureExtractor(cfg.features, loader)
     image_store = FeatureStore(feature_extractor)
@@ -365,11 +366,11 @@ def main(cfg: SfMConfig = SfMConfig()):
     # Create keypoint matcher with appropriate parameters
     kp_matcher = make_keypoint_matcher(cfg.matcher)
 
-    print("Constructing view graph...")
+    logger.info("Constructing view graph...")
     view_graph = construct_view_graph(image_store, kp_matcher, min_inliers=cfg.min_inliers)
 
     # Process the first component
-    print("Processing graph component...")
+    logger.info("Processing graph component...")
     process_graph_component(
         view_graph.edges.copy(), image_store, track_manager, point_cloud, kp_matcher, cfg.depth_threshold
     )
@@ -384,7 +385,7 @@ def main(cfg: SfMConfig = SfMConfig()):
     #         break
 
     basename = f"{cfg.loader.dataset}_{cfg.features.feature_type}_{cfg.matcher.matcher_type}"
-    print(f"Saving initial reconstruction to {out_dir / f'{basename}.ply'}...")
+    logger.info(f"Saving initial reconstruction to {out_dir / f'{basename}.ply'}...")
     exporter.save_ply(filename=out_dir / f"{basename}.ply")
 
     if cfg.dump_sfm_debug:
@@ -394,22 +395,22 @@ def main(cfg: SfMConfig = SfMConfig()):
             out_dir / sfm_debug_filename,
             compress=3,
         )
-        print(f"Dumped SFM structs to {out_dir / sfm_debug_filename}")
+        logger.info(f"Dumped SFM structs to {out_dir / sfm_debug_filename}")
 
     if cfg.run_ba:
-        print("Running bundle adjustment...")
+        logger.info("Running bundle adjustment...")
         bundle_adjustment(image_store, point_cloud, track_manager, fix_first_camera=cfg.fix_first_camera)
 
-        print(f"Final point cloud size: {point_cloud.size}")
-        print(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")
+        logger.info(f"Final point cloud size: {point_cloud.size}")
+        logger.info(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")
         exporter.save_ply(filename=out_dir / f"{basename}_ba.ply")
 
     if cfg.save_gsplat:
-        print("\nSaving tensors for gsplat...")
+        logger.info("\nSaving tensors for gsplat...")
         gsplat_file = f"{basename}_ba.pt" if cfg.run_ba else f"{basename}.pt"
         exporter.save_for_gsplat(filename=out_dir / gsplat_file)
 
-    print("\n✓ Done!")
+    logger.success("✓ Done!")
 
 
 if __name__ == "__main__":

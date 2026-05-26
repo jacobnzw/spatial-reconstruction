@@ -4,6 +4,7 @@ from typing import Any, Iterable
 
 import cv2 as cv
 import numpy as np
+from loguru import logger
 from numpy.typing import NDArray
 from scipy.spatial.transform import RigidTransform as SE3Pose
 from scipy.spatial.transform import Rotation
@@ -237,7 +238,7 @@ class FrameLoader:
         """
         for idx, path in enumerate(self.img_paths[self.offset_frames :], start=self.offset_frames):
             if self.max_frames and idx >= self.max_frames:
-                print(f"FrameLoader: Reached max_frames={self.max_frames}, stopping further loading.")
+                logger.info(f"Reached max_frames={self.max_frames}, stopping further loading.")
                 break
 
             # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order

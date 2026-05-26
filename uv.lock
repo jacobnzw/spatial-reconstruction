@@ -531,22 +531,22 @@ wheels = [
 
 [[package]]
 name = "gtsam-develop"
-version = "4.3a1.dev202603311318"
+version = "4.3a1.dev202604281709"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "pytest" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0c/97/e4f3083e7565e086c151e5d3b1dd65f0ca202f215d24ea18ea665efe3677/gtsam_develop-4.3a1.dev202603311318-cp312-cp312-macosx_10_15_universal2.whl", hash = "sha256:d1aed715f6f8842e728d012c64967b921a14d98bb23ec091549d01412e15b51d", size = 41184259, upload-time = "2026-03-31T13:59:24.473Z" },
-    { url = "https://files.pythonhosted.org/packages/ad/00/ae64c8db5e9a1d4e88f110a6cb6700c932e67fa5ba59e0c9c8011278fb9b/gtsam_develop-4.3a1.dev202603311318-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:f0d39b86a18ef4169e38d4c6e8660097a7068d8a2ae9df701b7dd31cae488628", size = 29138140, upload-time = "2026-03-31T13:59:27.617Z" },
-    { url = "https://files.pythonhosted.org/packages/1a/7f/6a3b915e7bbe2cd1aa6229fee1e1575be3686c53fbe55c9e2cdb65a84f85/gtsam_develop-4.3a1.dev202603311318-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:a1b3612325d07244b0733d38efa3563ac62adc7bb4cb80b60ddf4ed3ee35c8ea", size = 30489053, upload-time = "2026-03-31T13:59:30.351Z" },
-    { url = "https://files.pythonhosted.org/packages/8d/a3/af5723d0d6747adc5db658c0f3ada07bcf4dd0440ae85bc104b997719be0/gtsam_develop-4.3a1.dev202603311318-cp313-cp313-macosx_10_15_universal2.whl", hash = "sha256:50ab79a6fb24203cac7c93918a670f7653b85303dcfdd7b610f80e6075dad38d", size = 41184092, upload-time = "2026-03-31T13:59:33.125Z" },
-    { url = "https://files.pythonhosted.org/packages/03/74/ef072b9050d3bf9dff6206eda17742f84bfb51b8810b6ff729568222618a/gtsam_develop-4.3a1.dev202603311318-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:cc7867897c25bbec1f61ce6cb1aff5d707fdd7ae050d33821c7c53b80237e526", size = 29134465, upload-time = "2026-03-31T13:59:36.132Z" },
-    { url = "https://files.pythonhosted.org/packages/24/8e/9ec00ce1e83ecbfad7aa854a14855be75ed2f034f3afb2fb87c0096501ca/gtsam_develop-4.3a1.dev202603311318-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:c9e3be37da119718b79b534114e67dacc3ac9bfa8003585635c9cf96c9a3382a", size = 30489517, upload-time = "2026-03-31T13:59:39.087Z" },
-    { url = "https://files.pythonhosted.org/packages/33/43/fdb86e25e374017f331698f16ab65e663fab4299308dc1f00f1edb4cf3f9/gtsam_develop-4.3a1.dev202603311318-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:ea69f835c5f48687978f0aa0b5a1fe933f2dc5c6af4151f62327f3f8a1557495", size = 41199714, upload-time = "2026-03-31T13:59:42.223Z" },
-    { url = "https://files.pythonhosted.org/packages/21/87/4725834e976e1d3367eb61a6cadc5a56047a1b839b6ffa6277a320d182d7/gtsam_develop-4.3a1.dev202603311318-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2b23cd1f575c9c588b3c700ff361f7011862832c7902a36a2f31b2544090c378", size = 29161334, upload-time = "2026-03-31T13:59:45.032Z" },
-    { url = "https://files.pythonhosted.org/packages/a8/ae/87e60a0eec531c33e41cf09750bd1d85fddb98d4317ac3945545460bb7f8/gtsam_develop-4.3a1.dev202603311318-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:ff16ac058470c58d6740ad64676c1e2dd9a61375a5cb1244d786b7059999a0ae", size = 30491306, upload-time = "2026-03-31T13:59:47.963Z" },
+    { url = "https://files.pythonhosted.org/packages/15/d1/a320cdf7ba172021ae7ca7a2f7cdba29a73ed3f27348d7fff58a038efdb3/gtsam_develop-4.3a1.dev202604281709-cp312-cp312-macosx_10_15_universal2.whl", hash = "sha256:00f1f52c2a9bf14b25df28ba7983638124f59f272da5feff95821603f9c1a8d4", size = 42324848, upload-time = "2026-04-28T18:06:49.238Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/1f/53205a496cc265b0ac78ce56c027d55fff0de0799279e2c2b9e0093b84dd/gtsam_develop-4.3a1.dev202604281709-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:5e911edb519ea0fb89ae4cccda2754ce72bcad10aa2b30e6a41d6bd2437f0dcb", size = 30064768, upload-time = "2026-04-28T18:06:52.856Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/e0/01f5e92c3416f85046f0ae51e8538fdc70775f3405be0dca5f2ab10dd199/gtsam_develop-4.3a1.dev202604281709-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:0a3117e69c61dc3b2d73c920e24309a944d8d2f759ec55dceb8b28219231b2b3", size = 31478525, upload-time = "2026-04-28T18:06:56.095Z" },
+    { url = "https://files.pythonhosted.org/packages/74/73/490ba42e36c02a691ca40171d3afcaed716f9630070b5d7bed61fb55262b/gtsam_develop-4.3a1.dev202604281709-cp313-cp313-macosx_10_15_universal2.whl", hash = "sha256:339e0b49322c2fe1f64d96da2c7095c164ddeba223ec3801731843a5c01fd8b6", size = 42325791, upload-time = "2026-04-28T18:06:59.617Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/e2/b2dbb58ba491e512964cbd6d7d0ea14634ca89897256f1d7328669dc5d4a/gtsam_develop-4.3a1.dev202604281709-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:c88b4a055adf9ce575c34fadef4d0dc430c2cf25a36ffc8741a135149ef6e549", size = 30062668, upload-time = "2026-04-28T18:07:02.825Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/a7/5a7a8f5f378805bdc948ad8fe33a533bf979e58edca33738b735b20ee754/gtsam_develop-4.3a1.dev202604281709-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:3e382d10a8a2612ffe28496b201cf4631a91704da0330be48cea03689750ba40", size = 31478320, upload-time = "2026-04-28T18:07:06.189Z" },
+    { url = "https://files.pythonhosted.org/packages/76/09/1251f99189df411fd03c01a4a787e601130a73335038d5a57a5473c83bf7/gtsam_develop-4.3a1.dev202604281709-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:c212553ad66d25cc17c17646533e807ae505345d31b0abdc9c2968ad0cc343a3", size = 42336379, upload-time = "2026-04-28T18:07:14.864Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/d8/51e9ae0fd1ab7dbce2e311ddc02825c56a9e0672d7bc29573291e56b2607/gtsam_develop-4.3a1.dev202604281709-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:178758d42cf609d66fb8801686f716bca1276186a71e25c309a626968c9a220b", size = 30086461, upload-time = "2026-04-28T18:07:18.345Z" },
+    { url = "https://files.pythonhosted.org/packages/33/0f/da0c6a05ea04a5f049476caf539fed11d946f5b128ea8c963e325f99745e/gtsam_develop-4.3a1.dev202604281709-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:d6902585aa27c028e4cb8803de208cc5e5b31265d9674219e7eab733eba691c5", size = 31480333, upload-time = "2026-04-28T18:07:21.583Z" },
 ]
 
 [[package]]
@@ -861,6 +861,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/53/1b/e92606e0fa9a1b52ecf57faf322dcc076ae35315b4e1870d380fd64926d7/kornia_rs-0.1.10-cp314-cp314t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:68eb25ba4639fa5e1cd94a10fb6410c8840c9f0162e5912d834c4a8c7c174493", size = 2197890, upload-time = "2025-11-08T11:29:42.273Z" },
     { url = "https://files.pythonhosted.org/packages/2e/fa/a2adce992b5eb65ef8adfc6f4465989948bfa8b875638e17c214541af25a/kornia_rs-0.1.10-cp314-cp314t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:dc18ba839f5c10ceb4757342ee7530cef8a0ecdd20486b8bbe14a56f72fa7037", size = 3040852, upload-time = "2025-11-08T11:29:57.856Z" },
     { url = "https://files.pythonhosted.org/packages/ee/36/40a3e3a235c370f5f61a8f9a7bdedf47d1bdd8f7d7e145e551545babff6b/kornia_rs-0.1.10-cp314-cp314t-win_amd64.whl", hash = "sha256:257eb0a780f990c0c44ac47acb77504dd95b8df0c592fd31354da1228df6678d", size = 2543609, upload-time = "2025-11-08T11:30:40.1Z" },
+]
+
+[[package]]
+name = "loguru"
+version = "0.7.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "win32-setctime", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3a/05/a1dae3dffd1116099471c643b8924f5aa6524411dc6c63fdae648c4f1aca/loguru-0.7.3.tar.gz", hash = "sha256:19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6", size = 63559, upload-time = "2024-12-06T11:20:56.608Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0c/29/0348de65b8cc732daa3e33e67806420b2ae89bdce2b04af740289c5c6c8c/loguru-0.7.3-py3-none-any.whl", hash = "sha256:31a33c10c8e1e10422bfd431aeb5d351c7cf7fa671e3c4df004162264b28220c", size = 61595, upload-time = "2024-12-06T11:20:54.538Z" },
 ]
 
 [[package]]
@@ -2224,6 +2237,7 @@ dependencies = [
     { name = "gtsam-develop" },
     { name = "kornia" },
     { name = "kornia-moons" },
+    { name = "loguru" },
     { name = "marimo" },
     { name = "matplotlib" },
     { name = "open3d" },
@@ -2249,6 +2263,7 @@ requires-dist = [
     { name = "gtsam-develop", specifier = ">=4.3a1.dev202603261854" },
     { name = "kornia", specifier = ">=0.8.2" },
     { name = "kornia-moons", specifier = ">=0.2.9" },
+    { name = "loguru", specifier = ">=0.7.3" },
     { name = "marimo", specifier = ">=0.22.4" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "open3d", specifier = ">=0.19.0" },
@@ -2545,6 +2560,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b5/43/76ded108b296a49f52de6bac5192ca1c4be84e886f9b5c9ba8427d9694fd/werkzeug-3.1.7.tar.gz", hash = "sha256:fb8c01fe6ab13b9b7cdb46892b99b1d66754e1d7ab8e542e865ec13f526b5351", size = 875700, upload-time = "2026-03-24T01:08:07.687Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/b2/0bba9bbb4596d2d2f285a16c2ab04118f6b957d8441566e1abb892e6a6b2/werkzeug-3.1.7-py3-none-any.whl", hash = "sha256:4b314d81163a3e1a169b6a0be2a000a0e204e8873c5de6586f453c55688d422f", size = 226295, upload-time = "2026-03-24T01:08:06.133Z" },
+]
+
+[[package]]
+name = "win32-setctime"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b3/8f/705086c9d734d3b663af0e9bb3d4de6578d08f46b1b101c2442fd9aecaa2/win32_setctime-1.2.0.tar.gz", hash = "sha256:ae1fdf948f5640aae05c511ade119313fb6a30d7eabe25fef9764dca5873c4c0", size = 4867, upload-time = "2024-12-07T15:28:28.314Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e1/07/c6fe3ad3e685340704d314d765b7912993bcb8dc198f0e7a89382d37974b/win32_setctime-1.2.0-py3-none-any.whl", hash = "sha256:95d644c4e708aba81dc3704a116d8cbc974d70b3bdb8be1d150e36be6e9d1390", size = 4083, upload-time = "2024-12-07T15:28:26.465Z" },
 ]
 
 [[package]]
