@@ -1,0 +1,36 @@
+SfMConfig(
+│   loader=FrameLoaderConfig(
+│   │   camera_model=CameraModel(
+│   │   │   model_type=<CameraType.PINHOLE: 'pinhole'>,
+│   │   │   K=array([[2.58839554e+03, 0.00000000e+00, 1.84447840e+03],
+│      [0.00000000e+00, 2.60016589e+03, 1.95168083e+03],
+│      [0.00000000e+00, 0.00000000e+00, 1.00000000e+00]]),
+│   │   │   dist=array([-0.06588834,  0.03284995, -0.00875194, -0.00907468,  0.0073454 ]),
+│   │   │   scale=1.0
+│   │   ),
+│   │   pre_path='data/raw',
+│   │   dataset='statue_orbit',
+│   │   post_path='',
+│   │   ext='jpg',
+│   │   max_read_frames=None,
+│   │   offset_frames=None,
+│   │   undistort=True,
+│   │   max_size=1024
+│   ),
+│   features=FeatureExtractorConfig(
+│   │   feature_type='sift',
+│   │   num_features=2000
+│   ),
+│   matcher=MatcherConfig(
+│   │   matcher_type='bf',
+│   │   bf_lowe_ratio=0.75,
+│   │   bf_cross_check=True,
+│   │   lg_min_conf=0.1
+│   ),
+│   depth_threshold=0.3,
+│   min_inliers=50,
+│   run_ba=True,
+│   fix_first_camera=True,
+│   dump_sfm_debug=False,
+│   save_gsplat=False
+)

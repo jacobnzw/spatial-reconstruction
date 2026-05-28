@@ -22,7 +22,7 @@ class FeatureExtractorConfig:
     feature_type: Literal["sift", "disk"] = "sift"
     """Feature extraction method: 'sift' or 'disk'"""
 
-    num_features: int = 5_000
+    num_features: int = 1_000
     """Maximum number of features to extract per image"""
 
 
@@ -37,8 +37,8 @@ class MatcherConfig:
     bf_cross_check: bool = True
     """Whether to use cross-checking for BF matcher"""
 
-    lg_min_dist: float = 0.1
-    """LightGlue matches with distance below this threshold are filtered out"""
+    lg_min_conf: float = 0.1
+    """LightGlue matches with confidence below this threshold are filtered out"""
 
 
 class FeatureExtractor:
@@ -157,7 +157,7 @@ def _match_lightglue(
     img_from: ViewData,
     img_to: ViewData,
     lg_matcher: KF.LightGlueMatcher,
-    min_dist: float | None = None,
+    min_conf: float | None = None,
 ) -> tuple[NDArrayFloat, NDArrayInt]:
     kp_from = torch.from_numpy(img_from.kp).to(device)
     des_from = torch.from_numpy(img_from.des).to(device)
@@ -168,16 +168,17 @@ def _match_lightglue(
     lafs_to = KF.laf_from_center_scale_ori(kp_to[None], torch.ones(1, len(kp_to), 1, 1, device=device))
 
     with torch.inference_mode():
-        dists, idxs = lg_matcher(des_from, des_to, lafs_from, lafs_to)
+        # LG matcher returns confidence scores instead of distances
+        confs, idxs = lg_matcher(des_from, des_to, lafs_from, lafs_to)
 
-        if min_dist:  # not None and > 0.0
-            if min_dist < 0.0 or min_dist > 1.0:
-                raise ValueError(f"min_dist must be in [0, 1], got {min_dist}")
-            mask = (dists > min_dist).squeeze()
-            dists, idxs = dists[mask], idxs[mask]
+        if min_conf:  # not None and > 0.0
+            if min_conf < 0.0 or min_conf > 1.0:
+                raise ValueError(f"min_conf must be in [0, 1], got {min_conf}")
+            mask = (confs > min_conf).squeeze()
+            confs, idxs = confs[mask], idxs[mask]
 
-        # min_dist=0.0 is valid (retain all matches)
-        return dists.detach().cpu().numpy(), idxs.detach().cpu().numpy()
+        # min_conf=0.0 is valid (retain all matches)
+        return confs.detach().cpu().numpy(), idxs.detach().cpu().numpy()
 
 
 def _match_brute_force(
@@ -226,6 +227,6 @@ def make_keypoint_matcher(
         return partial(_match_brute_force, lowe_ratio=cfg.bf_lowe_ratio, cross_check=cfg.bf_cross_check)
     if cfg.matcher_type == "lg":
         lightglue_matcher = KF.LightGlueMatcher("disk").eval().to(device)
-        return partial(_match_lightglue, min_dist=cfg.lg_min_dist, lg_matcher=lightglue_matcher)
+        return partial(_match_lightglue, min_conf=cfg.lg_min_conf, lg_matcher=lightglue_matcher)
     else:
         ValueError(f"Unknown matcher type {cfg.matcher_type=} in config!")

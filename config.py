@@ -65,7 +65,7 @@ class SfMConfig:
 
     loader: FrameLoaderConfig = field(
         default_factory=lambda: FrameLoaderConfig(
-            **preset(id="default", dataset="statue")
+            **preset(id="default", dataset="statue_orbit")
             # camera_model=_tumvi_camera("data/tum/dataset-corridor4_512_16/dso/camchain.yaml"),
             # pre_path="data/raw",
             # dataset="corridor",
@@ -73,8 +73,8 @@ class SfMConfig:
             # ext="png",
         )
     )
-    features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(feature_type="sift"))
-    matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig(matcher_type="bf"))
+    features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(feature_type="disk"))
+    matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig(matcher_type="lg"))
 
     depth_threshold: float = 0.3  # TODO: how to solve duplication in SLAMConfig?
     """Minimum depth (along z-axis) in camera frame for the triangulated points."""
