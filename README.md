@@ -69,9 +69,10 @@ The final estimated camera poses are shown as 5-point red pyramids representing 
 
 ### Sensitivity to Camera Matrix
 The reconstruction is extremely sensitive to small perturbation in the camera intrinsics. 
-Below I compare reconstructions with $ K $ and $ 0.999*K $.
+Below I compare reconstructions with original (calibrated) and perturbed camera intrinsics.
 
-TODO: add side-by-side or overlaid comparisons w/ SIFT+BF setup
+![Statue Orbit SIFT+BF perturbed K](assets/statue_orbit_sift_bf_compare_goodK-green_badK-red.jpg)
+*Figure: SIFT+BF setup comparing the orignal reconstruction with camera intrinsics $K$ (green) and reconstruction with perturbed instrinsics $K'=0.999K$ (red). Slight deviation in intrinsics has decisive effect on the quality of the reconstructed point cloud as well as the estimated camera poses.*
 
 
 ### Effect of Bundle Adjustment
