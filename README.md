@@ -40,6 +40,10 @@ The photos have the head region slightly out of focus and photos of the statue's
 Both of these present a bit of a challenge for the SfM reconstruction pipeline. 
 I wanted to code something that will work with real data, not just pristine lab data made with professional rigs.
 
+<figure align=center>
+  <img src="assets/statue_orbit.gif" height="400">
+</figure>
+
 ### Experimental Setups
 
   - **SIFT+BF**: SIFT features with Brute Force matcher
@@ -108,14 +112,31 @@ Full solver log in [`assets/statue_orbit_disk_lg_ba.log`](assets/statue_orbit_di
 ### Reconstruction from TUM-VI sequence
 Out of curiosity, I wanted to see how my pipeline performs on a real benchmarking dataset. 
 <!-- I chose TUM-VI at first because it comes with IMU measurements, which I was hoping to use in related visual-inertial odometry learning project, but that has been put on ice due to time constraints. -->
-Compared to the phone photos, TUM-VI provides additional challenge because the frames are distorted due to the fisheye cameras used to record them. The effect of undistortion on the reconstruction is compared in the following figures.
+I picked a sequence of 20 uniformly sampled frames between indices 540 and 640, which, at the frame rate of 20Hz, implies frame sampling frequency of 4Hz (250 ms between frames).
+This subsequence contains enough motion so that a sufficient baseline is ensured.
+Compared to the phone photos, TUM-VI provides additional challenge because the frames are distorted due to the fisheye cameras used by the recording rig. 
+The further difficulty is the presence of many planar surfaces such as walls, which could cause problems for ...
+
 <!-- at first because I wanted to incorporate IMU measurements for the SfM reconstruction -->
 
-TODO: Show reconstruction on corridor TUM-VI sequence: showcasing performance on fisheye distorted images
+<figure align=center>
+  <img src="assets/tumvi_corridor4.gif" alt="Alt text" width="400">
+</figure>
 
-*Figure: Reconstruction of TUM-VI corridor4 sequence from uniformly sampled frames to ensure good enough baseline.*
+The effect of undistortion on the reconstruction is compared in the following figures. I used DISK features limited to `num_features=1000` with LightGlue matcher.
+With the original distorted images, we get reconstruction that has more points. 
+The camera pose estimates are plausible given the frame sequence
+<figure align=center>
+  <img src="assets/tumvi_corridor4_disk_lg_ba_no-undistort_top.jpg" alt="Alt text" height="600">
+  <figcaption>Figure: Reconstruction on select frames of corridor4 TUM-VI sequence on the orignal distorted frames: the corridor is apparent and the estimated camera pose sequence looks plausible.</figcaption>
+</figure>
 
-TODO: Maybe show corridor_4 with/-out fisheye undistortion, just to see the effect, if any.
+The undistortion procedure has a limiting effect on the field of view of the resulting images, which results in less points in the reconstruction.
+The distortion is apparent on the wall reconstruction.
+<figure align="center">
+  <img src="assets/tumvi_corridor4_disk_lg_ba.jpg" alt="Alt text" height="600">
+  <figcaption>Figure: Reconstruction on select frames of corridor4 TUM-VI sequence using the undistorted frames: the corridor is no longer apparent while the estimated camera pose sequence remains plausible.</figcaption>
+</figure>
 
 
 <!-- ## 🚧 Multi-view Stereo (MVS) Pipeline
