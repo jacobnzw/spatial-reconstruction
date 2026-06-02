@@ -6,14 +6,17 @@ from numpy.typing import NDArray
 
 from .camera import NDArrayFloat, NDArrayInt
 from .view import ViewData
+from .features import FeatureStore
 
 
 @dataclass
 class ViewEdge:
     i: int
     j: int
-    inliers_ij: int  # matches i -> j
-    inliers_ji: int  # matches j -> i
+    inliers_ij: int  # number of inlying matches i -> j
+    inliers_ji: int  # number of inlying matches j -> i
+    matches_ij: NDArrayInt  # matches i -> j
+    matches_ji: NDArrayInt  # matches j -> i
 
     @property
     def weight(self) -> int:
@@ -32,14 +35,14 @@ class ViewGraph:
     def __init__(self):
         self.edges = []  # list of ViewEdge (global access)
 
-    def add_edge(self, i, j, inliers_ij, inliers_ji):
+    def add_edge(self, i, j, inliers_ij, inliers_ji, matches_ij, matches_ji):
         """
         Add or update an undirected edge between image i and j.
         """
         if i == j:
             return
 
-        edge = ViewEdge(i, j, inliers_ij, inliers_ji)
+        edge = ViewEdge(i, j, inliers_ij, inliers_ji, matches_ij, matches_ji)
 
         self.edges.append(edge)
 
@@ -92,7 +95,7 @@ def has_overlap(
 
 
 def construct_view_graph(
-    image_store: "FeatureStore",  # noqa: F821
+    image_store: FeatureStore,  # noqa: F821
     matcher_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
     min_inliers: int = 50,
 ):
@@ -104,11 +107,10 @@ def construct_view_graph(
     for i in range(N):
         for j in range(i + 1, N):
             img_i, img_j = image_store[i], image_store[j]
-            # TODO: 1 direction enough, when matches symmetrical (e.g. crossCheck=True)
-            ok_ij, inliers_ij, _ = has_overlap(img_i, img_j, matcher_fn, min_inliers)
-            ok_ji, inliers_ji, _ = has_overlap(img_j, img_i, matcher_fn, min_inliers)
-            # ASK: why the matches should not be preserved ???
-            if ok_ij and ok_ji:
-                view_graph.add_edge(i, j, inliers_ij, inliers_ji)
+            ok_ij, inliers_ij, matches_ij = has_overlap(img_i, img_j, matcher_fn, min_inliers)
+            # ok_ji, inliers_ji, _ = has_overlap(img_j, img_i, matcher_fn, min_inliers)
+            if ok_ij:
+                # TODO: Assumes matches set to symmetrical (e.g. crossCheck=True)
+                view_graph.add_edge(i, j, inliers_ij, inliers_ij, matches_ij, matches_ij)
 
     return view_graph
