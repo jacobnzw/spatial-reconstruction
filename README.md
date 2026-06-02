@@ -92,7 +92,8 @@ Full solver log in [`assets/statue_orbit_disk_lg_ba.log`](assets/statue_orbit_di
 
 
 ### Reconstruction from TUM-VI sequence
-Out of curiosity, I wanted to see how my pipeline performs on a real benchmarking dataset where the camera doesn't orbit around an object. I chose TUM-VI at first because it comes with IMU measurements, which I was hoping to use in related visual-inertial odometry learning project, but that has been put on ice due to time constraints.
+Out of curiosity, I wanted to see how my pipeline performs on a real benchmarking dataset where the camera doesn't orbit around an object. 
+I chose [TUM-VI](https://cvg.cit.tum.de/data/datasets/visual-inertial-dataset) at first because it comes with IMU measurements, which I was hoping to use in related visual-inertial odometry learning project, but that has been put on ice due to time constraints.
 In any case, I picked a sequence of 20 uniformly sampled frames between indices 540 and 640, which, at the frame rate of 20Hz, implies frame sampling frequency of 4Hz (250 ms between frames).
 This subsequence contains enough motion so that a sufficient baseline is ensured.
 Compared to the phone photos, TUM-VI provides additional challenge because the frames are distorted due to the fisheye cameras used by the recording rig. 
