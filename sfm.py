@@ -282,7 +282,7 @@ def process_graph_component(
         f"Establishing baseline ({best_edge.weight} matches) from: {img_0.idx}:{img_0.path.name} and {img_1.idx}:{img_1.path.name}"
     )
     # matches -> E -> pose -> triangulation
-    bootstrap_from_two_views(img_0, img_1, track_manager, point_cloud, match_fn)
+    bootstrap_from_two_views(img_0, img_1, track_manager, point_cloud, matches=best_edge.matches_ij)
 
     logger.debug(f"After compute_baseline_estimate: {track_manager.is_valid()=}")
 
@@ -313,7 +313,14 @@ def process_graph_component(
 
         try:
             # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
-            add_view(img_new, img_ref, track_manager, point_cloud, match_fn=match_fn, depth_threshold=depth_threshold)
+            add_view(
+                img_new,
+                img_ref,
+                track_manager,
+                point_cloud,
+                matches=best_edge.matches_ij,
+                depth_threshold=depth_threshold,
+            )
             logger.debug(f"After add_view: {track_manager.is_valid()=}")
 
         except ValueError as e:

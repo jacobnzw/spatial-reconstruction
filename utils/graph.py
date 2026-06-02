@@ -14,8 +14,8 @@ from .view import ViewData
 class ViewEdge:
     i: int
     j: int
-    inliers_ij: int  # matches i -> j
-    inliers_ji: int  # matches j -> i
+    inliers_ij: int  # number of inlying matches i -> j
+    inliers_ji: int  # number of inlying matches j -> i
     matches_ij: NDArrayInt  # matches i -> j
     matches_ji: NDArrayInt  # matches j -> i
 
@@ -68,17 +68,14 @@ def construct_view_graph(
             img_i, img_j = image_store[i], image_store[j]
             # TODO: 1 direction enough, when matches symmetrical (e.g. crossCheck=True)
             ij_overlap, inliers_ij, matches_ij = has_overlap(img_i, img_j, matcher_fn, min_inliers)
-            ji_overlap, inliers_ji, matches_ji = has_overlap(img_j, img_i, matcher_fn, min_inliers)
 
             matches_ij_shape = matches_ij.shape if matches_ij is not None else None
-            matches_ji_shape = matches_ji.shape if matches_ji is not None else None
             logger.debug(f"Matcher result for images {i} -> {j}: {ij_overlap=} {matches_ij_shape=} {inliers_ij=}")
-            logger.debug(f"Matcher result for images {j} -> {i}: {ji_overlap=} {matches_ji_shape=} {inliers_ji=}")
 
-            # ASK: why the matches should not be preserved ???
-            if ij_overlap and ji_overlap:
-                view_graph.add_edge(i, j, inliers_ij, inliers_ji, matches_ij, matches_ji)
-                logger.debug(f"Added ViewEdge {i}<->{j}: {inliers_ij=} {inliers_ji=}")
+            if ij_overlap:
+                # TODO: Assumes matches set to symmetrical (e.g. crossCheck=True)
+                view_graph.add_edge(i, j, inliers_ij, inliers_ij, matches_ij, matches_ij)
+                logger.debug(f"Added ViewEdge {i} -> {j}: {inliers_ij=}")
 
     return view_graph
 
