@@ -1,10 +1,16 @@
 ## Applications
 ### Structure from motion (SfM)
 - given a set of overlapping images of a static scene, estimate camera poses and 3D points from 2D image points
-- Goal: Find camera poses (position/orientation) and a sparse 3D structure.
-- Input: A set of overlapping images.
+- Goal: Estimate camera poses (position/orientation) and a sparse 3D point cloud.
+- Input: A set of images (views) of an object that overlap.
+  - Each 3D point is typically seen in ≥ 2 images, Often 3–10 images in practice
 - Process: Matches image features (like SIFT) across views to estimate camera movement and a basic 3D point cloud.
 - Output: Camera parameters and a sparse point cloud. 
+
+Two main approaches:
+- [Global SfM](https://arxiv.org/pdf/2407.20219v1): simultaneous estimation of all camera poses and 3D points
+- Incremental SfM: estimate poses and 3D points incrementally, one image at a time
+
 
 ### Multi-view Stereo (MVS)
 - Goal: Generate a dense, detailed 3D model (point cloud or mesh).

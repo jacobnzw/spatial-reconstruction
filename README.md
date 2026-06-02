@@ -1,31 +1,15 @@
-
 # Spatial Reconstruction Pipeline
-Goal of the project is to build a pipeline for spatial reconstruction from a set of images.
-So given a bunch of photos of one static object from different angles, we want to reconstruct the 3D model of the object.
+## 🏆Goal:
 
-Employ classical techniques to learn basic principles from 3D computer vision. Advance to deep learning techniques and Gaussian splatting representation for more accuracy and efficiency.
+Learn basic principles of 3D computer vision by building a Structure-from-Motion (SfM) pipeline for spatial reconstruction from a set of images.
+The pipeline ingests a bunch of photos of one static object from different angles and outputs a (sparse) 3D point cloud model of the object and the estimated camera poses (for each photo).
 
-## 👉 Structure from Motion (SfM) Pipeline
-= joint estimation of
+<!-- Employ classical techniques to learn basic principles from 3D computer vision. Advance to deep learning techniques and Gaussian splatting representation for more accuracy and efficiency. -->
 
-- Camera poses (extrinsics)
-- Sparse 3D points
-
-From feature correspondences across multiple images
-Critically: Each 3D point is typically seen in ≥ 2 images, Often 3–10 images in practice
-
-Two main approaches:
-- [Global SfM](https://arxiv.org/pdf/2407.20219v1): simultaneous estimation of all camera poses and 3D points
-- Incremental SfM: estimate poses and 3D points incrementally, one image at a time
-
-Approach this incrementally:
-- estimate poses and 3D points using only two images
-- add view graph construction to work with more images and refine the estimate
-
-Need to construct view graph to represent the relationships between the images. 
-Each node in the graph represents an image, and each edge represents the overlap between two images. 
-The weight of the edge can represent the amount of overlap or the quality of the match between the two images. 
-The view graph can be used to guide the image matching process and to estimate the camera poses.
+## ❌ Non-Goals:
+- Do better than existing SfM pipelines (e.g. [GTSfM](https://github.com/borglab/gtsfm) or [COLMAP](https://colmap.github.io/install.html)) in terms of accuracy or efficiency.
+- Implement a full photogrammetry pipeline (SfM + MVS) for dense reconstruction.
+- Implement a full SLAM pipeline for spatial reconstruction from video sequences.
 
 
 ## Experiments & Results
@@ -40,9 +24,9 @@ The photos have the head region slightly out of focus and photos of the statue's
 Both of these present a bit of a challenge for the SfM reconstruction pipeline. 
 I wanted to code something that will work with real data, not just pristine lab data made with professional rigs.
 
-<figure align=center>
+<p align="center">
   <img src="assets/statue_orbit.gif" height="400">
-</figure>
+</p>
 
 ### Experimental Setups
 
@@ -50,12 +34,10 @@ I wanted to code something that will work with real data, not just pristine lab 
     - Number of features limited to maximum `num_features=2000`
     - The Brute-Force (BF) matcher computes symmetric matches (via `cross_check=True`)
     - See full parameter config in [`assets/statue_orbit_sift_bf_config.log`](assets/statue_orbit_sift_bf_config.log)
-  - **DISK+LG**: DISK features with LightGlue matcher
+  - **DISK+LG**: [DISK features](https://arxiv.org/pdf/2006.13566) with [LightGlue matcher](https://arxiv.org/pdf/2306.13643)
     - Number of features limited to maximum `num_features=1000`
     - Only LightGlue matches with confidence above `lg_min_conf=0.1` are retained
     - See full parameter config in [`assets/statue_orbit_disk_lg_config.log`](assets/statue_orbit_disk_lg_config.log)
-
-TODO: add links to sift disk/lightglue papers
 
 
 ### Reconstruction from phone photos
@@ -110,29 +92,27 @@ Full solver log in [`assets/statue_orbit_disk_lg_ba.log`](assets/statue_orbit_di
 
 
 ### Reconstruction from TUM-VI sequence
-Out of curiosity, I wanted to see how my pipeline performs on a real benchmarking dataset. 
-<!-- I chose TUM-VI at first because it comes with IMU measurements, which I was hoping to use in related visual-inertial odometry learning project, but that has been put on ice due to time constraints. -->
-I picked a sequence of 20 uniformly sampled frames between indices 540 and 640, which, at the frame rate of 20Hz, implies frame sampling frequency of 4Hz (250 ms between frames).
+Out of curiosity, I wanted to see how my pipeline performs on a real benchmarking dataset where the camera doesn't orbit around an object. I chose TUM-VI at first because it comes with IMU measurements, which I was hoping to use in related visual-inertial odometry learning project, but that has been put on ice due to time constraints.
+In any case, I picked a sequence of 20 uniformly sampled frames between indices 540 and 640, which, at the frame rate of 20Hz, implies frame sampling frequency of 4Hz (250 ms between frames).
 This subsequence contains enough motion so that a sufficient baseline is ensured.
 Compared to the phone photos, TUM-VI provides additional challenge because the frames are distorted due to the fisheye cameras used by the recording rig. 
-The further difficulty is the presence of many planar surfaces such as walls, which could cause problems for ...
-
-<!-- at first because I wanted to incorporate IMU measurements for the SfM reconstruction -->
+The further difficulty is the presence of many planar surfaces such as walls, which could cause problems for the camera pose estimation (via PnP or essential matrix decomposition).
 
 <figure align=center>
   <img src="assets/tumvi_corridor4.gif" alt="Alt text" width="400">
 </figure>
 
-The effect of undistortion on the reconstruction is compared in the following figures. I used DISK features limited to `num_features=1000` with LightGlue matcher.
 With the original distorted images, we get reconstruction that has more points. 
-The camera pose estimates are plausible given the frame sequence
+The camera pose estimates are plausible given the frame sequence.
+Wall points that should be (ideally) estimated as coplanar look warped due to the fact that `cv.triangulatePoints` is effectively unable to account for the fisheye camera distortion, as it just assumes a simple pinhole camera projection matrices in its arguments.
 <figure align=center>
   <img src="assets/tumvi_corridor4_disk_lg_ba_no-undistort_top.jpg" alt="Alt text" height="600">
   <figcaption>Figure: Reconstruction on select frames of corridor4 TUM-VI sequence on the orignal distorted frames: the corridor is apparent and the estimated camera pose sequence looks plausible.</figcaption>
 </figure>
 
-The undistortion procedure has a limiting effect on the field of view of the resulting images, which results in less points in the reconstruction.
-The distortion is apparent on the wall reconstruction.
+The effect of image undistortion on the reconstruction is compared in the following figures. I used DISK features limited to `num_features=1000` with LightGlue matcher.
+The undistortion procedure has a limiting effect on the field of view of the resulting images so that we end up with less points in the reconstructed point cloud.
+The camera pose estimates are still plausible, but are noticeably different from the ones obtained with the original distorted frames.
 <figure align="center">
   <img src="assets/tumvi_corridor4_disk_lg_ba.jpg" alt="Alt text" height="600">
   <figcaption>Figure: Reconstruction on select frames of corridor4 TUM-VI sequence using the undistorted frames: the corridor is no longer apparent while the estimated camera pose sequence remains plausible.</figcaption>
