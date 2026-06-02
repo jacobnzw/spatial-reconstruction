@@ -12,7 +12,7 @@ The pipeline ingests a bunch of photos of one static object from different angle
 - Implement a full SLAM pipeline for spatial reconstruction from video sequences.
 
 
-## Experiments & Results
+## 🧪 Experiments & Results
 For feature (keypoint descriptor) extraction, I tested the classical SIFT features, which are still used in research and serve as a good baseline, and the learned neural DISK features (via `kornia` library).
 For keypoint descriptor (feature) matching, I employed a classical Brute Force matcher (via the OpenCV's `BFMatcher`) as well as a learned neural LightGlue matcher (via `kornia` library).
 
