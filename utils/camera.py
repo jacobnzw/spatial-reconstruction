@@ -49,14 +49,20 @@ class CameraModel:
         return self.K
 
 
-def calibrate_camera(img_dir: Path = Path("data/calibration"), force_recalibrate: bool = False):
-    """Compute camera intrinsics given a sample of checkerboard photos."""
+def calibrate_camera(camera_params_file: Path, force_recalibrate: bool = False):
+    """Compute camera intrinsics given a sample of checkerboard photos.
+
+    Args:
+        camera_params_file: Path to save/load calibration parameters (K and dist coefficients).
+        force_recalibrate: If True, ignore cached parameters and recalibrate. Defaults to False.
+
+    Returns:
+        Tuple of (K, dist) where K is the camera intrinsic matrix (3x3) and dist are the distortion coefficients.
+    """
     # Try to load cached calibration parameters
-    CALIBRATION_FILENAME = "calibration_params.npz"
-    CALIBRATION_PATH = img_dir / CALIBRATION_FILENAME
-    if not force_recalibrate and CALIBRATION_PATH.exists():
-        logger.info(f"Loading cached calibration parameters from: {CALIBRATION_PATH}")
-        with np.load(CALIBRATION_PATH) as data:
+    if not force_recalibrate and camera_params_file.exists():
+        logger.info(f"Loading cached calibration parameters from: {camera_params_file}")
+        with np.load(camera_params_file) as data:
             return data["K"], data["dist"]
 
     logger.info("Calibrating camera...")
@@ -72,6 +78,8 @@ def calibrate_camera(img_dir: Path = Path("data/calibration"), force_recalibrate
     objpoints = []  # 3D points
     imgpoints = []  # 2D points
 
+    # ASSUME: folder containing the camera params file contains calibration images
+    img_dir = camera_params_file.parent
     images = list(img_dir.glob("*.jpg"))
 
     for fname in images:
@@ -113,6 +121,6 @@ def calibrate_camera(img_dir: Path = Path("data/calibration"), force_recalibrate
         logger.warning("High reprojection error! Calibration may be inaccurate.")
 
     # Cache the calibration parameters
-    np.savez(CALIBRATION_PATH, K=K, dist=dist)
+    np.savez(camera_params_file, K=K, dist=dist)
 
     return K, dist

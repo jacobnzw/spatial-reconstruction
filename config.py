@@ -14,8 +14,8 @@ from utils.view import FrameLoaderConfig
 # TODO: add SfM fields for depth-filter, pre-triangulation geometric masking, etc.
 
 
-def _default_camera() -> CameraModel:
-    K, dist = calibrate_camera()
+def _default_camera(camera_params_file: str) -> CameraModel:
+    K, dist = calibrate_camera(Path(camera_params_file))
     return CameraModel(CameraType.PINHOLE, K, dist)
 
 
@@ -41,7 +41,7 @@ def _tumvi_camera(calib_yaml_path: str, cam_key: str = "cam0") -> CameraModel:
 def preset(id: str, dataset: str) -> Dict:
     if id == "tumvi":
         return {
-            "camera_model": _tumvi_camera("data/tum/dataset-corridor4_512_16/dso/camchain.yaml"),
+            "camera_model": _tumvi_camera("data/calibration/tumvi/camchain.yaml"),
             "pre_path": "data/tum/",
             "dataset": dataset,
             "post_path": "dso/cam0/images",
@@ -49,7 +49,7 @@ def preset(id: str, dataset: str) -> Dict:
         }
     elif id == "default":
         return {
-            "camera_model": _default_camera(),
+            "camera_model": _default_camera("data/calibration/redmi/calibration_params.npz"),
             "pre_path": "data/raw",
             "dataset": dataset,
             "post_path": "",
@@ -65,18 +65,18 @@ class SfMConfig:
 
     loader: FrameLoaderConfig = field(
         default_factory=lambda: FrameLoaderConfig(
-            **preset(id="default", dataset="statue_orbit")
-            # camera_model=_tumvi_camera("data/tum/dataset-corridor4_512_16/dso/camchain.yaml"),
-            # pre_path="data/raw",
-            # dataset="corridor",
-            # post_path="",
-            # ext="png",
+            # **preset(id="default", dataset="statue_orbit")
+            camera_model=_tumvi_camera("data/calibration/tumvi/camchain.yaml"),
+            pre_path="data/raw",
+            dataset="corridor",
+            post_path="",
+            ext="png",
         )
     )
     features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(feature_type="disk"))
     matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig(matcher_type="lg"))
 
-    depth_threshold: float = 0.3  # TODO: how to solve duplication in SLAMConfig?
+    depth_threshold: float = 0.3  # TODO: how to solve duplication in SLAMConfig? Inheritance?
     """Minimum depth (along z-axis) in camera frame for the triangulated points."""
 
     # SfM-specific fields
