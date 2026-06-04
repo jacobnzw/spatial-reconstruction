@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Callable
 
 import cv2 as cv
@@ -351,7 +350,8 @@ def main(cfg: SfMConfig = SfMConfig()):
     # Display configuration
     pprint(cfg, expand_all=True)
 
-    out_dir = Path("data") / "out" / cfg.loader.dataset
+    # out_dir = Path("data") / "out" / cfg.loader.dataset
+    out_dir = cfg.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Load all images & extract features
@@ -384,7 +384,7 @@ def main(cfg: SfMConfig = SfMConfig()):
     #     if not U:
     #         break
 
-    basename = f"{cfg.loader.dataset}_{cfg.features.feature_type}_{cfg.matcher.matcher_type}"
+    basename = cfg.out_basename
     logger.info(f"Saving initial reconstruction to {out_dir / f'{basename}.ply'}...")
     exporter.save_ply(filename=out_dir / f"{basename}.ply")
 

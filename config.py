@@ -1,5 +1,7 @@
 """Configuration for Structure from Motion pipeline."""
 
+from xml.sax.handler import property_declaration_handler
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict
@@ -65,12 +67,12 @@ class SfMConfig:
 
     loader: FrameLoaderConfig = field(
         default_factory=lambda: FrameLoaderConfig(
-            # **preset(id="default", dataset="statue_orbit")
-            camera_model=_tumvi_camera("data/calibration/tumvi/camchain.yaml"),
-            pre_path="data/raw",
-            dataset="corridor",
-            post_path="",
-            ext="png",
+            **preset(id="default", dataset="statue_orbit")
+            # camera_model=_tumvi_camera("data/calibration/tumvi/camchain.yaml"),
+            # pre_path="data/raw",
+            # dataset="corridor",
+            # post_path="",
+            # ext="png",
         )
     )
     features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(feature_type="disk"))
@@ -94,6 +96,23 @@ class SfMConfig:
 
     save_gsplat: bool = False
     """Save tensors for gsplat (without BA)"""
+
+    out_name: str | None = None
+    """Override basename for the pipeline output files (e.g. point cloud saved to 'out_basename.ply')."""
+
+    @property
+    def out_basename(self):
+        """Default output basename for all output files, if override not specified via 'out_name'."""
+        return (
+            self.out_name
+            if self.out_name is not None
+            else f"{self.loader.dataset}_{self.features.feature_type}_{self.matcher.matcher_type}"
+        )
+
+    @property
+    def out_dir(self):
+        """Output directory where all pipeline output files are written to."""
+        return Path("data") / "out" / self.loader.dataset
 
 
 @dataclass
