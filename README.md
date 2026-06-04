@@ -99,25 +99,30 @@ This subsequence contains enough motion so that a sufficient baseline is ensured
 Compared to the phone photos, TUM-VI provides additional challenge because the frames are distorted due to the fisheye cameras used by the recording rig. 
 The further difficulty is the presence of many planar surfaces such as walls, which could cause problems for the camera pose estimation (via PnP or essential matrix decomposition).
 
-<figure align=center>
-  <img src="assets/tumvi_corridor4.gif" alt="Alt text" width="400">
-</figure>
+<p align="center">
+  <img src="assets/tumvi_corridor4.gif" width="400">
+</p>
 
 With the original distorted images, we get reconstruction that has more points. 
 The camera pose estimates are plausible given the frame sequence.
 Wall points that should be (ideally) estimated as coplanar look warped due to the fact that `cv.triangulatePoints` is effectively unable to account for the fisheye camera distortion, as it just assumes a simple pinhole camera projection matrices in its arguments.
-<figure align=center>
-  <img src="assets/tumvi_corridor4_disk_lg_ba_no-undistort_top.jpg" alt="Alt text" height="600">
-  <figcaption>Figure: Reconstruction on select frames of corridor4 TUM-VI sequence on the orignal distorted frames: the corridor is apparent and the estimated camera pose sequence looks plausible.</figcaption>
-</figure>
+
+<p align="center">
+  <img src="assets/tumvi_corridor4_disk_lg_ba_no-undistort_top.jpg" height="600">
+</p>
+
+*Figure: Reconstruction on select frames of corridor4 TUM-VI sequence on the orignal distorted frames: the corridor is apparent and the estimated camera pose sequence looks plausible.*
+
 
 The effect of image undistortion on the reconstruction is compared in the following figures. I used DISK features limited to `num_features=1000` with LightGlue matcher.
 The undistortion procedure has a limiting effect on the field of view of the resulting images so that we end up with less points in the reconstructed point cloud.
 The camera pose estimates are still plausible, but are noticeably different from the ones obtained with the original distorted frames.
-<figure align="center">
-  <img src="assets/tumvi_corridor4_disk_lg_ba.jpg" alt="Alt text" height="600">
-  <figcaption>Figure: Reconstruction on select frames of corridor4 TUM-VI sequence using the undistorted frames: the corridor is no longer apparent while the estimated camera pose sequence remains plausible.</figcaption>
-</figure>
+
+<p align="center">
+  <img src="assets/tumvi_corridor4_disk_lg_ba.jpg" height="600">
+</p>
+
+*Figure: Reconstruction on select frames of corridor4 TUM-VI sequence using the undistorted frames: the corridor is no longer apparent while the estimated camera pose sequence remains plausible.*
 
 
 <!-- ## 🚧 Multi-view Stereo (MVS) Pipeline
