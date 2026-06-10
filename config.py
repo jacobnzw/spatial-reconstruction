@@ -1,8 +1,8 @@
 """Configuration for Structure from Motion pipeline."""
 
-from xml.sax.handler import property_declaration_handler
-
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Dict
 
@@ -151,3 +151,19 @@ class SLAMConfig(BaseConfig):
 
     max_motion_matches: int = 125
     """Maximum number of keypoint matches to judge the motion between frames (if too high, we might add redundant keyframes with little motion)"""
+
+
+def config_serializer(obj):
+    """Serializer for numpy arrays and Enums."""
+
+    if isinstance(obj, np.ndarray):
+        return np.array2string(obj)
+    if isinstance(obj, Enum):
+        return obj.value
+
+    raise TypeError(f"Object of type {type(obj)} is not serializable")
+
+
+def write_config_to_json(cfg: SfMConfig | SLAMConfig, file: str):
+    """Write dataclass config to JSON file."""
+    Path(file).write_text(json.dumps(asdict(cfg), indent=2, default=config_serializer))

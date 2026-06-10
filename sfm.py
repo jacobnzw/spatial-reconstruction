@@ -8,7 +8,7 @@ from loguru import logger
 from rich.pretty import pprint
 
 from ba import bundle_adjustment
-from config import SfMConfig
+from config import SfMConfig, write_config_to_json
 from utils import (
     FrameLoader,
     NDArrayFloat,
@@ -350,9 +350,10 @@ def main(cfg: SfMConfig = SfMConfig()):
     # Display configuration
     pprint(cfg, expand_all=True)
 
-    # out_dir = Path("data") / "out" / cfg.loader.dataset
     out_dir = cfg.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+    basename = cfg.out_basename
+    write_config_to_json(cfg, out_dir / f"{basename}_config.json")
 
     # Load all images & extract features
     logger.info(f"Extracting {cfg.features.feature_type.upper()} features from {cfg.loader.img_dir}...")
@@ -384,7 +385,6 @@ def main(cfg: SfMConfig = SfMConfig()):
     #     if not U:
     #         break
 
-    basename = cfg.out_basename
     logger.info(f"Saving initial reconstruction to {out_dir / f'{basename}.ply'}...")
     exporter.save_ply(filename=out_dir / f"{basename}.ply")
 
