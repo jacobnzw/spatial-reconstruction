@@ -64,9 +64,6 @@ def bootstrap_from_two_views(
     if matches is None and match_fn is None:
         raise ValueError("One of matches or match_fn must be supplied.")
 
-    # Get camera intrinsics from img_0
-    K = img_0.camera_model.get_camera_matrix()
-
     # Match key points (via descriptors) if not given
     if matches is None:
         logger.debug(f"baseline: Computing matches from {img_0.idx}:{img_0.path.name} to {img_1.idx}:{img_1.path.name}")
@@ -79,6 +76,7 @@ def bootstrap_from_two_views(
     # pts0, pts1 = pts0[matches[:, 0]], pts1[matches[:, 1]]  # ty:ignore[not-subscriptable]
 
     # compute Essential matrix using camera intrinsics; mask indicates inliers
+    K = img_0.camera_model.get_camera_matrix()
     E, mask = cv.findEssentialMat(pts0, pts1, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
 
     # Estimate camera extrinsics & triangulate 3D points; mask for inliers passing epipolar constraint
@@ -346,9 +344,11 @@ def main(cfg: SfMConfig = SfMConfig()):
     Args:
         cfg: Configuration object. Override defaults with --cfg.param_name value
     """
-
     # Display configuration
     pprint(cfg, expand_all=True)
+
+    # TODO: add handler for files, logger.add(out_dir / f"{basename}.log")
+    # PROBLEM: logging calls already made during SfMConfig() init
 
     out_dir = cfg.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)

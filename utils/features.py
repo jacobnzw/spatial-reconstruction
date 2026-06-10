@@ -159,6 +159,7 @@ def _match_lightglue(
     lg_matcher: KF.LightGlueMatcher,
     min_conf: float | None = None,
 ) -> tuple[NDArrayFloat, NDArrayInt]:
+    # TODO: docstring
     kp_from = torch.from_numpy(img_from.kp).to(device)
     des_from = torch.from_numpy(img_from.des).to(device)
     kp_to = torch.from_numpy(img_to.kp).to(device)
@@ -223,6 +224,7 @@ def _match_brute_force(
 def make_keypoint_matcher(
     cfg: MatcherConfig,
 ) -> Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]]:
+    """Factory for keypoint matchers."""
     if cfg.matcher_type == "bf":
         return partial(_match_brute_force, lowe_ratio=cfg.bf_lowe_ratio, cross_check=cfg.bf_cross_check)
     if cfg.matcher_type == "lg":

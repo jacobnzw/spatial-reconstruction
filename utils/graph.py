@@ -2,9 +2,11 @@ from dataclasses import dataclass
 from typing import Callable
 
 import cv2 as cv
+from loguru import logger
 from numpy.typing import NDArray
 
 from .camera import NDArrayFloat, NDArrayInt
+from .features import FeatureStore
 from .view import ViewData
 
 
@@ -50,49 +52,8 @@ class ViewGraph:
         return max(self.edges, key=lambda e: e.weight, default=None)
 
 
-def has_overlap(
-    img_from: ViewData,
-    img_to: ViewData,
-    matcher_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]] | None = None,
-    min_inliers: int = 50,
-) -> tuple[bool, int | None, NDArray | None]:
-    """Returns True if there is sufficient overlap between two images.
-
-    Args:
-        img_from: Source image.
-        img_to: Target image.
-        K: Camera intrinsic matrix. If None, uses img_from.camera_model.K.
-        matcher_fn: Keypoint matcher function. Required parameter.
-        min_inliers: Minimum number of inliers to consider overlap sufficient.
-    """
-    if matcher_fn is None:
-        raise ValueError("matcher_fn is required")
-
-    K = img_from.camera_model.get_camera_matrix()
-
-    _, good = matcher_fn(img_from, img_to)
-
-    if len(good) < min_inliers:
-        return False, None, None
-
-    # geometric validation: rejects matches that cannot arise from a rigid 3D scene
-    # [:, 0] = queryIdx; [:, 1] = trainIdx
-    pts1, pts2 = img_from.kp[good[:, 0]], img_to.kp[good[:, 1]]  # ty:ignore[not-subscriptable]
-
-    E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.RANSAC, threshold=1.0)
-
-    if E is None:
-        return False, None, None
-
-    inliers = int((mask > 0).sum())
-    if inliers < min_inliers:
-        return False, None, None
-
-    return True, inliers, good
-
-
 def construct_view_graph(
-    image_store: "FeatureStore",  # noqa: F821
+    image_store: FeatureStore,  # noqa: F821
     matcher_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
     min_inliers: int = 50,
 ):
@@ -105,10 +66,64 @@ def construct_view_graph(
         for j in range(i + 1, N):
             img_i, img_j = image_store[i], image_store[j]
             # TODO: 1 direction enough, when matches symmetrical (e.g. crossCheck=True)
-            ok_ij, inliers_ij, _ = has_overlap(img_i, img_j, matcher_fn, min_inliers)
-            ok_ji, inliers_ji, _ = has_overlap(img_j, img_i, matcher_fn, min_inliers)
+            ij_overlap, inliers_ij, matches_ij = has_overlap(img_i, img_j, matcher_fn, min_inliers)
+            ji_overlap, inliers_ji, matches_ji = has_overlap(img_j, img_i, matcher_fn, min_inliers)
+
+            matches_ij_shape = matches_ij.shape if matches_ij is not None else None
+            matches_ji_shape = matches_ji.shape if matches_ji is not None else None
+            logger.debug(f"Match stats {i}->{j}: {ij_overlap=} {matches_ij_shape=} {inliers_ij=}")
+            logger.debug(f"Match stats {j}->{i}: {ji_overlap=} {matches_ji_shape=} {inliers_ji=}")
+
             # ASK: why the matches should not be preserved ???
-            if ok_ij and ok_ji:
+            if ij_overlap and ji_overlap:
                 view_graph.add_edge(i, j, inliers_ij, inliers_ji)
+                logger.debug(f"Added ViewEdge {i}<->{j}: {inliers_ij=} {inliers_ji=}")
 
     return view_graph
+
+
+def has_overlap(
+    img_from: ViewData,
+    img_to: ViewData,
+    matcher_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]] | None = None,
+    min_inliers: int = 50,
+) -> tuple[bool, int | None, NDArray | None]:
+    """Returns True if there is sufficient overlap between two images.
+
+    Matches are validated geometrically by checking for existance of essential matrix.
+
+    Args:
+        img_from: Source image.
+        img_to: Target image.
+        matcher_fn: Keypoint matcher function. Required parameter.
+        min_inliers: Minimum number of inliers to consider overlap sufficient.
+
+    Returns:
+        Tuple of (flag, n_inliers, matches):
+            - flag: Flag set to True if images overlap.
+            - n_inliers: Number of inlier matches after geometric validation.
+            - matches: Array of match indices (N, 2) where each row is (queryIdx, trainIdx).
+    """
+    if matcher_fn is None:
+        raise ValueError("matcher_fn is required")
+
+    _, matches = matcher_fn(img_from, img_to)
+    if len(matches) < min_inliers:
+        return False, None, None
+
+    # geometric validation: rejects matches that cannot arise from a rigid 3D scene
+    # [:, 0] = queryIdx; [:, 1] = trainIdx
+    # TODO: repeated in bootstrap_from_two_views: save E, mask in ViewEdge?
+    pts1, pts2 = img_from.kp[matches[:, 0]], img_to.kp[matches[:, 1]]  # ty:ignore[not-subscriptable]
+
+    K = img_from.camera_model.get_camera_matrix()
+    E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.RANSAC, threshold=1.0)
+
+    if E is None:
+        return False, None, None
+
+    n_inliers = int((mask > 0).sum())
+    if n_inliers < min_inliers:
+        return False, None, None
+
+    return True, n_inliers, matches
