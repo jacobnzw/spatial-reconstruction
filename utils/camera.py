@@ -5,7 +5,6 @@ from typing import Any
 
 import cv2 as cv
 import numpy as np
-from loguru import logger
 from numpy.typing import NDArray
 
 NDArrayFloat = NDArray[np.floating[Any]]
@@ -61,11 +60,11 @@ def calibrate_camera(camera_params_file: Path, force_recalibrate: bool = False):
     """
     # Try to load cached calibration parameters
     if not force_recalibrate and camera_params_file.exists():
-        logger.info(f"Loading cached calibration parameters from: {camera_params_file}")
+        print(f"Loading cached calibration parameters from: {camera_params_file}")
         with np.load(camera_params_file) as data:
             return data["K"], data["dist"]
 
-    logger.info("Calibrating camera...")
+    print("Calibrating camera...")
     # Checkerboard parameters
     CHECKERBOARD = (8, 6)  # inner corners (width, height)
     SQUARE_SIZE = 0.025  # meters (example)
@@ -116,9 +115,9 @@ def calibrate_camera(camera_params_file: Path, force_recalibrate: bool = False):
         mean_error += error
 
     mean_error /= len(objpoints)
-    logger.info(f"Mean reprojection error: {mean_error:.4f} pixels")
+    print(f"Mean reprojection error: {mean_error:.4f} pixels")
     if mean_error > 0.5:
-        logger.warning("High reprojection error! Calibration may be inaccurate.")
+        print("WARNING: High reprojection error! Calibration may be inaccurate.")
 
     # Cache the calibration parameters
     np.savez(camera_params_file, K=K, dist=dist)

@@ -13,8 +13,6 @@ from utils.camera import CameraModel, CameraType, calibrate_camera
 from utils.features import FeatureExtractorConfig, MatcherConfig
 from utils.view import FrameLoaderConfig
 
-# TODO: add SfM fields for depth-filter, pre-triangulation geometric masking, etc.
-
 
 def _default_camera(camera_params_file: str) -> CameraModel:
     K, dist = calibrate_camera(Path(camera_params_file))

@@ -347,12 +347,12 @@ def main(cfg: SfMConfig = SfMConfig()):
     # Display configuration
     pprint(cfg, expand_all=True)
 
-    # TODO: add handler for files, logger.add(out_dir / f"{basename}.log")
-    # PROBLEM: logging calls already made during SfMConfig() init
-
     out_dir = cfg.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     basename = cfg.out_basename
+
+    logger.add(out_dir / f"{basename}.log")
+
     write_config_to_json(cfg, out_dir / f"{basename}_config.json")
 
     # Load all images & extract features
