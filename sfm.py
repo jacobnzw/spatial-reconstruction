@@ -309,6 +309,8 @@ def process_graph_component(
                 f" (matches: {best_edge.weight})"
             )
         )
+        logger.debug(f"{img_ref.idx=} {img_new.idx=} {best_edge.i=} {best_edge.j=} {best_edge.matches_ij.shape=}.")
+
         try:
             # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
             add_view(img_new, img_ref, track_manager, point_cloud, match_fn=match_fn, depth_threshold=depth_threshold)

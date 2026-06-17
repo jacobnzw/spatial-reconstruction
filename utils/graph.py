@@ -16,6 +16,8 @@ class ViewEdge:
     j: int
     inliers_ij: int  # matches i -> j
     inliers_ji: int  # matches j -> i
+    matches_ij: NDArrayInt  # matches i -> j
+    matches_ji: NDArrayInt  # matches j -> i
 
     @property
     def weight(self) -> int:
@@ -34,15 +36,14 @@ class ViewGraph:
     def __init__(self):
         self.edges = []  # list of ViewEdge (global access)
 
-    def add_edge(self, i, j, inliers_ij, inliers_ji):
+    def add_edge(self, i, j, inliers_ij, inliers_ji, matches_ij, matches_ji):
         """
         Add or update an undirected edge between image i and j.
         """
         if i == j:
             return
 
-        edge = ViewEdge(i, j, inliers_ij, inliers_ji)
-
+        edge = ViewEdge(i, j, inliers_ij, inliers_ji, matches_ij, matches_ji)
         self.edges.append(edge)
 
     def best_edge(self) -> ViewEdge | None:
@@ -76,7 +77,7 @@ def construct_view_graph(
 
             # ASK: why the matches should not be preserved ???
             if ij_overlap and ji_overlap:
-                view_graph.add_edge(i, j, inliers_ij, inliers_ji)
+                view_graph.add_edge(i, j, inliers_ij, inliers_ji, matches_ij, matches_ji)
                 logger.debug(f"Added ViewEdge {i}<->{j}: {inliers_ij=} {inliers_ji=}")
 
     return view_graph
