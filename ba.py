@@ -2,6 +2,7 @@ import numpy as np
 import pyceres
 import pycolmap
 import pycolmap._core.cost_functions as cost_functions
+from loguru import logger
 
 from utils import (
     FeatureStore,
@@ -113,7 +114,8 @@ def bundle_adjustment(
     # Solve
     summary = pyceres.SolverSummary()
     pyceres.solve(options, problem, summary)
-    print(summary.BriefReport())
+    logger.info(summary.BriefReport())
+    logger.debug(summary.FullReport())
 
     # Update camera poses with optimized values
     for img_idx, pose in camera_poses.items():
@@ -126,7 +128,7 @@ def bundle_adjustment(
     for track_id, point_3d in point_params.items():
         point_cloud.set_point(track_id, point_3d)
 
-    print("Bundle adjustment complete.")
+    logger.info("Bundle adjustment complete.")
 
 
 def bundle_adjustment_pycolmap(

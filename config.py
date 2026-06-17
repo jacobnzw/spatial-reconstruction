@@ -1,8 +1,8 @@
 """Configuration for Structure from Motion pipeline."""
 
-from xml.sax.handler import property_declaration_handler
-
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Dict
 
@@ -12,8 +12,6 @@ import yaml
 from utils.camera import CameraModel, CameraType, calibrate_camera
 from utils.features import FeatureExtractorConfig, MatcherConfig
 from utils.view import FrameLoaderConfig
-
-# TODO: add SfM fields for depth-filter, pre-triangulation geometric masking, etc.
 
 
 def _default_camera(camera_params_file: str) -> CameraModel:
@@ -62,40 +60,17 @@ def preset(id: str, dataset: str) -> Dict:
 
 
 @dataclass
-class SfMConfig:
-    """Configuration for Structure from Motion pipeline."""
+class BaseConfig:
+    """Common config for both pipelines."""
 
-    loader: FrameLoaderConfig = field(
-        default_factory=lambda: FrameLoaderConfig(
-            **preset(id="default", dataset="statue_orbit")
-            # camera_model=_tumvi_camera("data/calibration/tumvi/camchain.yaml"),
-            # pre_path="data/raw",
-            # dataset="corridor",
-            # post_path="",
-            # ext="png",
-        )
-    )
-    features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(feature_type="disk"))
-    matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig(matcher_type="lg"))
+    loader: FrameLoaderConfig
 
-    depth_threshold: float = 0.3  # TODO: how to solve duplication in SLAMConfig? Inheritance?
+    features: FeatureExtractorConfig
+
+    matcher: MatcherConfig
+
+    depth_threshold: float = 0.3
     """Minimum depth (along z-axis) in camera frame for the triangulated points."""
-
-    # SfM-specific fields
-    min_inliers: int = 50
-    """Minimum number of inliers to consider two views as overlapping"""
-
-    run_ba: bool = True
-    """Run bundle adjustment optimization after initial reconstruction"""
-
-    fix_first_camera: bool = True
-    """Fix the first camera during bundle adjustment"""
-
-    dump_sfm_debug: bool = False
-    """Dump the SFM structs (image_store, point_cloud, track_manager) to disk for debugging/inspection"""
-
-    save_gsplat: bool = False
-    """Save tensors for gsplat (without BA)"""
 
     out_name: str | None = None
     """Override basename for the pipeline output files (e.g. point cloud saved to 'out_basename.ply')."""
@@ -116,7 +91,41 @@ class SfMConfig:
 
 
 @dataclass
-class SLAMConfig:
+class SfMConfig(BaseConfig):
+    """Configuration for Structure from Motion pipeline."""
+
+    loader: FrameLoaderConfig = field(
+        default_factory=lambda: FrameLoaderConfig(
+            **preset(id="default", dataset="statue_orbit")
+            # camera_model=_tumvi_camera("data/calibration/tumvi/camchain.yaml"),
+            # pre_path="data/raw",
+            # dataset="corridor",
+            # post_path="",
+            # ext="png",
+        )
+    )
+    features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(feature_type="disk"))
+    matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig(matcher_type="lg"))
+
+    # SfM-specific fields
+    min_inliers: int = 50
+    """Minimum number of inliers to consider two views as overlapping"""
+
+    run_ba: bool = True
+    """Run bundle adjustment optimization after initial reconstruction"""
+
+    fix_first_camera: bool = True
+    """Fix the first camera during bundle adjustment"""
+
+    dump_sfm_debug: bool = False
+    """Dump the SFM structs (image_store, point_cloud, track_manager) to disk for debugging/inspection"""
+
+    save_gsplat: bool = False
+    """Save tensors for gsplat (without BA)"""
+
+
+@dataclass
+class SLAMConfig(BaseConfig):
     """Configuration for GTSAM ISAM2 SLAM pipeline."""
 
     loader: FrameLoaderConfig = field(
@@ -131,9 +140,6 @@ class SLAMConfig:
     )
     matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig(matcher_type="lg"))
 
-    depth_threshold: float = 0.3
-    """Minimum depth (along z-axis) in camera frame for the triangulated points."""
-
     # Keyframe selection
     min_inliers: int = 30
     """Minimum number of inliers to consider when finding reference keyframe for a new keyframe"""
@@ -143,3 +149,19 @@ class SLAMConfig:
 
     max_motion_matches: int = 125
     """Maximum number of keypoint matches to judge the motion between frames (if too high, we might add redundant keyframes with little motion)"""
+
+
+def config_serializer(obj):
+    """Serializer for numpy arrays and Enums."""
+
+    if isinstance(obj, np.ndarray):
+        return np.array2string(obj)
+    if isinstance(obj, Enum):
+        return obj.value
+
+    raise TypeError(f"Object of type {type(obj)} is not serializable")
+
+
+def write_config_to_json(cfg: SfMConfig | SLAMConfig, file: str):
+    """Write dataclass config to JSON file."""
+    Path(file).write_text(json.dumps(asdict(cfg), indent=2, default=config_serializer))
