@@ -71,8 +71,8 @@ def construct_view_graph(
 
             matches_ij_shape = matches_ij.shape if matches_ij is not None else None
             matches_ji_shape = matches_ji.shape if matches_ji is not None else None
-            logger.debug(f"Match stats {i}->{j}: {ij_overlap=} {matches_ij_shape=} {inliers_ij=}")
-            logger.debug(f"Match stats {j}->{i}: {ji_overlap=} {matches_ji_shape=} {inliers_ji=}")
+            logger.debug(f"Matcher result for images {i} -> {j}: {ij_overlap=} {matches_ij_shape=} {inliers_ij=}")
+            logger.debug(f"Matcher result for images {j} -> {i}: {ji_overlap=} {matches_ji_shape=} {inliers_ji=}")
 
             # ASK: why the matches should not be preserved ???
             if ij_overlap and ji_overlap:
