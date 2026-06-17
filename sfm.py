@@ -318,7 +318,7 @@ def process_graph_component(
                 img_ref,
                 track_manager,
                 point_cloud,
-                matches=best_edge.matches_ij,
+                matches=best_edge.get_matches(img_ref.idx, img_new.idx),
                 depth_threshold=depth_threshold,
             )
             logger.debug(f"After add_view: {track_manager.is_valid()=}")

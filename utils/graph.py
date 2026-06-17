@@ -12,7 +12,7 @@ from .view import ViewData
 
 @dataclass
 class ViewEdge:
-    i: int
+    i: int  # View (image) index to FeatureStore
     j: int
     inliers_ij: int  # number of inlying matches i -> j
     inliers_ji: int  # number of inlying matches j -> i
@@ -26,6 +26,22 @@ class ViewEdge:
         # need large-enough relative translation for good baseline + enough plausible matches after geometric verification
         # see has_overlap()
         return min(self.inliers_ij, self.inliers_ji)
+
+    def get_matches(self, from_idx: int, to_idx: int):
+        is_from_valid = from_idx == self.i or from_idx == self.j
+        is_to_valid = to_idx == self.i or to_idx == self.j
+        if not is_from_valid or not is_to_valid:
+            raise ValueError(f"Faulty indices {from_idx=} and {to_idx=} while i={self.i} and j={self.j}")
+
+        if from_idx == self.i and to_idx == self.j:
+            return self.matches_ij
+        else:
+            return self.matches_ji
+            # TODO: Use this when unidirectional matches dropped
+            # Stricly speaking, sorting not necessary, but improves results due to
+            # findEssentialMat point ordering sensitivity (because of RANSAC).
+            # matches_ji_flip = np.fliplr(self.matches_ji)
+            # return matches_ji_flip[matches_ji_flip[:, 0].argsort()]
 
 
 class ViewGraph:
@@ -66,15 +82,20 @@ def construct_view_graph(
     for i in range(N):
         for j in range(i + 1, N):
             img_i, img_j = image_store[i], image_store[j]
-            # TODO: 1 direction enough, when matches symmetrical (e.g. crossCheck=True)
+            # TODO: 1 direction enough, when matches bi-directional (e.g. crossCheck=True)
+            # TODO: Drop unidirectional matches altogether??
+            # NOTE: For bi-directional matches: matches_ij == sorted(matches_ji.fliplr())
+            # fliplr() because the flipped match direction, columns should match
             ij_overlap, inliers_ij, matches_ij = has_overlap(img_i, img_j, matcher_fn, min_inliers)
+            ji_overlap, inliers_ji, matches_ji = has_overlap(img_j, img_i, matcher_fn, min_inliers)
 
             matches_ij_shape = matches_ij.shape if matches_ij is not None else None
+            matches_ji_shape = matches_ij.shape if matches_ij is not None else None
             logger.debug(f"Matcher result for images {i} -> {j}: {ij_overlap=} {matches_ij_shape=} {inliers_ij=}")
+            logger.debug(f"Matcher result for images {j} -> {i}: {ji_overlap=} {matches_ji_shape=} {inliers_ji=}")
 
-            if ij_overlap:
-                # TODO: Assumes matches set to symmetrical (e.g. crossCheck=True)
-                view_graph.add_edge(i, j, inliers_ij, inliers_ij, matches_ij, matches_ij)
+            if ij_overlap and ji_overlap:
+                view_graph.add_edge(i, j, inliers_ij, inliers_ij, matches_ij, matches_ji)
                 logger.debug(f"Added ViewEdge {i} -> {j}: {inliers_ij=}")
 
     return view_graph
@@ -115,6 +136,7 @@ def has_overlap(
     pts1, pts2 = img_from.kp[matches[:, 0]], img_to.kp[matches[:, 1]]  # ty:ignore[not-subscriptable]
 
     K = img_from.camera_model.get_camera_matrix()
+    # NOTE: RANSAC sensitive to point shuffling, due to its randomness => slightly different inliers
     E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.RANSAC, threshold=1.0)
 
     if E is None:
