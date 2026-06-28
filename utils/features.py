@@ -165,7 +165,19 @@ def _match_lightglue(
     lg_matcher: KF.LightGlueMatcher,
     min_conf: float | None = None,
 ) -> tuple[NDArrayFloat, NDArrayInt]:
-    # TODO: docstring
+    """Match descriptors using LightGlue matcher.
+
+    Args:
+        img_from: Query image.
+        img_to: Train image.
+        lg_matcher: kornia.feature.LightGlueMatcher object.
+        min_conf: Minimum confidence threshold for match preservation.
+
+    Returns:
+        Tuple of (distances, matches):
+            - distances: Array of match distances (N,).
+            - matches: Array of match indices (N, 2) where each row is (queryIdx, trainIdx).
+    """
     kp_from = torch.from_numpy(img_from.kp).to(device)
     des_from = torch.from_numpy(img_from.des).to(device)
     kp_to = torch.from_numpy(img_to.kp).to(device)
