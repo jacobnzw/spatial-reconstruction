@@ -1,3 +1,4 @@
+from functools import cached_property
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -14,27 +15,30 @@ from .camera import CameraModel, CameraType, NDArrayFloat
 
 @dataclass
 class FrameLoaderConfig:
-    camera_model: CameraModel
-    # TODO: use calibration file
-    """Camera Model Configuration."""
+    calib_file: str = ""
+    """Path to calibration file (.yaml)"""
 
-    # Dataset
-    pre_path: str = ""
-    """Path pre-fix"""
-    dataset: str = ""
-    """Dataset name"""
-    post_path: str = ""
-    """Path post-fix"""
-    ext: str = "png"
-    """Image file extension to expect in img_dir_path directory"""
+    data_path: str = ""
+    """Path to image directory"""
 
     @property
     def img_dir(self) -> Path:
-        return Path(self.pre_path) / self.dataset / self.post_path
+        return Path(self.data_path)
 
     @property
     def img_paths(self) -> list[Path]:
-        return sorted(list(Path(self.img_dir).glob(f"*.{self.ext}")))
+        """List of images in the data_path directory."""
+        return sorted(list(Path(self.img_dir).glob("*")))
+
+    @property
+    def dataset(self) -> str:
+        """Extracts dataset name from the data_path. Dataset name is the last directory on the data_path."""
+        return Path(self.data_path).name
+
+    @cached_property
+    def camera_model(self) -> CameraModel:
+        """Lazy-load camera model from calibration file."""
+        return CameraModel.from_calibration(self.calib_file)
 
     max_read_frames: int | None = None
     """Maximum number of frames to process from the dataset"""

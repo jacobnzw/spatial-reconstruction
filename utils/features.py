@@ -17,18 +17,24 @@ from .view import FrameLoader, ViewData
 device = K.utils.get_cuda_or_mps_device_if_available()
 
 
+FeatureType = Literal["sift", "disk"]
+
+
 @dataclass
 class FeatureExtractorConfig:
-    feature_type: Literal["sift", "disk"] = "sift"
+    type: FeatureType = "sift"
     """Feature extraction method: 'sift' or 'disk'"""
 
-    num_features: int = 1_000
+    num: int = 1_000
     """Maximum number of features to extract per image"""
+
+
+MatcherType = Literal["bf", "lg"]
 
 
 @dataclass
 class MatcherConfig:
-    matcher_type: Literal["bf", "lg"] = "bf"
+    type: MatcherType = "bf"
     """Keypoint matching method: 'bf' (brute-force) or 'lg' (lightglue)"""
 
     bf_lowe_ratio: float = 0.75
@@ -46,16 +52,16 @@ class FeatureExtractor:
 
     def __init__(self, cfg: FeatureExtractorConfig, loader: FrameLoader):  # noqa: F821
         self.loader = loader
-        self.num_features = cfg.num_features
+        self.num_features = cfg.num
 
-        if cfg.feature_type == "sift":
-            sift = cv.SIFT_create(nfeatures=cfg.num_features)  # ty:ignore[unresolved-attribute]
+        if cfg.type == "sift":
+            sift = cv.SIFT_create(nfeatures=cfg.num)  # ty:ignore[unresolved-attribute]
             self._extract_fn = partial(self._extract_sift, sift=sift)
-        elif cfg.feature_type == "disk":
+        elif cfg.type == "disk":
             disk_model = KF.DISK.from_pretrained("depth", device=device).eval()
             self._extract_fn = partial(self._extract_disk, disk_model=disk_model)
         else:
-            raise ValueError(f"FeatureExtractor: Unknown feature type {cfg.feature_type} in config!")
+            raise ValueError(f"FeatureExtractor: Unknown feature type {cfg.type} in config!")
 
     def __call__(self, frame: ViewData) -> ViewData:
         """Extract features from a single frame using the curried extraction function."""
@@ -225,10 +231,10 @@ def make_keypoint_matcher(
     cfg: MatcherConfig,
 ) -> Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]]:
     """Factory for keypoint matchers."""
-    if cfg.matcher_type == "bf":
+    if cfg.type == "bf":
         return partial(_match_brute_force, lowe_ratio=cfg.bf_lowe_ratio, cross_check=cfg.bf_cross_check)
-    if cfg.matcher_type == "lg":
+    if cfg.type == "lg":
         lightglue_matcher = KF.LightGlueMatcher("disk").eval().to(device)
         return partial(_match_lightglue, min_conf=cfg.lg_min_conf, lg_matcher=lightglue_matcher)
     else:
-        ValueError(f"Unknown matcher type {cfg.matcher_type=} in config!")
+        ValueError(f"Unknown matcher type {cfg.type=} in config!")

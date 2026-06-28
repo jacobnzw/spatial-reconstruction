@@ -5,6 +5,7 @@ from typing import Any
 
 import cv2 as cv
 import numpy as np
+import yaml
 from numpy.typing import NDArray
 
 NDArrayFloat = NDArray[np.floating[Any]]
@@ -29,8 +30,11 @@ class CameraModel:
     """
 
     model_type: CameraType = CameraType.PINHOLE
+
     K: NDArrayFloat = field(default_factory=lambda: np.eye(3))
+
     dist: NDArrayFloat = field(default_factory=lambda: np.zeros(5))
+
     scale: float = 1.0  # Scaling factor applied to the image (1.0 means no scaling)
 
     def get_camera_matrix(self, rescaled: bool = True) -> NDArrayFloat:
@@ -47,6 +51,25 @@ class CameraModel:
             return K_rescaled
         return self.K
 
+    @staticmethod
+    def from_calibration(calib_file: str):
+        """Loads camera parameters from calibration file."""
+
+        calibration = yaml.safe_load(Path(calib_file).open())
+
+        fx, fy, cx, cy = calibration["intrinsics"]
+        return CameraModel(
+            model_type=CameraType(calibration["camera_type"]),
+            K=np.array(
+                [
+                    [fx, 0, cx],
+                    [0, fy, cy],
+                    [0, 0, 1],
+                ]
+            ),
+            dist=np.array(calibration["distortion_coeffs"]),
+        )
+
 
 def calibrate_camera(camera_params_file: Path, force_recalibrate: bool = False):
     """Compute camera intrinsics given a sample of checkerboard photos.
@@ -58,11 +81,6 @@ def calibrate_camera(camera_params_file: Path, force_recalibrate: bool = False):
     Returns:
         Tuple of (K, dist) where K is the camera intrinsic matrix (3x3) and dist are the distortion coefficients.
     """
-    # Try to load cached calibration parameters
-    if not force_recalibrate and camera_params_file.exists():
-        print(f"Loading cached calibration parameters from: {camera_params_file}")
-        with np.load(camera_params_file) as data:
-            return data["K"], data["dist"]
 
     print("Calibrating camera...")
     # Checkerboard parameters
@@ -78,7 +96,7 @@ def calibrate_camera(camera_params_file: Path, force_recalibrate: bool = False):
     imgpoints = []  # 2D points
 
     # ASSUME: folder containing the camera params file contains calibration images
-    img_dir = camera_params_file.parent
+    img_dir = Path(camera_params_file).parent
     images = list(img_dir.glob("*.jpg"))
 
     for fname in images:
@@ -120,6 +138,21 @@ def calibrate_camera(camera_params_file: Path, force_recalibrate: bool = False):
         print("WARNING: High reprojection error! Calibration may be inaccurate.")
 
     # Cache the calibration parameters
-    np.savez(camera_params_file, K=K, dist=dist)
+    k = K.tolist()
+    fx, fy, cx, cy = k[0][0], k[1][1], k[0][2], k[1][2]
+    height, width, _ = img.shape
+    calib_data = {
+        "camera_type": "pinhole",
+        "intrinsics": [fx, fy, cx, cy],
+        "distortion_coeffs": dist.tolist(),
+        "resolution": [width, height],
+    }
+
+    write_mode = "x"  # creates non-existent file, throws if already exists
+    if force_recalibrate and camera_params_file.exists():
+        print(f"Over-writting calibration file: {camera_params_file}")
+        write_mode = "w+"  # overwrites existing file contents
+    yaml.safe_dump(calib_data, camera_params_file.open(mode=write_mode), default_flow_style=False)
+    print(f"Camera calibration saved to: {camera_params_file}")
 
     return K, dist
