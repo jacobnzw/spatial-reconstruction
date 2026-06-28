@@ -7,53 +7,21 @@ from pathlib import Path
 from typing import Dict
 
 import numpy as np
-import yaml
 
-from utils.camera import CameraModel, CameraType, calibrate_camera
 from utils.features import FeatureExtractorConfig, MatcherConfig
 from utils.view import FrameLoaderConfig
-
-
-def _default_camera(camera_params_file: str) -> CameraModel:
-    K, dist = calibrate_camera(Path(camera_params_file))
-    return CameraModel(CameraType.PINHOLE, K, dist)
-
-
-def _tumvi_camera(calib_yaml_path: str, cam_key: str = "cam0") -> CameraModel:
-
-    camchain_file = yaml.safe_load(Path(calib_yaml_path).open())
-    k, dist = np.array(camchain_file[cam_key]["intrinsics"]), np.array(camchain_file[cam_key]["distortion_coeffs"])
-    fx, fy, cx, cy = k
-
-    return CameraModel(
-        CameraType.FISHEYE,
-        K=np.array(
-            [
-                [fx, 0, cx],
-                [0, fy, cy],
-                [0, 0, 1],
-            ]
-        ),
-        dist=dist,
-    )
 
 
 def frame_loader_preset(id: str) -> Dict:
     if id == "corridor":
         return {
-            "camera_model": _tumvi_camera("data/calibration/tumvi/camchain.yaml"),
-            "pre_path": "data/raw",
-            "dataset": id,
-            "post_path": "",
-            "ext": "png",
+            "calib_file": "data/calibration/tumvi/calib.yaml",
+            "data_path": f"data/raw/{id}",
         }
     elif id == "statue_orbit":
         return {
-            "camera_model": _default_camera("data/calibration/redmi/calibration_params.npz"),
-            "pre_path": "data/raw",
-            "dataset": id,
-            "post_path": "",
-            "ext": "jpg",
+            "calib_file": "data/calibration/redmi/calib.yaml",
+            "data_path": f"data/raw/{id}",
         }
     else:
         raise ValueError(f"Unknown preset {id=}")
@@ -67,10 +35,10 @@ class BaseConfig:
     """Frame Loader Configuration."""
 
     features: FeatureExtractorConfig
-    """Feature Extraction Configuration."""
+    """Keypoint Descriptor Configuration."""
 
     matcher: MatcherConfig
-    """Key-point Matcher Configuration."""
+    """Keypoint Matcher Configuration."""
 
     depth_threshold: float = 0.3
     """Minimum depth (along z-axis) in camera frame for the triangulated points."""
@@ -84,7 +52,7 @@ class BaseConfig:
         return (
             self.out_name
             if self.out_name is not None
-            else f"{self.loader.dataset}_{self.features.feature_type}_{self.matcher.matcher_type}"
+            else f"{self.loader.dataset}_{self.features.type}_{self.matcher.type}"
         )
 
     @property
@@ -97,9 +65,9 @@ class BaseConfig:
 class SfMConfig(BaseConfig):
     """Configuration for Structure from Motion pipeline."""
 
-    features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(feature_type="disk"))
+    features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(type="disk"))
 
-    matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig(matcher_type="lg"))
+    matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig(type="lg"))
 
     # SfM-specific fields
     min_inliers: int = 50

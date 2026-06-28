@@ -351,14 +351,14 @@ Dataset = Literal["corridor", "statue_orbit"]
 
 
 def main(cfg: SfMConfig, dataset: Dataset | None = None):
-    """Run Structure from Motion pipeline with configurable feature extraction and matching.
+    """Structure from Motion pipeline with configurable feature extraction and matching.
 
     Args:
         cfg: Configuration object. Override defaults with --cfg.param_name value
+        dataset: Dataset preset for convenience: 'corridor' or 'statue_orbit'.
     """
 
     if dataset is not None:
-        print("frame laoder config constructed")
         cfg.loader = FrameLoaderConfig(**frame_loader_preset(dataset))
 
     # Display configuration
@@ -373,7 +373,7 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     write_config_to_json(cfg, out_dir / f"{basename}_config.json")
 
     # Load all images & extract features
-    logger.info(f"Extracting {cfg.features.feature_type.upper()} features from {cfg.loader.img_dir}...")
+    logger.info(f"Extracting {cfg.features.type.upper()} features from {cfg.loader.img_dir}...")
     loader = FrameLoader(cfg.loader)
     feature_extractor = FeatureExtractor(cfg.features, loader)
     image_store = FeatureStore(feature_extractor)
