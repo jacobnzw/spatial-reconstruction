@@ -38,20 +38,20 @@ def _tumvi_camera(calib_yaml_path: str, cam_key: str = "cam0") -> CameraModel:
     )
 
 
-def preset(id: str, dataset: str) -> Dict:
-    if id == "tumvi":
+def frame_loader_preset(id: str) -> Dict:
+    if id == "corridor":
         return {
             "camera_model": _tumvi_camera("data/calibration/tumvi/camchain.yaml"),
             "pre_path": "data/raw",
-            "dataset": dataset,
+            "dataset": id,
             "post_path": "",
             "ext": "png",
         }
-    elif id == "default":
+    elif id == "statue_orbit":
         return {
             "camera_model": _default_camera("data/calibration/redmi/calibration_params.npz"),
             "pre_path": "data/raw",
-            "dataset": dataset,
+            "dataset": id,
             "post_path": "",
             "ext": "jpg",
         }
@@ -64,10 +64,13 @@ class BaseConfig:
     """Common config for both pipelines."""
 
     loader: FrameLoaderConfig
+    """Frame Loader Configuration."""
 
     features: FeatureExtractorConfig
+    """Feature Extraction Configuration."""
 
     matcher: MatcherConfig
+    """Key-point Matcher Configuration."""
 
     depth_threshold: float = 0.3
     """Minimum depth (along z-axis) in camera frame for the triangulated points."""
@@ -94,13 +97,8 @@ class BaseConfig:
 class SfMConfig(BaseConfig):
     """Configuration for Structure from Motion pipeline."""
 
-    loader: FrameLoaderConfig = field(
-        default_factory=lambda: FrameLoaderConfig(
-            # **preset(id="default", dataset="statue_orbit")
-            **preset(id="tumvi", dataset="corridor")
-        )
-    )
     features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(feature_type="disk"))
+
     matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig(matcher_type="lg"))
 
     # SfM-specific fields
@@ -126,7 +124,7 @@ class SLAMConfig(BaseConfig):
 
     loader: FrameLoaderConfig = field(
         default_factory=lambda: FrameLoaderConfig(
-            **preset(id="tumvi", dataset="dataset-corridor4_512_16"),
+            **frame_loader_preset(id="corridor"),
             max_read_frames=800,
             max_size=512,
         )
@@ -147,17 +145,17 @@ class SLAMConfig(BaseConfig):
     """Maximum number of keypoint matches to judge the motion between frames (if too high, we might add redundant keyframes with little motion)"""
 
 
-def config_serializer(obj):
-    """Serializer for numpy arrays and Enums."""
-
-    if isinstance(obj, np.ndarray):
-        return np.array2string(obj)
-    if isinstance(obj, Enum):
-        return obj.value
-
-    raise TypeError(f"Object of type {type(obj)} is not serializable")
-
-
 def write_config_to_json(cfg: SfMConfig | SLAMConfig, file: str):
     """Write dataclass config to JSON file."""
+
+    def config_serializer(obj):
+        """Serializer for numpy arrays and Enums."""
+
+        if isinstance(obj, np.ndarray):
+            return np.array2string(obj)
+        if isinstance(obj, Enum):
+            return obj.value
+
+        raise TypeError(f"Object of type {type(obj)} is not serializable")
+
     Path(file).write_text(json.dumps(asdict(cfg), indent=2, default=config_serializer))

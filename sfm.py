@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Callable, Literal
 
 import cv2 as cv
 import joblib
@@ -8,7 +8,7 @@ from loguru import logger
 from rich.pretty import pprint
 
 from ba import bundle_adjustment
-from config import SfMConfig, write_config_to_json
+from config import FrameLoaderConfig, SfMConfig, frame_loader_preset, write_config_to_json
 from utils import (
     FrameLoader,
     NDArrayFloat,
@@ -347,12 +347,20 @@ def process_graph_component(
     return leftover_edges, U
 
 
-def main(cfg: SfMConfig = SfMConfig()):
+Dataset = Literal["corridor", "statue_orbit"]
+
+
+def main(cfg: SfMConfig, dataset: Dataset | None = None):
     """Run Structure from Motion pipeline with configurable feature extraction and matching.
 
     Args:
         cfg: Configuration object. Override defaults with --cfg.param_name value
     """
+
+    if dataset is not None:
+        print("frame laoder config constructed")
+        cfg.loader = FrameLoaderConfig(**frame_loader_preset(dataset))
+
     # Display configuration
     pprint(cfg, expand_all=True)
 

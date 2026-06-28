@@ -11,6 +11,17 @@ The pipeline ingests a bunch of photos of one static object from different angle
 - Implement a full photogrammetry pipeline (SfM + MVS) for dense reconstruction.
 - Implement a full SLAM pipeline for spatial reconstruction from video sequences.
 
+## 🏃‍♂️‍➡️ CLI Usage Examples
+```bash
+# Run SfM pipeline on the `statue_orbit` dataset (installs deps if not already installed)
+uv run sfm.py --dataset statue_orbit
+
+# To specifiy feature extraction and keypoint matching methods
+uv run sfm.py --dataset statue_orbit --cfg.features.feature-type sift --cfg.matcher.matcher-type bf
+
+# Read CLI help for more details
+uv run sfm.py --help
+```
 
 ## 🧪 Experiments & Results
 For feature (keypoint descriptor) extraction, I tested the classical SIFT features, which are still used in research and serve as a good baseline, and the learned neural DISK features (via `kornia` library).

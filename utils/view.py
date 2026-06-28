@@ -15,15 +15,17 @@ from .camera import CameraModel, CameraType, NDArrayFloat
 @dataclass
 class FrameLoaderConfig:
     camera_model: CameraModel
+    # TODO: use calibration file
+    """Camera Model Configuration."""
 
     # Dataset
-    pre_path: str
+    pre_path: str = ""
     """Path pre-fix"""
-    dataset: str
+    dataset: str = ""
     """Dataset name"""
-    post_path: str
+    post_path: str = ""
     """Path post-fix"""
-    ext: str
+    ext: str = "png"
     """Image file extension to expect in img_dir_path directory"""
 
     @property
@@ -208,7 +210,10 @@ class FrameLoader:
     def __init__(self, cfg: FrameLoaderConfig):
         img_paths = cfg.img_paths
         if not img_paths:
-            raise ValueError(f"No *.{cfg.ext} images found in {cfg.img_dir}")
+            raise ValueError(
+                f"No *.{cfg.ext} images found in '{cfg.img_dir}' .  "
+                f"\nSpecify valid path by setting 'pre_path', 'dataset', 'post_path' config fields. "
+            )
 
         self.img_paths = img_paths
         self.max_frames = cfg.max_read_frames

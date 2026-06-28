@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -28,9 +28,9 @@ class CameraModel:
         dist: Distortion coefficients.
     """
 
-    model_type: CameraType
-    K: NDArrayFloat
-    dist: NDArrayFloat
+    model_type: CameraType = CameraType.PINHOLE
+    K: NDArrayFloat = field(default_factory=lambda: np.eye(3))
+    dist: NDArrayFloat = field(default_factory=lambda: np.zeros(5))
     scale: float = 1.0  # Scaling factor applied to the image (1.0 means no scaling)
 
     def get_camera_matrix(self, rescaled: bool = True) -> NDArrayFloat:
