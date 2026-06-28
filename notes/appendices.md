@@ -27,18 +27,23 @@ RAndom Sample Consensus is an algorithm for robustly fitting a model to a set of
 ### Iterative Optimization
 An iterative methods of solving non-linear least squares problems.
 <!-- TODO: formulas are sus, check extensively -->
+
 #### Gauss-Newton
+
 The iterates are given by
+
 $$
- \mathbf{x}_{k+1} = \mathbf{x}_k + \left( \mathbf{J}^T \mathbf{J} \right)^{-1} \mathbf{J}^T \mathbf{r}
+\mathbf{x}_{k+1} = \mathbf{x}_k + \left( \mathbf{J}^T \mathbf{J} \right)^{-1} \mathbf{J}^T \mathbf{r}
 $$
+
+
 #### Levenberg-Marquardt
+
 The iterates are given by
-$$
- \mathbf{x}_{k+1} = \mathbf{x}_k + \left( \mathbf{J}^T \mathbf{J} + \lambda \mathbf{I} \right)^{-1} \mathbf{J}^T \mathbf{r}
-$$
 
-
+$$
+\mathbf{x}_{k+1} = \mathbf{x}_k + \left( \mathbf{J}^T \mathbf{J} + \lambda \mathbf{I} \right)^{-1} \mathbf{J}^T \mathbf{r}
+$$
 
 
 ## Representations of Rigid Transformations
@@ -60,22 +65,34 @@ defined as the sum of its main diagonal entries, is invariant under coordinate s
 
 2D Rotation Matrices
 For a 2×2 rotation matrix representing a rotation by angle $\theta$, the trace is: 
-Tr(R)=2cosθ This formula implies that the angle of rotation can be calculated as 
-$\theta = \arccos\left(\frac{\text{tr}(R)}{2}\right)$. 
+
+$$
+\text{Tr}(R) = 2 \cos\theta
+$$
+
+This formula implies that the angle of rotation can be calculated as 
+
+$$
+\theta = \arccos\left(\frac{\text{Tr}(R)}{2}\right)
+$$. 
 
 3D Rotation Matrices
 For a 3×3 rotation matrix representing a rotation by angle $\theta$ around any axis, the trace is: 
+
 $$
-\begin{equation}
+\begin{equation*}
    \text{Tr}(R) = 1 + 2\cos\theta
-\end{equation}
+\end{equation*}
 $$
+
 Consequently, the rotation angle is determined by: 
+
 $$
-\begin{equation}
+\begin{equation*}
    \cos\theta = 2\text{Tr}(R) − 1 \ \Rightarrow\  \theta = \arccos(2\text{Tr}(R) − 1)
-\end{equation}
+\end{equation*}
 $$
+
 The eigenvalues for a 3D rotation are $1, e^{i\theta}, e^{-i\theta}$, and their sum $1 + 2\cos\theta$ confirms the trace formula. 
 
 
@@ -83,25 +100,29 @@ The eigenvalues for a 3D rotation are $1, e^{i\theta}, e^{-i\theta}$, and their 
  - the group of rigid transformations in 3D space, consisting of rotation and translation.
  - 6 degrees of freedom (3 for rotation, 3 for translation)
  - A transformation in SE(3) can be represented as a 4x4 matrix with the following form:
- $$
- \begin{bmatrix}
-    R & t \\
-    0 & 1
- \end{bmatrix}
- $$, 
- where $R$ is a 3x3 rotation matrix, $t$ is a 3x1 translation vector.
+
+$$
+\begin{bmatrix}
+   R & t \\
+   0 & 1
+\end{bmatrix}
+$$
+
+   where $R$ is a 3x3 rotation matrix, $t$ is a 3x1 translation vector.
 
 #### Sim(3)
  - the group of similarity transformations in 3D space, consisting of rotation, translation, and uniform scaling.
  - 7 degrees of freedom (3 for rotation, 3 for translation, 1 for scaling)
  - A transformation in Sim(3) can be represented as a 4x4 matrix with the following form:
- $$
- \begin{bmatrix}
-    sR & t \\
-    0 & 1
- \end{bmatrix}
- $$, 
- where $R$ is a 3x3 rotation matrix, $t$ is a 3x1 translation vector, and $s$ is a scalar representing uniform scaling.
+ 
+$$
+\begin{bmatrix}
+   sR & t \\
+   0 & 1
+\end{bmatrix}
+$$, 
+
+   where $R$ is a 3x3 rotation matrix, $t$ is a 3x1 translation vector, and $s$ is a scalar representing uniform scaling.
 
 #### Axis-angle
 A rotation can be represented by an axis of rotation and an angle of rotation around that axis.
@@ -122,14 +143,17 @@ Avoids gimbal lock.
 
 #### Dual Quaternions
 <!-- TODO: verify -->
-8-dimensional numbers formed by combining two quaternions using a dual unit $ \varepsilon $ (where $ \varepsilon^2 = 0 $). They are written as $ \hat{q} = q_r + \varepsilon q_d $, where:
+8-dimensional numbers formed by combining two quaternions using a dual unit $ \varepsilon $ (where $ \varepsilon^2 = 0 $). They are written as 
+
+$$ 
+\hat{q} = q_r + \varepsilon q_d 
+$$, 
+
+where:
 - $ q_r $: represents rotation (like a normal quaternion),
 - $ q_d $: encodes translation (related to position).
 
 Can represent a full 6DOF rigid transformation (rotation + translation) with no gimbal lock and easy interpolation.
-
-
-
 
 
 ## Scene Representation
