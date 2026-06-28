@@ -42,9 +42,9 @@ def preset(id: str, dataset: str) -> Dict:
     if id == "tumvi":
         return {
             "camera_model": _tumvi_camera("data/calibration/tumvi/camchain.yaml"),
-            "pre_path": "data/tum/",
+            "pre_path": "data/raw",
             "dataset": dataset,
-            "post_path": "dso/cam0/images",
+            "post_path": "",
             "ext": "png",
         }
     elif id == "default":
@@ -96,12 +96,8 @@ class SfMConfig(BaseConfig):
 
     loader: FrameLoaderConfig = field(
         default_factory=lambda: FrameLoaderConfig(
-            **preset(id="default", dataset="statue_orbit")
-            # camera_model=_tumvi_camera("data/calibration/tumvi/camchain.yaml"),
-            # pre_path="data/raw",
-            # dataset="corridor",
-            # post_path="",
-            # ext="png",
+            # **preset(id="default", dataset="statue_orbit")
+            **preset(id="tumvi", dataset="corridor")
         )
     )
     features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(feature_type="disk"))
