@@ -17,7 +17,7 @@ The pipeline ingests a bunch of photos of one static object from different angle
 uv run sfm.py --dataset statue_orbit
 
 # To specifiy feature extraction and keypoint matching methods
-uv run sfm.py --dataset statue_orbit --cfg.features.feature-type sift --cfg.matcher.matcher-type bf
+uv run sfm.py --dataset statue_orbit --cfg.features.type sift --cfg.matcher.type bf
 
 # Read CLI help for more details
 uv run sfm.py --help
@@ -41,14 +41,27 @@ I wanted to code something that will work with real data, not just pristine lab 
 
 ### Experimental Setups
 
-  - **SIFT+BF**: SIFT features with Brute Force matcher
-    - Number of features limited to maximum `num_features=2000`
-    - The Brute-Force (BF) matcher computes symmetric matches (via `cross_check=True`)
-    - See full parameter config in [`assets/statue_orbit_sift_bf_config.log`](assets/statue_orbit_sift_bf_config.log)
-  - **DISK+LG**: [DISK features](https://arxiv.org/pdf/2006.13566) with [LightGlue matcher](https://arxiv.org/pdf/2306.13643)
-    - Number of features limited to maximum `num_features=1000`
-    - Only LightGlue matches with confidence above `lg_min_conf=0.1` are retained
-    - See full parameter config in [`assets/statue_orbit_disk_lg_config.log`](assets/statue_orbit_disk_lg_config.log)
+#### **SIFT+BF**: SIFT Features with Brute Force Matcher
+  
+```bash
+  uv run sfm.py --dataset statue_orbit --cfg.features.type sift --cfg.matcher.type bf --cfg.features.num 2000
+```
+
+ - Number of features limited to maximum `num_features=2000`
+ - The Brute-Force (BF) matcher computes symmetric matches (via `cross_check=True`)
+ - See full parameter config in [`assets/statue_orbit_sift_bf_config.log`](assets/statue_orbit_sift_bf_config.log)
+
+Note: This setup does badly with 1000 features. The effect of illumination drop in the statue back photos results in implausible camera pose estimates and the point cloud is disjointed.
+    
+#### **DISK+LG**: [DISK Features](https://arxiv.org/pdf/2006.13566) with [LightGlue Matcher](https://arxiv.org/pdf/2306.13643)
+  
+  ```bash
+    uv run sfm.py --dataset statue_orbit --cfg.features.type disk --cfg.matcher.type lg --cfg.features.num 1000
+  ```
+
+  - Number of features limited to maximum `num_features=1000`
+  - Only LightGlue matches with confidence above `lg_min_conf=0.1` are retained
+  - See full parameter config in [`assets/statue_orbit_disk_lg_config.log`](assets/statue_orbit_disk_lg_config.log)
 
 
 ### Reconstruction from phone photos
@@ -69,7 +82,7 @@ The reconstruction is extremely sensitive to small perturbation in the camera in
 Below I compare reconstructions with original (calibrated) and perturbed camera intrinsics.
 
 ![Statue Orbit SIFT+BF perturbed K](assets/statue_orbit_sift_bf_compare_goodK-green_badK-red.jpg)
-*Figure: SIFT+BF setup comparing the orignal reconstruction with camera intrinsics $K$ (green) and reconstruction with perturbed instrinsics $K'=0.999K$ (red). Slight deviation in intrinsics has decisive effect on the quality of the reconstructed point cloud as well as the estimated camera poses.*
+*Figure: SIFT+BF setup comparing the orignal reconstruction with camera intrinsics $ K $ (green) and reconstruction with perturbed instrinsics $ K'=0.999K $ (red). Slight deviation in intrinsics has decisive effect on the quality of the reconstructed point cloud as well as the estimated camera poses.*
 
 
 ### Effect of Bundle Adjustment
@@ -103,6 +116,11 @@ Full solver log in [`assets/statue_orbit_disk_lg_ba.log`](assets/statue_orbit_di
 
 
 ### Reconstruction from TUM-VI sequence
+
+```bash
+uv run sfm.py --dataset corridor --cfg.features.type disk --cfg.matcher.type lg --cfg.features.num 1000
+```
+
 Out of curiosity, I wanted to see how my pipeline performs on a real benchmarking dataset where the camera doesn't orbit around an object. 
 I chose [TUM-VI](https://cvg.cit.tum.de/data/datasets/visual-inertial-dataset) at first because it comes with IMU measurements, which I was hoping to use in related visual-inertial odometry learning project, but that has been put on ice due to time constraints.
 In any case, I picked a sequence of 20 uniformly sampled frames between indices 540 and 640, which, at the frame rate of 20Hz, implies frame sampling frequency of 4Hz (250 ms between frames).

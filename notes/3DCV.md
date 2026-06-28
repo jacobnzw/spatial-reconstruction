@@ -18,6 +18,7 @@ In homogeneous coordinates, a point in 3D space is represented as a 4D vector $(
 The point in Euclidean coordinates is then $(x/w, y/w, z/w)$. When $w=1$, the homogeneous point corresponds to a point in Euclidean space.
 
 Pinhole camera model in homogeneous coordinates:
+
 $$
 \lambda
 \begin{bmatrix}
@@ -37,6 +38,7 @@ $$
    1
 \end{bmatrix}
 $$
+
 where $\phi_x$ and $\phi_y$ are the focal lengths in the x and y directions, $\gamma$ is the skewness between the x and y axes, 
 and $(\delta_x, \delta_y)$ is the principal point (optical center) of the camera in pixel coordinates. 
 The scaling factor $\lambda$ is due to the fact that the homogeneous coordinates are not unique, and can be scaled by any non-zero factor.
@@ -45,6 +47,7 @@ Effectively scaling by $\lambda$ slides the point into the image plane along the
 To complete the model, we add extrinsic parameters (rotation $\mathbf{R}$ and translation $\mathbf{t}$) that define 
 the position and orientation of the camera in 3D space, and thus relate the world coordinate system (frame) to 
 the camera coordinate system (frame).
+
 $$
 \lambda
 \begin{bmatrix}
@@ -70,7 +73,9 @@ w \\
 1
 \end{bmatrix}
 $$
+
 In matrix form,
+
 $$
 \lambda
 \tilde{\mathbf{x}} = 
@@ -88,6 +93,7 @@ $$
 \end{bmatrix}
 \tilde{\mathbf{w}}
 $$
+
 where $\tilde{\mathbf{x}}$ is a projection of the world point $\tilde{\mathbf{w}}$ onto the image plane expressed 
 in homogeneous coordinates, and $\mathbf{K}$ is the intrinsic matrix and rotation matrix $\mathbf{R}$ 
 and translation vector $\mathbf{t}$ are the extrinsic parameters that determine the camera pose in the world frame.
@@ -113,6 +119,7 @@ It's therefore a family of 2D-to-2D *projective transformations*.
 Special cases: rotation, translation, similarity, uniform scaling, shearing.
 Lines that were parallel are not constrained to remain parallel in the image plane.
 Linear in homogeneous coordinates, nonlinear in Cartesian coordinates.
+
 $$
 \begin{align*}
 \lambda
@@ -180,16 +187,21 @@ This reduces the search for the 3D point from a 3D space to a 1D line, significa
 
 ### [Essential matrix](https://en.wikipedia.org/wiki/Essential_matrix)
 Mathematical constraint between two views of the same scene captured by normalized cameras. 
+
 $$
    \tilde{\mathbf{x}}_1^T \mathbf{E} \tilde{\mathbf{x}}_2 = 0
 $$
+
 where $\tilde{\mathbf{x}}_1, \tilde{\mathbf{x}}_2 \in \mathbb{R}^3$ are the homogeneous coordinates of the 
 corresponding 2D points in the two image planes, and 
+
 $$ 
    \mathbf{E} = \mathbf{t}_\times \mathbf{R} 
 $$ 
+
 is the essential matrix, where $\mathbf{t}_\times$ 
 is the skew-symmetric matrix representation of the cross-product operation
+
 $$
    \mathbf{t}_\times = 
    \begin{bmatrix}
@@ -198,9 +210,14 @@ $$
       -t_y & t_x & 0
    \end{bmatrix}
 $$
+
 and $\mathbf{R}$ is the rotation matrix.
 The rotation and translation are a relative pose of camera B wrt. camera A, which is assumed to be at the 
 origin with no rotation (identity rotation matrix and zero translation vector).
+
+`cv.findEssentialMat()` uses the RANSAC algorithm to robustly estimate the essential matrix from a set of point correspondences.
+However, there is some sensitivity to how the point pairs are ordered in the input arrays (while keeping correspondences correct), 
+due to randomness in RANSAC sampling and the way it handles inliers and outliers.
 
 #### Properties
 - Rank 2: $\text{rank}(\mathbf{E}) = 2$
@@ -213,6 +230,7 @@ origin with no rotation (identity rotation matrix and zero translation vector).
 ### [Fundamental matrix](https://en.wikipedia.org/wiki/Fundamental_matrix_(computer_vision))
 Fundamental matrix plays role of the essential matrix for cameras with arbitrary intrinsics $\mathbf{K}_1, \mathbf{K}_2$.
 The realationship to essential matrix is
+
 $$
    \mathbf{E} = \mathbf{K}_2^T \mathbf{F} \mathbf{K}_1 \ \Leftrightarrow\  F = \mathbf{K}_2^{-1} \mathbf{E} \mathbf{K}_1^{-1}
 $$
