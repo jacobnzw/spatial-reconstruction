@@ -14,7 +14,7 @@ from .tracks import KPKey
 from .view import FrameLoader, ViewData
 
 # Initialize device for Kornia/PyTorch operations
-device = K.utils.get_cuda_or_mps_device_if_available()
+device = K.get_cuda_or_mps_device_if_available()
 
 
 FeatureType = Literal["sift", "disk"]
@@ -94,7 +94,7 @@ class FeatureExtractor:
         img_float = img_arr.astype(np.float32) / max_val
 
         # Convert to tensor and add batch dimension (H, W, C) -> (1, C, H, W)
-        img_tensor = K.utils.image_to_tensor(img_float, keepdim=False).to(device=device)
+        img_tensor = K.image.image_to_tensor(img_float, keepdim=False).to(device=device)
         with torch.inference_mode():
             features = disk_model(img_tensor, self.num_features, pad_if_not_divisible=True)[0]
 
