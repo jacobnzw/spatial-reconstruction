@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.19.2"
+__generated_with = "0.23.13"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -30,7 +30,7 @@ def _():
 
 @app.cell
 def _():
-    def calibrate_camera(img_dir: Path = Path("data/calibration")):
+    def calibrate_camera(img_dir: Path = Path("data/calibration/redmi")):
         """Compute camera intrinsics given a sample of checkerboard photos."""
 
         # Checkerboard parameters
