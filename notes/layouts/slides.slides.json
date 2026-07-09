@@ -1,0 +1,34 @@
+{
+  "type": "slides",
+  "data": {
+    "cells": [
+      {},
+      {
+        "showCode": false
+      },
+      {},
+      {},
+      {},
+      {
+        "type": "sub-slide"
+      },
+      {
+        "type": "sub-slide"
+      },
+      {
+        "type": "slide"
+      },
+      {
+        "type": "slide"
+      },
+      {},
+      {},
+      {},
+      {},
+      {}
+    ],
+    "deck": {
+      "transition": "slide"
+    }
+  }
+}
