@@ -8,10 +8,11 @@ app = marimo.App(width="medium", layout_file="layouts/slides.slides.json")
 def _():
     import marimo as mo
     import plotly.express as px
+    import plotly.graph_objects as go
     import pandas as pd
     import numpy as np
 
-    return mo, np, pd, px
+    return go, mo, np, pd, px
 
 
 @app.cell(hide_code=True)
@@ -105,7 +106,7 @@ def _(mo):
     \begin{bmatrix}
        r_{11} & r_{12} & r_{13} & t_x \\
        r_{21} & r_{22} & r_{23} & t_y \\
-       r_{31} & r_{32} & r_{33} & t \\
+       r_{31} & r_{32} & r_{33} & t_z \\
        0 & 0 & 0 & 1
     \end{bmatrix}
     \begin{bmatrix}
@@ -152,7 +153,7 @@ def _(mo):
 
     ### Essential matrix $\mathbf{E}$
 
-    - *Epipolar constraint*: $\mathbf{x}^{\top}\mathbf{E}\mathbf{x} = 0$
+    - *Epipolar constraint:* $\mathbf{x}^{\top}\mathbf{E}\mathbf{x} = 0$
     - Decomposition $\mathbf{E}=[\mathbf{t}]^{\times} \mathbf{R}$
       - Recovers relative camera pose $[\mathbf{R}, \mathbf{t}]$
     - Estimation: 5-point algorithm
@@ -253,8 +254,17 @@ def _(mo):
     mo.md(r"""
     ## Enter View Graph
 
-    After few LLM prompts, I understood I need a view graph to keep track of which image pairs should be used for triangulation of new points.
+    *"Given two views already processed, how can I add third?"* :thinking:
 
+    I need 2 images to triangulate $\Rightarrow$ find reference image for the new image!
+
+    View Graph
+    - Node
+      - Image/View: keypoints + descriptors
+    - Edge
+      - Matches between keypoints of two views
+
+    **Reference image** $\ \Rightarrow$ image (in View Graph) w/ the most KP matches to the new image
 
     I had another problem...
     """)
@@ -266,15 +276,19 @@ def _(mo):
     mo.md(r"""
     ## Enter Track Manager
 
-    How to keep track of which views observe which 3D points?
+    *Which previously unseen 3D points does the new image observe?*
 
-    Important when adding a new view!
+    *How do I know which keypoints map to which 3D points?*
 
-    Two kinds of keypoints in the new image that we wanna add
-    - Tracked
-      - that match to reference image keypoints
-    - Untracked
-      -
+    Triangulation needs  $\geq 1$ keypoint in each image.
+
+    **Terminology:** "Tracked KP" $=$ "KP that has a 3D point, i.e. was used in triangulation before"
+
+    Two kinds of keypoints in the *new* image:
+    - Tracked KP matches
+      - That match to tracked reference image keypoints
+    - Untracked KPs
+      - That mat
     """)
     return
 
@@ -312,13 +326,119 @@ def _(mo):
     return
 
 
-@app.cell(hide_code=True)
+@app.cell
+def _(go, pd):
+
+    def plot_point_cloud(filepath: str, caption: str="") -> go.Figure:
+        num_vertices = None
+        with open(filepath) as ply_file:
+            for ind, row in enumerate(ply_file):
+                if ind == 2:
+                    # print(row.split(" "))
+                    num_vertices = int(row.split(" ")[2])
+                    break
+    
+        ply_df = pd.read_csv(filepath, skiprows=16, nrows=num_vertices, sep=" ", names=["x", "y", "z", "r", "g", "b"])
+        ply_df['color_rgb'] = ply_df.apply(
+            lambda row: f'rgb({int(row["r"])}, {int(row["g"])}, {int(row["b"])})', 
+            axis=1
+        )
+    
+        fig = go.Figure(
+            data=[
+                go.Scatter3d(
+                    x=ply_df["x"],
+                    y=ply_df["y"],
+                    z=ply_df["z"],
+                    mode="markers",
+                    marker=dict(
+                        size=1.5,
+                        color=ply_df["color_rgb"],  # Still using the same RGB string column
+                        opacity=0.7,
+                    ),
+                )
+            ]
+        )
+        # Update layout to hide axes
+        fig.update_layout(
+            dragmode="orbit",
+            scene=dict(
+                xaxis=dict(visible=False),
+                yaxis=dict(visible=False),
+                zaxis=dict(visible=False),
+            ),
+            margin=dict(l=0, r=0, b=0, t=0),
+        )
+
+    return (plot_point_cloud,)
+
+
+@app.cell
 def _(mo):
-    mo.md(r"""
+    slider_opacity = mo.ui.slider(
+        start=0,
+        stop=1,
+        step=0.1,
+        value=0.5,
+        label="Opacity",
+        show_value=True,
+    )
+    slider_size = mo.ui.slider(
+        start=0.5,
+        stop=5,
+        step=0.25,
+        value=1.5,
+        label="Point size",
+        show_value=True,
+    )
+
+    point_clouds = {
+        "sift_1000_bf": "data/out/statue_orbit/statue_orbit_sift_1k_bf.ply",
+        "sift_2000_bf": "data/out/statue_orbit/statue_orbit_sift_2k_bf.ply",
+        "disk_1000_lg": "data/out/statue_orbit/statue_orbit_disk_1k_lg.ply",
+    }
+    radio_pointcloud = mo.ui.radio(
+        options=[pc for pc in point_clouds], value="sift_1000_bf"
+    )
+    return point_clouds, radio_pointcloud, slider_opacity, slider_size
+
+
+@app.cell
+def _(
+    mo,
+    plot_point_cloud,
+    point_clouds,
+    radio_pointcloud,
+    slider_opacity,
+    slider_size,
+):
+    path = point_clouds[radio_pointcloud.value]
+    feature_type, feature_num, matcher_type = radio_pointcloud.value.split("_")
+    # print(path, feature_type, feature_num, matcher_type)
+    statue_fig = plot_point_cloud(path)
+    statue_fig.update_traces(marker=dict(opacity=slider_opacity.value, size=slider_size.value))
+    statue_fig.update_layout(annotations=[
+            dict(
+                text="Figure 1: 3D reconstruction of the statue point cloud dataset.",
+                xref="paper", yref="paper",
+                x=0.5, y=-0.1,  # Position: 0.5 is center, -0.1 is just below the plot
+                showarrow=False,
+                font=dict(size=12, color="gray")
+            )
+        ],)
+
+    statue_md = mo.md(f"""
     ## Full Reconstruction Results
 
-    TODO: Use fragments (sub-slides) to show recons (SIFT+BF, DISK+LightGlue w/ 1000 and 2000) different models
+    #### Features
+      - type: {feature_type}
+      - num:  {feature_num}
+  
+    #### Matcher
+      - type: {matcher_type}
     """)
+    left_pane = mo.vstack((statue_md, slider_opacity, slider_size, radio_pointcloud))
+    mo.hstack((left_pane, statue_fig), widths=[1, 1])
     return
 
 
