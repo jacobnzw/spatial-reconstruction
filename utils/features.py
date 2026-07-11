@@ -14,7 +14,7 @@ from .tracks import KPKey
 from .view import FrameLoader, ViewData
 
 # Initialize device for Kornia/PyTorch operations
-device = K.get_cuda_or_mps_device_if_available()
+device = K.core.utils.get_cuda_or_mps_device_if_available()
 
 
 FeatureType = Literal["sift", "disk"]
