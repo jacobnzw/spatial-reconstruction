@@ -288,7 +288,7 @@ def _(mo):
     - Tracked KP matches
       - That match to tracked reference image keypoints
     - Untracked KPs
-      - That mat
+      - That match not yet triangulated keypoints
     """)
     return
 
@@ -327,9 +327,12 @@ def _(mo):
 
 
 @app.cell
-def _(go, pd):
+def _(pd):
+    from pathlib import Path
 
-    def plot_point_cloud(filepath: str, caption: str="") -> go.Figure:
+    # convert point clouds from PLY to CSV
+    def convert_ply_to_csv(filepath: str, outdir: str = "notes/public/"):
+        filepath = Path(filepath)
         num_vertices = None
         with open(filepath) as ply_file:
             for ind, row in enumerate(ply_file):
@@ -337,13 +340,66 @@ def _(go, pd):
                     # print(row.split(" "))
                     num_vertices = int(row.split(" ")[2])
                     break
-    
-        ply_df = pd.read_csv(filepath, skiprows=16, nrows=num_vertices, sep=" ", names=["x", "y", "z", "r", "g", "b"])
-        ply_df['color_rgb'] = ply_df.apply(
-            lambda row: f'rgb({int(row["r"])}, {int(row["g"])}, {int(row["b"])})', 
-            axis=1
+        # skip PLY header and read num_vertices, the rest are edges
+        ply_df = pd.read_csv(
+            filepath, skiprows=16, nrows=num_vertices, sep=" ", names=["x", "y", "z", "r", "g", "b"]
         )
-    
+        ply_df["color_rgb"] = ply_df.apply(
+            lambda row: f"rgb({int(row['r'])}, {int(row['g'])}, {int(row['b'])})", axis=1
+        )
+        outpath = Path(outdir) / (filepath.stem + ".csv")
+        ply_df.to_csv(outpath, index=False)
+
+    for file in (
+        # "data/out/statue_orbit/statue_orbit_sift_1k_bf.ply",
+        # "data/out/statue_orbit/statue_orbit_sift_2k_bf.ply",
+        # "data/out/statue_orbit/statue_orbit_disk_1k_lg.ply",
+        "data/out/statue_orbit/statue_orbit_disk_lg_Ke-1.ply",
+        "data/out/statue_orbit/statue_orbit_disk_lg_Ke-2.ply",
+        "data/out/statue_orbit/statue_orbit_disk_lg_Ke-3.ply",
+        "data/out/statue_orbit/statue_orbit_disk_lg_Ke-4.ply",
+        "data/out/statue_orbit/statue_orbit_disk_lg_K5e-5.ply",
+        "data/out/statue_orbit/statue_orbit_disk_lg_Ke-5.ply",
+    ):
+        convert_ply_to_csv(file, "notes/public/")
+    return
+
+
+@app.cell
+def _(mo):
+    slider_opacity = mo.ui.slider(
+        start=0,
+        stop=1,
+        step=0.1,
+        value=0.5,
+        label="Opacity",
+        show_value=True,
+    )
+    slider_size = mo.ui.slider(
+        start=0.5,
+        stop=5,
+        step=0.25,
+        value=1.5,
+        label="Point size",
+        show_value=True,
+    )
+
+    point_clouds = {
+        "sift_1000_bf": "notes/public/statue_orbit_sift_1k_bf.csv",
+        "sift_2000_bf": "notes/public/statue_orbit_sift_2k_bf.csv",
+        "disk_1000_lg": "notes/public/statue_orbit_disk_1k_lg.csv",
+    }
+    radio_pointcloud = mo.ui.radio(
+        options=[pc for pc in point_clouds], value="sift_1000_bf"
+    )
+    return point_clouds, radio_pointcloud, slider_opacity, slider_size
+
+
+@app.cell
+def _(go, pd):
+    def plot_point_cloud(filepath: str, caption: str = "") -> go.Figure:
+        ply_df = pd.read_csv(filepath)
+
         fig = go.Figure(
             data=[
                 go.Scatter3d(
@@ -367,40 +423,24 @@ def _(go, pd):
                 yaxis=dict(visible=False),
                 zaxis=dict(visible=False),
             ),
-            margin=dict(l=0, r=0, b=0, t=0),
+            # Increase the bottom margin to make room for the caption
+            margin=dict(l=0, r=0, b=50, t=0),
+            annotations=[
+                dict(
+                    text=caption,
+                    xref="paper",
+                    yref="paper",
+                    x=0.5,
+                    y=-0.1,  # Position: 0.5 is center, -0.1 is just below the plot
+                    showarrow=False,
+                    font=dict(size=14, color="gray"),
+                )
+            ],
         )
+    
+        return fig
 
     return (plot_point_cloud,)
-
-
-@app.cell
-def _(mo):
-    slider_opacity = mo.ui.slider(
-        start=0,
-        stop=1,
-        step=0.1,
-        value=0.5,
-        label="Opacity",
-        show_value=True,
-    )
-    slider_size = mo.ui.slider(
-        start=0.5,
-        stop=5,
-        step=0.25,
-        value=1.5,
-        label="Point size",
-        show_value=True,
-    )
-
-    point_clouds = {
-        "sift_1000_bf": "data/out/statue_orbit/statue_orbit_sift_1k_bf.ply",
-        "sift_2000_bf": "data/out/statue_orbit/statue_orbit_sift_2k_bf.ply",
-        "disk_1000_lg": "data/out/statue_orbit/statue_orbit_disk_1k_lg.ply",
-    }
-    radio_pointcloud = mo.ui.radio(
-        options=[pc for pc in point_clouds], value="sift_1000_bf"
-    )
-    return point_clouds, radio_pointcloud, slider_opacity, slider_size
 
 
 @app.cell
@@ -415,30 +455,53 @@ def _(
     path = point_clouds[radio_pointcloud.value]
     feature_type, feature_num, matcher_type = radio_pointcloud.value.split("_")
     # print(path, feature_type, feature_num, matcher_type)
-    statue_fig = plot_point_cloud(path)
+    caption = f"Figure: Statue reconstruction using {feature_num} {feature_type.upper()} features w/ {matcher_type.upper()} matcher."
+
+    statue_fig = plot_point_cloud(path, caption)
     statue_fig.update_traces(marker=dict(opacity=slider_opacity.value, size=slider_size.value))
-    statue_fig.update_layout(annotations=[
-            dict(
-                text="Figure 1: 3D reconstruction of the statue point cloud dataset.",
-                xref="paper", yref="paper",
-                x=0.5, y=-0.1,  # Position: 0.5 is center, -0.1 is just below the plot
-                showarrow=False,
-                font=dict(size=12, color="gray")
-            )
-        ],)
 
     statue_md = mo.md(f"""
     ## Full Reconstruction Results
-
-    #### Features
-      - type: {feature_type}
-      - num:  {feature_num}
-  
-    #### Matcher
-      - type: {matcher_type}
     """)
-    left_pane = mo.vstack((statue_md, slider_opacity, slider_size, radio_pointcloud))
-    mo.hstack((left_pane, statue_fig), widths=[1, 1])
+    plot_ctrl = mo.vstack((statue_md, slider_opacity, slider_size, radio_pointcloud), align="center", justify="center")
+    plot_pane = mo.hstack((plot_ctrl, statue_fig), widths=[1, 2], justify="center")
+    # mo.vstack((statue_md, plot_pane))
+    plot_pane
+    return
+
+
+@app.cell
+def _(mo):
+    heading_md = mo.md(r"""
+    ## Sensitivity to Intrinsics Perturbations
+    """)
+    slider_cam_mat = mo.ui.slider(
+        steps=(1 - 1e-1, 1 - 1e-2, 1 - 1e-3, 1 - 1e-4, 1 - 5e-5, 1 - 1e-5),
+        show_value=True,
+        value=1 - 1e-5,
+        label="Perturbation Factor",
+    )
+    perturbation_to_file = {
+        1 - 1e-1: "notes/public/statue_orbit_disk_lg_Ke-1.csv",
+        1 - 1e-2: "notes/public/statue_orbit_disk_lg_Ke-2.csv",
+        1 - 1e-3: "notes/public/statue_orbit_disk_lg_Ke-3.csv",
+        1 - 1e-4: "notes/public/statue_orbit_disk_lg_Ke-4.csv",
+        1 - 5e-5: "notes/public/statue_orbit_disk_lg_K5e-5.csv",
+        1 - 1e-5: "notes/public/statue_orbit_disk_lg_Ke-5.csv",
+    }
+    return heading_md, perturbation_to_file, slider_cam_mat
+
+
+@app.cell
+def _(heading_md, mo, perturbation_to_file, plot_point_cloud, slider_cam_mat):
+    perturbed_fig = plot_point_cloud(perturbation_to_file[slider_cam_mat.value])
+    perturbed_ctrl = mo.vstack((heading_md, slider_cam_mat), heights=[1,1], align="center", justify="center")
+    mo.hstack((perturbed_ctrl, perturbed_fig), widths=[1,1], align="center", justify="center")
+    return
+
+
+@app.cell
+def _():
     return
 
 
@@ -447,12 +510,12 @@ def _(mo):
     mo.md(r"""
     ## Hard Lessons
 
-    - highly sensitive to intrinsics
-      - TODO: compare recons w/ & w/o perturbed K
-    - logging or experiment tracking
-      - tip: set up as early as first plausible results show up,
-      - log inputs, params, outputs
-      - considering experiment tracking via W&B (as in my RL project)
+    - Highly sensitive to intrinsics
+    - Logging
+      - Set up as early as first plausible results show up,
+      - Log: inputs, params, outputs
+    - Experiment tracking
+      - Considering Weights & Biases
     """)
     return
 
