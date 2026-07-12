@@ -20,8 +20,7 @@ def _(mo):
     mo.md(r"""
     # Bring Something Awesome
 
-    TODO: needs work! 🙂
-    ## How I scratched my itch by building a simple SfM pipeline?
+    ## Lessons from Building a Modular SfM Pipeline
     """)
     return
 
@@ -29,27 +28,22 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     intro_md = mo.md(r"""
-    ## Introduce the idea
+    ## Why Structure-from-Motion (SfM)?
 
-    TODO: needs work! 🙂
+    Motivation: 
+    - Get detailed understanding of the logic
+    - Understand failure modes behind 3D reconstruction
+    - Keep building a 'full-stack' view of the perception system 
+      - 3D computer vision unlocks other avenues, such as SLAM, VIO, etc.
 
-    ### *Why did you bring this?*
-    - I had an itch: I hear it's possible to triangulate but something in me couldn't believe it could be that easy
-    - I want to understand the logic in detail - not to outclass SOTA SfM pipelines!
-    - I found the epipolarity a bit mysterious at first glance
-    - most familiar with sensor fusion using Kalman filters where the inputs are pre-processed features from the preceding stages in the pipeline (bounding boxes, ), but wanted to understand what's happening earlier in the pipeline
-
-    Motivation: understand principles of 3D computer vision as a prerequisite for understanding SLAM, VIO
-
-    3D CV indentified as the corner stone behind all of these
-
-    ### What is SfM?
+    Non-Goal:
+    - Surpass SOTA SfM pipelines.
 
     """)
 
     sfm_demo = mo.video(src="https://lpanaf.github.io/assets/img/eccv24_glomap/facade.webm", controls=True, muted=True, autoplay=True, loop=True)
     sfm_demo_caption = mo.md(r"""Credit: [Pan, Linfei et al., Global Structure-from-Motion Revisited, ECCV, 2024](https://lpanaf.github.io/eccv24_glomap/)""")
-    sfm_demo_pane = mo.vstack((sfm_demo, sfm_demo_caption))
+    sfm_demo_pane = mo.vstack((sfm_demo, sfm_demo_caption), align="center", justify="center")
 
     mo.hstack((intro_md, sfm_demo_pane), widths=[1, 1], justify="space-around")
     return
@@ -58,28 +52,28 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     getting_data_text = mo.md(r"""
-    ## Getting Data
+    ## Creating a Dataset
 
-    I want this to work on my data!
+    *How cool it would be to snap pictures of an object and turn those into a 3D model?*
 
-    How cool it would be to snap pictures of an object and turn those into a 3D model?
-
-    Idea: turn some object from my shelf into a sparse 3D point cloud
-
-    - First attempt: Lego Technic snowplow
-      - trouble with feature matching
+    - :x: First attempt: Lego Technic snowplow
+      - Trouble with feature matching
       - Lesson: don't use something with repetitive texture, leads to similar descriptors, hard to disambiguate keypoints across views, bad matches
 
-    - Second attempt: Terracotta Archer Statue
+    - :white_check_mark: Second attempt: Terracotta Archer Statue
       - Challenges
         - Inconsistent exposure
         - Head slightly out of focus
 
     """)
-    statue_gif = mo.image(src="public/statue_orbit.gif", height=400)
+    statue_gif = mo.image(
+        src="public/statue_orbit.gif",
+        height=450,
+        # caption="Statue orbit dataset captured by a cell phone camera.",
+    )
     # statue_gif = mo.video(src="public/statue_orbit.gif")
 
-    mo.hstack((getting_data_text, statue_gif), widths=[1, 1])
+    mo.hstack((getting_data_text, statue_gif), widths=[1, 1], gap=2.0)
     return
 
 
@@ -569,7 +563,7 @@ def _(mo):
       - Tried coding basic SLAM on TUM-VI `corridor4` sequence re-using the some SfM primitives
       - Stuck on finding the right keyframe selection logic: finicky!
       - Future: Revert to easier task: SfM via Factor Graphs
-      - Future: Try on easier datsets: KITTI, Colmap test data
+      - Future: Try on easier datasets: KITTI, Colmap test data
         - TUM-VI challenging even for SOTA VIO frameworks (OKVIS, etc.)
     """)
     return
