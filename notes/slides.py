@@ -354,12 +354,17 @@ def _(pd):
         # "data/out/statue_orbit/statue_orbit_sift_1k_bf.ply",
         # "data/out/statue_orbit/statue_orbit_sift_2k_bf.ply",
         # "data/out/statue_orbit/statue_orbit_disk_1k_lg.ply",
-        "data/out/statue_orbit/statue_orbit_disk_lg_Ke-1.ply",
-        "data/out/statue_orbit/statue_orbit_disk_lg_Ke-2.ply",
-        "data/out/statue_orbit/statue_orbit_disk_lg_Ke-3.ply",
-        "data/out/statue_orbit/statue_orbit_disk_lg_Ke-4.ply",
-        "data/out/statue_orbit/statue_orbit_disk_lg_K5e-5.ply",
-        "data/out/statue_orbit/statue_orbit_disk_lg_Ke-5.ply",
+        # "data/out/statue_orbit/statue_orbit_disk_lg_Ke-1.ply",
+        # "data/out/statue_orbit/statue_orbit_disk_lg_Ke-2.ply",
+        # "data/out/statue_orbit/statue_orbit_disk_lg_Ke-3.ply",
+        # "data/out/statue_orbit/statue_orbit_disk_lg_Ke-4.ply",
+        # "data/out/statue_orbit/statue_orbit_disk_lg_K5e-5.ply",
+        # "data/out/statue_orbit/statue_orbit_disk_lg_Ke-5.ply",
+        "data/out/statue_orbit/statue_orbit_sift_bf_Ke-3.ply",
+        "data/out/statue_orbit/statue_orbit_sift_bf_Ke-4.ply",
+        "data/out/statue_orbit/statue_orbit_sift_bf_Ke-5.ply",
+        "data/out/statue_orbit/statue_orbit_sift_bf_Ke-6.ply",
+        "data/out/statue_orbit/statue_orbit_sift_bf_Ke-7.ply",
     ):
         convert_ply_to_csv(file, "notes/public/")
     return
@@ -474,6 +479,7 @@ def _(
 def _(mo):
     heading_md = mo.md(r"""
     ## Sensitivity to Intrinsics Perturbations
+    ### DISK + LG
     """)
     slider_cam_mat = mo.ui.slider(
         steps=(1 - 1e-1, 1 - 1e-2, 1 - 1e-3, 1 - 1e-4, 1 - 5e-5, 1 - 1e-5),
@@ -501,7 +507,39 @@ def _(heading_md, mo, perturbation_to_file, plot_point_cloud, slider_cam_mat):
 
 
 @app.cell
-def _():
+def _(mo):
+    heading_sift_md = mo.md(r"""
+    ## Sensitivity to Intrinsics Perturbations
+    ### SIFT + BF
+    """)
+    slider_cam_mat_sift = mo.ui.slider(
+        steps=(1 - 1e-3, 1 - 1e-4, 1 - 1e-5, 1 - 1e-6, 1 - 1e-7),
+        show_value=True,
+        value=1 - 1e-5,
+        label="Perturbation Factor",
+    )
+    perturbation_to_file_sift = {
+        1 - 1e-3: "notes/public/statue_orbit_sift_bf_Ke-3.csv",
+        1 - 1e-4: "notes/public/statue_orbit_sift_bf_Ke-4.csv",
+        1 - 1e-5: "notes/public/statue_orbit_sift_bf_Ke-5.csv",
+        1 - 1e-6: "notes/public/statue_orbit_sift_bf_Ke-6.csv",
+        1 - 1e-7: "notes/public/statue_orbit_sift_bf_Ke-7.csv",
+    }
+
+    return heading_sift_md, perturbation_to_file_sift, slider_cam_mat_sift
+
+
+@app.cell
+def _(
+    heading_sift_md,
+    mo,
+    perturbation_to_file_sift,
+    plot_point_cloud,
+    slider_cam_mat_sift,
+):
+    perturbed_fig_sift = plot_point_cloud(perturbation_to_file_sift[slider_cam_mat_sift.value])
+    perturbed_ctrl_sift = mo.vstack((heading_sift_md, slider_cam_mat_sift), heights=[1,1], align="center", justify="center")
+    mo.hstack((perturbed_ctrl_sift, perturbed_fig_sift), widths=[1,1], align="center", justify="center")
     return
 
 
