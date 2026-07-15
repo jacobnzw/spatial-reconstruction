@@ -149,7 +149,7 @@ def _(mo):
 
     ### Essential matrix $\mathbf{E}$
 
-    - *Epipolar constraint:* $\mathbf{x}^{\top}\mathbf{E}\mathbf{x} = 0$
+    - *Epipolar constraint:* $\mathbf{x_1}^{\top}\mathbf{E}\mathbf{x_2} = 0$
     - Decomposition $\mathbf{E}=[\mathbf{t}]^{\times} \mathbf{R}$
       - Recovers relative camera pose $[\mathbf{R}, \mathbf{t}]$
     - Estimation: 5-point algorithm
