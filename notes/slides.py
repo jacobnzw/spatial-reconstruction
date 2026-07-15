@@ -34,10 +34,12 @@ def _(mo):
     - Get detailed understanding of the logic
     - Understand failure modes behind 3D reconstruction
     - Keep building a 'full-stack' view of the perception system 
-      - 3D computer vision unlocks other avenues, such as SLAM, VIO, etc.
+      - 3D computer vision unlocks other drone-relevant avenues, such as:
+        - Visual Inertial Odometry (VIO)
+        - Simultaneous Localization and Mapping (SLAM)
 
     Non-Goal:
-    - Surpass SOTA SfM pipelines.
+    - Surpass SOTA SfM pipelines (e.g. COLMAP, GTSFM)
 
     """)
 
@@ -189,8 +191,6 @@ def _(mo):
 def _(mo, np, pd, px):
     left = mo.md(r"""
     ## Basics in Practice
-
-    Key-point detection & matching
 
     OpenCV primitives for 3D reconstruction
 
@@ -436,7 +436,7 @@ def _(go, pd):
                 )
             ],
         )
-    
+
         return fig
 
     return (plot_point_cloud,)
@@ -519,7 +519,6 @@ def _(mo):
         1 - 1e-6: "notes/public/statue_orbit_sift_bf_Ke-6.csv",
         1 - 1e-7: "notes/public/statue_orbit_sift_bf_Ke-7.csv",
     }
-
     return heading_sift_md, perturbation_to_file_sift, slider_cam_mat_sift
 
 
@@ -563,9 +562,39 @@ def _(mo):
       - Tried coding basic SLAM on TUM-VI `corridor4` sequence re-using the some SfM primitives
       - Stuck on finding the right keyframe selection logic: finicky!
       - Future: Revert to easier task: SfM via Factor Graphs
-      - Future: Try on easier datasets: KITTI, Colmap test data
-        - TUM-VI challenging even for SOTA VIO frameworks (OKVIS, etc.)
+      - Future: Try on easier datasets: KITTI, COLMAP test data
+        - [TUM-VI challenging even for SOTA VIO frameworks (OKVIS, etc.) [Schubert et al., 2020]](https://arxiv.org/pdf/1804.06120)
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    title_md = mo.md(r"""
+    ## Philosophical Conclusion
+    """)
+    sfm_world_md = mo.md(r"""
+    ### SfM World
+    """)
+    sfm_md = mo.md(r"""
+    - One view alone can't perceive depth
+    - Depth only observable with $\gt 1$ views
+    - Depth estimates stable only if $2$ views sufficiently different (baseline $\gg \epsilon$)
+    - No triangulation if views observing different parts of the object
+    """)
+    sfm_col = mo.vstack((sfm_world_md, sfm_md))
+    human_world_md = mo.md(r"""
+    ### Human World
+    """)
+    human_md = mo.md(r"""
+    - $1$ person unable to perceive higher-order realities (complex collective issues)
+    - Only by integrating *sufficiently different views* can we get a hold on complex reality
+    - Fundamentally opposed views can't be reconciled
+      - *Or can they? What if there is a trajectory of mediating views?*
+    """)
+    human_col = mo.vstack((human_world_md, human_md))
+    elephant_im = mo.image(src="https://files.secure.website/wscfus/8723071/uploads/elephant_pic.jpg", height=400, width=600, caption="Credit: www.theblindelephant.com")
+    mo.vstack((title_md, mo.vstack((mo.hstack((sfm_col, human_col)), elephant_im), align="center")))
     return
 
 
