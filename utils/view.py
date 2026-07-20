@@ -1,5 +1,5 @@
-from functools import cached_property
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -158,7 +158,7 @@ class ViewData:
         """
         K, dist = self.camera_model.get_camera_matrix(), self.camera_model.dist
 
-        if self.camera_model.model_type == CameraType.FISHEYE:
+        if self.camera_model.type == CameraType.FISHEYE:
             # undistortPoints returns normalized coords, need to reproject to pixels
             kp_normalized = cv.fisheye.undistortPoints(self.kp, K, dist, R=None, P=K)
             return kp_normalized.squeeze()  # (N, 1, 2) -> (N, 2)
@@ -215,7 +215,7 @@ class FrameLoader:
         img_paths = cfg.img_paths
         if not img_paths:
             raise ValueError(
-                f"No *.{cfg.ext} images found in '{cfg.img_dir}' .  "
+                f"No images found in '{cfg.img_dir}' .  "
                 f"\nSpecify valid path by setting 'pre_path', 'dataset', 'post_path' config fields. "
             )
 
@@ -257,16 +257,16 @@ class FrameLoader:
 
             camera_model = self.camera_model
             if self.undistort:
-                if self.camera_model.model_type == CameraType.FISHEYE:
+                if self.camera_model.type == CameraType.FISHEYE:
                     img, K_undistorted = self._undistort_fisheye(img)
-                elif self.camera_model.model_type == CameraType.PINHOLE:
+                elif self.camera_model.type == CameraType.PINHOLE:
                     img, K_undistorted = self._undistort_pinhole(img)
                 else:
                     raise ValueError(f"Uknown {camera_model=}! Only PINHOLE and FISHEYE supported.")
 
                 # After undistortion, it's pinhole camera with new intrinsics K_undistorted and no distortion
                 camera_model = CameraModel(
-                    model_type=CameraType.PINHOLE, K=K_undistorted, dist=np.zeros(len(self.camera_model.dist))
+                    type=CameraType.PINHOLE, K=K_undistorted, dist=np.zeros(len(self.camera_model.dist))
                 )
 
             # Compute scale based on first image

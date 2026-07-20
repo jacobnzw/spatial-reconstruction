@@ -126,4 +126,7 @@ def write_config_to_json(cfg: SfMConfig | SLAMConfig, file: str):
 
         raise TypeError(f"Object of type {type(obj)} is not serializable")
 
-    Path(file).write_text(json.dumps(asdict(cfg), indent=2, default=config_serializer))
+    cfg_dict = asdict(cfg)
+    Path(file).write_text(json.dumps(cfg_dict, indent=2, default=config_serializer))
+
+    return cfg_dict

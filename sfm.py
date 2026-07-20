@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Callable, Literal
 
 import cv2 as cv
@@ -7,6 +8,7 @@ import tyro
 from loguru import logger
 from rich.pretty import pprint
 
+import wandb
 from ba import bundle_adjustment
 from config import FrameLoaderConfig, SfMConfig, frame_loader_preset, write_config_to_json
 from utils import (
@@ -350,6 +352,37 @@ def process_graph_component(
 Dataset = Literal["corridor", "statue_orbit"]
 
 
+def _log_wandb_artifacts(run, cfg: SfMConfig):
+    # log model
+    basename = cfg.out_basename
+    model_name = cfg.loader.dataset
+    model_path = Path(cfg.out_dir) / f"{basename}_ba.ply" if cfg.run_ba else cfg.out_dir / f"{basename}.ply"
+    if model_path.exists():
+        # TODO: use wandb.Object3D to view in W&B Visual Tab
+        # wandb.Object3D.from_numpy
+        # wandb.Object3D.from_file() # wandb.Object3D.SUPPORTED_TYPES: {'babylon', 'glb', 'gltf', 'obj', 'pts.json', 'stl'}
+        # run.log({"reconstructed_point_cloud": wandb.Object3D(model_path, caption=f"SfM Reconstruction from {model_name}")})
+
+        model_artifact = wandb.Artifact(name=f"{model_name}", type="model")
+        model_artifact.add_file(model_path)
+        run.log_artifact(model_artifact)
+
+    # log camera parameters
+    camera_model = cfg.loader.camera_model
+    wandb.config.update(
+        {
+            "camera": {
+                "model": camera_model.type,
+                "intrinsics": camera_model.get_intrinsics(rescaled=True),
+                "distortion_coeffs": camera_model.dist,
+                "scale": camera_model.scale,
+            }
+        }
+    )
+    # back up calibration file
+    wandb.save(cfg.loader.calib_file)
+
+
 def main(cfg: SfMConfig, dataset: Dataset | None = None):
     """Structure from Motion pipeline with configurable feature extraction and matching.
 
@@ -369,8 +402,16 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     basename = cfg.out_basename
 
     logger.add(out_dir / f"{basename}.log")
+    config_dict = write_config_to_json(cfg, out_dir / f"{basename}_config.json")
 
-    write_config_to_json(cfg, out_dir / f"{basename}_config.json")
+    run = wandb.init(
+        entity="jacobnzw-n-a",
+        project="spatial-reconstruction",
+        mode="online",  # TODO: "disable" turn logging calls to no-ops, "offline" for local logging
+        name=cfg.loader.dataset,
+        config=config_dict,
+        settings=wandb.Settings(console="auto"),  # captures logs written to stdout/stderr
+    )
 
     # Load all images & extract features
     logger.info(f"Extracting {cfg.features.type.upper()} features from {cfg.loader.img_dir}...")
@@ -426,6 +467,21 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
         logger.info("\nSaving tensors for gsplat...")
         gsplat_file = f"{basename}_ba.pt" if cfg.run_ba else f"{basename}.pt"
         exporter.save_for_gsplat(filename=out_dir / gsplat_file)
+
+    # TODO: log interesting stats:
+    # - track length histogram
+    # Reconstruction progress
+    # number of registered views
+    # number of 3D points
+    # number of tracks
+    # number of matches and inlier ratios per image pair
+    # Quality metrics
+    # reprojection error before and after bundle adjustment
+    # BA objective/loss
+    # baseline length between views
+
+    _log_wandb_artifacts(run, cfg)
+    run.finish()
 
     logger.success("✓ Done!")
 

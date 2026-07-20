@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +12,7 @@ NDArrayFloat = NDArray[np.floating[Any]]
 NDArrayInt = NDArray[np.integer[Any]]
 
 
-class CameraType(Enum):
+class CameraType(StrEnum):
     """Enum for different camera models."""
 
     PINHOLE = "pinhole"
@@ -24,12 +24,12 @@ class CameraModel:
     """Camera intrinsic parameters and distortion model.
 
     Attributes:
-        model_type: Type of camera model (pinhole or fisheye).
+        type: Type of camera model (pinhole or fisheye).
         K: Camera intrinsic matrix (3x3).
         dist: Distortion coefficients.
     """
 
-    model_type: CameraType = CameraType.PINHOLE
+    type: CameraType = CameraType.PINHOLE
 
     K: NDArrayFloat = field(default_factory=lambda: np.eye(3))
 
@@ -51,6 +51,11 @@ class CameraModel:
             return K_rescaled
         return self.K
 
+    def get_intrinsics(self, rescaled: bool = True) -> NDArrayFloat:
+        K = self.get_camera_matrix(rescaled)
+        fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+        return np.array([fx, fy, cx, cy])
+
     @staticmethod
     def from_calibration(calib_file: str):
         """Loads camera parameters from calibration file."""
@@ -59,7 +64,7 @@ class CameraModel:
 
         fx, fy, cx, cy = calibration["intrinsics"]
         return CameraModel(
-            model_type=CameraType(calibration["camera_type"]),
+            type=CameraType(calibration["camera_type"]),
             K=np.array(
                 [
                     [fx, 0, cx],
