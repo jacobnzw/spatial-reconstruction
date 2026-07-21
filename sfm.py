@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import Callable, Literal
 
 import cv2 as cv
-import joblib
 import numpy as np
 import tyro
 from loguru import logger
@@ -447,13 +446,9 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     exporter.save_ply(filename=out_dir / f"{basename}.ply")
 
     if cfg.dump_sfm_debug:
-        sfm_debug_filename = f"{basename}_sfm_debug.joblib"
-        joblib.dump(
-            (image_store, point_cloud, track_manager),
-            out_dir / sfm_debug_filename,
-            compress=3,
-        )
-        logger.info(f"Dumped SFM structs to {out_dir / sfm_debug_filename}")
+        filepath = out_dir / f"{basename}_sfm_debug.joblib"
+        exporter.dump_sfm_debug(filepath)
+        logger.info(f"Dumped SFM structs to {filepath}")
 
     if cfg.run_ba:
         logger.info("Running bundle adjustment...")
@@ -461,12 +456,12 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
 
         logger.info(f"Final point cloud size: {point_cloud.size}")
         logger.info(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")
-        exporter.save_ply(filename=out_dir / f"{basename}_ba.ply")
+        exporter.save_ply(out_dir / f"{basename}_ba.ply")
 
     if cfg.save_gsplat:
         logger.info("\nSaving tensors for gsplat...")
         gsplat_file = f"{basename}_ba.pt" if cfg.run_ba else f"{basename}.pt"
-        exporter.save_for_gsplat(filename=out_dir / gsplat_file)
+        exporter.save_for_gsplat(out_dir / gsplat_file)
 
     # TODO: log interesting stats:
     # - track length histogram

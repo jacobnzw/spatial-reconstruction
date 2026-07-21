@@ -1,6 +1,8 @@
 from pathlib import Path
 
+import joblib
 import numpy as np
+import open3d as o3d
 import torch
 from loguru import logger
 from numpy.typing import NDArray
@@ -49,7 +51,7 @@ class ReconIO:
             P + s * (-right + up),
         ]
 
-        return [C] + corners
+        return np.array([C] + corners)
 
     def _add_camera_frustum(
         self,
@@ -85,6 +87,9 @@ class ReconIO:
             # average the colors of all KPs in the track
             colors[track_id] = self.images.get_pixels(kp_keys).mean(axis=0)
         return colors
+
+    def dump_sfm_debug(self, filepath):
+        joblib.dump((self.images, self.point_cloud, self.track_manager), filepath, compress=3)
 
     def save_for_gsplat(self, filename: Path):
         """Save SfM reconstruction as tensors for gsplat training.
@@ -187,11 +192,14 @@ class ReconIO:
 
         return poses.to(device), images.to(device), points.to(device), colors.to(device), intrinsics.to(device), W, H
 
-    def save_ply(self, filename: Path = Path("point_cloud.ply")):
+    def save_ply(self, filename: Path):
         import pandas as pd
 
-        # Convert to DataFrame
         xyz = self.point_cloud.get_points_as_array()
+        if xyz.size == 0:
+            logger.warning("No 3D points available; skipping PLY export.")
+            return
+
         df = pd.DataFrame(xyz, columns=["x", "y", "z"])
 
         # --- OUTLIER REMOVAL ---
@@ -205,17 +213,22 @@ class ReconIO:
         df_filtered = df[distance_mask]
         colors_filtered = self._get_point_colors()[distance_mask]
 
-        # Add camera frustums
-        vertices = []
-        edges = []
+        # Add camera frustums as red points (Open3D writer cannot emit edges from this routine)
+        frustum_points = []
         for img in self.images.iter_images_with_pose():
-            self._add_camera_frustum(vertices, edges, img.R, img.t)
-        # edge indices offset by number of 3D points
-        camera_vertex_offset = len(df_filtered)
-        edges = [(e[0] + camera_vertex_offset, e[1] + camera_vertex_offset) for e in edges]
+            for p in self._camera_frustum_points(img.R, img.t):
+                frustum_points.append(p)
+        frustum_colors = np.zeros((len(frustum_points), 3))
+        frustum_colors[:, 0] = 1.0
 
-        num_vertices = len(df_filtered) + len(vertices)
-        num_edges = len(edges)
+        xyz_all = np.vstack([df_filtered.to_numpy(), np.asarray(frustum_points)])
+        colors_all = np.vstack(
+            [
+                colors_filtered.astype(np.float32) / 255.0,
+                frustum_colors,
+            ]
+        )
+
         # --- DEBUG --- sanity checks
         logger.debug(f"{df.shape = }")
         logger.debug(f"# nans: {df.isna().sum().sum()}")
@@ -226,29 +239,9 @@ class ReconIO:
         logger.debug(f"{df_filtered.shape = }")
 
         filename.parent.mkdir(exist_ok=True, parents=True)
-        with open(filename, "w") as f:
-            f.write("ply\n")
-            f.write("format ascii 1.0\n")
-            # camera frustums: colored vertices + edges
-            f.write(f"element vertex {num_vertices}\n")
-            f.write("property float x\n")
-            f.write("property float y\n")
-            f.write("property float z\n")
-            f.write("property uchar red\n")
-            f.write("property uchar green\n")
-            f.write("property uchar blue\n")
-            f.write(f"element edge {num_edges}\n")
-            f.write("property int vertex1\n")
-            f.write("property int vertex2\n")
-            f.write("property uchar red\n")
-            f.write("property uchar green\n")
-            f.write("property uchar blue\n")
-            f.write("end_header\n")
-            # point cloud as white points
-            for (x, y, z), (r, g, b) in zip(df_filtered.values, colors_filtered):
-                f.write(f"{x} {y} {z} {r} {g} {b}\n")
-            # camera frustums: red vertices + edges
-            for v in vertices:
-                f.write(f"{v[0]} {v[1]} {v[2]} 255 0 0\n")
-            for e in edges:  # TODO: edges don't work in my viewer
-                f.write(f"{e[0]} {e[1]} 255 0 0\n")
+
+        pcd = o3d.t.geometry.PointCloud()
+        pcd.point.positions = xyz_all  # o3d.utility.Vector3dVector(xyz_all)
+        pcd.point.colors = colors_all  # o3d.utility.Vector3dVector(colors_all)
+        o3d.io.write_point_cloud(filename, pcd.to_legacy(), write_ascii=True)
+        logger.info(f"Saved PLY point cloud to {filename}")
