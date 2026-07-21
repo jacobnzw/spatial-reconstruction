@@ -403,10 +403,11 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     logger.add(out_dir / f"{basename}.log")
     config_dict = write_config_to_json(cfg, out_dir / f"{basename}_config.json")
 
+    wandb_mode = "online" if cfg.log_to_wandb else "disabled"
     run = wandb.init(
         entity="jacobnzw-n-a",
         project="spatial-reconstruction",
-        mode="online",  # TODO: "disable" turn logging calls to no-ops, "offline" for local logging
+        mode=wandb_mode,
         name=cfg.loader.dataset,
         config=config_dict,
         settings=wandb.Settings(console="auto"),  # captures logs written to stdout/stderr
