@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import joblib
 import numpy as np
 import open3d as o3d
 import torch
@@ -86,6 +87,9 @@ class ReconIO:
             # average the colors of all KPs in the track
             colors[track_id] = self.images.get_pixels(kp_keys).mean(axis=0)
         return colors
+
+    def dump_sfm_debug(self, filepath):
+        joblib.dump((self.images, self.point_cloud, self.track_manager), filepath, compress=3)
 
     def save_for_gsplat(self, filename: Path):
         """Save SfM reconstruction as tensors for gsplat training.
