@@ -28,6 +28,9 @@ from .tracks import TrackManager
 # View module
 from .view import FrameLoader, ViewData
 
+# Logging module
+from .logging import build_track_length_histogram, log_wandb_artifacts
+
 __all__ = [
     # Camera
     "CameraType",
@@ -55,4 +58,7 @@ __all__ = [
     "construct_view_graph",
     # I/O
     "ReconIO",
+    # Logging
+    "build_track_length_histogram",
+    "log_wandb_artifacts",
 ]

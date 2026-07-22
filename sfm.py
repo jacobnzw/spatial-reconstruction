@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Callable, Literal
 
 import cv2 as cv
@@ -11,6 +10,8 @@ import wandb
 from ba import bundle_adjustment
 from config import FrameLoaderConfig, SfMConfig, frame_loader_preset, write_config_to_json
 from utils import (
+    FeatureExtractor,
+    FeatureStore,
     FrameLoader,
     NDArrayFloat,
     NDArrayInt,
@@ -18,9 +19,11 @@ from utils import (
     ReconIO,
     TrackManager,
     ViewData,
+    ViewEdge,
+    construct_view_graph,
+    log_wandb_artifacts,
+    make_keypoint_matcher,
 )
-from utils.features import FeatureExtractor, FeatureStore, make_keypoint_matcher
-from utils.graph import ViewEdge, construct_view_graph
 
 
 def bootstrap_from_two_views(
@@ -334,6 +337,8 @@ def process_graph_component(
             )
             continue
 
+        # TODO: log into rich.Table: {img_ref.idx=} {img_new.idx=} {best_edge.i=} {best_edge.j=} {best_edge.matches_ij.shape=} baseline success new_filename ref_filename
+
         # move currently processed image/node index from U to R
         R.add(img_new.idx)
         U.remove(img_new.idx)
@@ -349,37 +354,6 @@ def process_graph_component(
 
 
 Dataset = Literal["corridor", "statue_orbit"]
-
-
-def _log_wandb_artifacts(run, cfg: SfMConfig):
-    # log model
-    basename = cfg.out_basename
-    model_name = cfg.loader.dataset
-    model_path = Path(cfg.out_dir) / f"{basename}_ba.ply" if cfg.run_ba else cfg.out_dir / f"{basename}.ply"
-    if model_path.exists():
-        # TODO: use wandb.Object3D to view in W&B Visual Tab
-        # wandb.Object3D.from_numpy
-        # wandb.Object3D.from_file() # wandb.Object3D.SUPPORTED_TYPES: {'babylon', 'glb', 'gltf', 'obj', 'pts.json', 'stl'}
-        # run.log({"reconstructed_point_cloud": wandb.Object3D(model_path, caption=f"SfM Reconstruction from {model_name}")})
-
-        model_artifact = wandb.Artifact(name=f"{model_name}", type="model")
-        model_artifact.add_file(model_path)
-        run.log_artifact(model_artifact)
-
-    # log camera parameters
-    camera_model = cfg.loader.camera_model
-    wandb.config.update(
-        {
-            "camera": {
-                "model": camera_model.type,
-                "intrinsics": camera_model.get_intrinsics(rescaled=True),
-                "distortion_coeffs": camera_model.dist,
-                "scale": camera_model.scale,
-            }
-        }
-    )
-    # back up calibration file
-    wandb.save(cfg.loader.calib_file)
 
 
 def main(cfg: SfMConfig, dataset: Dataset | None = None):
@@ -451,9 +425,10 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
         exporter.dump_sfm_debug(filepath)
         logger.info(f"Dumped SFM structs to {filepath}")
 
+    ba_summary = None
     if cfg.run_ba:
         logger.info("Running bundle adjustment...")
-        bundle_adjustment(image_store, point_cloud, track_manager, fix_first_camera=cfg.fix_first_camera)
+        ba_summary = bundle_adjustment(image_store, point_cloud, track_manager, fix_first_camera=cfg.fix_first_camera)
 
         logger.info(f"Final point cloud size: {point_cloud.size}")
         logger.info(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")
@@ -464,19 +439,7 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
         gsplat_file = f"{basename}_ba.pt" if cfg.run_ba else f"{basename}.pt"
         exporter.save_for_gsplat(out_dir / gsplat_file)
 
-    # TODO: log interesting stats:
-    # - track length histogram
-    # Reconstruction progress
-    # number of registered views
-    # number of 3D points
-    # number of tracks
-    # number of matches and inlier ratios per image pair
-    # Quality metrics
-    # reprojection error before and after bundle adjustment
-    # BA objective/loss
-    # baseline length between views
-
-    _log_wandb_artifacts(run, cfg)
+    log_wandb_artifacts(run, cfg, track_manager, ba_summary)
     run.finish()
 
     logger.success("✓ Done!")

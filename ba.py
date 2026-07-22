@@ -17,7 +17,7 @@ def bundle_adjustment(
     point_cloud: PointCloud,
     track_manager: TrackManager,
     fix_first_camera: bool = True,
-):
+) -> pyceres.SolverSummary:
     """Run bundle adjustment on all cameras and 3D points.
 
     Uses pyceres as the optimization backend with pycolmap's ReprojErrorCost
@@ -129,6 +129,8 @@ def bundle_adjustment(
         point_cloud.set_point(track_id, point_3d)
 
     logger.info("Bundle adjustment complete.")
+
+    return summary
 
 
 def bundle_adjustment_pycolmap(
