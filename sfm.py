@@ -134,18 +134,21 @@ def _estimate_pose_pnp(world_points: NDArrayFloat, image_points: NDArrayFloat, i
         reprojectionError=4.0,  # tighter than default 8.0
         flags=cv.SOLVEPNP_EPNP,
     )
+
+    n_inliers = len(inliers)
+    ratio_inlier = n_inliers / len(world_points)
+
     if not pnp_ok:
-        raise ValueError("solvePnP failed to estimate pose.")
-    logger.success(
-        f"Pose estimation succeeded with {len(inliers)} inliers (Inlier ratio: {len(inliers) / len(world_points):.2f})"
-    )
+        raise ValueError(f"solvePnP failed to estimate pose: {n_inliers=} {ratio_inlier=}.")
+
+    logger.success(f"Pose estimation succeeded with {n_inliers} inliers (Inlier ratio: {ratio_inlier:.2f})")
 
     # Estimated camera extrinsics, i.e. world-to-camera transform, conventionally named cam_T_world
     # This is NOT the camera's pose in the world frame!
     R = cv.Rodrigues(rvec)[0]
     img.set_extrinsics(R, tvec)
 
-    return inliers.ravel()
+    return inliers.ravel(), n_inliers, ratio_inlier
 
 
 def _triangulate_new_points(
@@ -163,7 +166,7 @@ def _triangulate_new_points(
 
     # Filter out geometric outliers that don't satisfy the epipolar constraint
     # alternative: only cv.fisheye.undistortPoints() then find E-mat w/ cameraMatrix=np.eye(3)
-    # pts_ref, pts_new = img_ref.get_undistorted_keypoints(), img_new.get_undistorted_keypoints()  # ty:ignore[not-subscriptable]
+    # pts_ref, pts_new = img_ref.get_undistorted_keypoints(), img_new.get_undistorted_keypoints()
     # pts_ref, pts_new = pts_ref[untracked_matches[:, 0]], pts_new[untracked_matches[:, 1]]
     pts_ref, pts_new = img_ref.kp[untracked_matches[:, 0]], img_new.kp[untracked_matches[:, 1]]  # ty:ignore[not-subscriptable]
 
@@ -185,14 +188,14 @@ def _triangulate_new_points(
     inliers = (imgref_points_3d[:, 2] > depth_threshold) & (imgnew_points_3d[:, 2] > depth_threshold)
     points_3d = points_3d[inliers]
     untracked_matches = untracked_matches[inliers]
-    logger.debug(
-        f"Filtered out {np.sum(~inliers)} points that are behind the camera. Remaining points: {len(points_3d)}"
-    )
+
+    ratio_depth_filtered = np.sum(~inliers) / len(inliers)
+    logger.debug(f"Depth-filtered points ratio: {ratio_depth_filtered} ({depth_threshold=}).")
 
     # Create track for each pair of KPs (ref, new) that were triangulated to a 3D point
     kp_key_pairs = [((img_ref.idx, m[0]), (img_new.idx, m[1])) for m in untracked_matches]
 
-    return points_3d, kp_key_pairs
+    return points_3d, kp_key_pairs, ratio_depth_filtered
 
 
 def add_view(
@@ -238,7 +241,7 @@ def add_view(
     # 3D-to-2D correspondences in new view (via matches w/ ref view) for PnP pose estimation
     world_points = point_cloud.get_points_as_array(track_ids_seen)
     image_points = img_new.kp[kp_idx_seen]  # ty:ignore[not-subscriptable]
-    inliers = _estimate_pose_pnp(world_points, image_points, img_new)
+    inliers, n_pnp_inliers, ratio_pnp_inlier = _estimate_pose_pnp(world_points, image_points, img_new)
     kp_idx_seen, track_ids_seen = kp_idx_seen[inliers], track_ids_seen[inliers]
 
     # Register the inlier kps to inlier tracks in track manager
@@ -249,12 +252,16 @@ def add_view(
     t_ref_new = (img_ref.cam_T_world * img_new.world_T_cam).translation  # ty:ignore[unsupported-operator]
     logger.debug(f"Baseline between ref and new image: {np.linalg.norm(t_ref_new):.2f}")
 
-    points_3d, kp_key_pairs = _triangulate_new_points(img_ref, img_new, untracked_matches, depth_threshold)
+    points_3d, kp_key_pairs, ratio_triang_depth_filtered = _triangulate_new_points(
+        img_ref, img_new, untracked_matches, depth_threshold
+    )
 
     track_ids_added = track_manager.add_new_tracks(kp_key_pairs)
     point_cloud.add_points(track_ids_added, points_3d)
 
     logger.success(f"Added {len(points_3d)} 3D points.")
+
+    return n_pnp_inliers, ratio_pnp_inlier, ratio_triang_depth_filtered
 
 
 def pick_best_image_pair(
@@ -278,7 +285,7 @@ def process_graph_component(
     point_cloud: PointCloud,
     match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
     depth_threshold: float,
-) -> tuple[list[ViewEdge], set[int]]:
+) -> tuple[list[ViewEdge], set[int], wandb.Table]:
     # Pick strongest baseline:
     # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
     img_0, img_1, best_edge = pick_best_image_pair(edges, store)
@@ -288,13 +295,26 @@ def process_graph_component(
     # matches -> E -> pose -> triangulation
     bootstrap_from_two_views(img_0, img_1, track_manager, point_cloud, matches=best_edge.matches_ij)
 
-    logger.debug(f"After compute_baseline_estimate: {track_manager.is_valid()=}")
-
     R = set((img_0.idx, img_1.idx))
     U = {node for e in edges for node in (e.i, e.j)}
     U.difference_update(R)
     leftover_edges = edges.copy()
     leftover_edges.remove(best_edge)
+
+    log_table = wandb.Table(
+        columns=[
+            "new_index",
+            "ref_index",
+            "success",
+            "n_matches",
+            "n_pnp_inliers",
+            "ratio_pnp_inlier",
+            "ratio_triang_depth_filtered",
+            "baseline",
+            "new_file",
+            "ref_file",
+        ]
+    )
 
     while True:
         # find unregistered images connected to the registered ones
@@ -317,7 +337,7 @@ def process_graph_component(
 
         try:
             # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
-            add_view(
+            n_pnp_inliers, ratio_pnp_inlier, ratio_triang_depth_filtered = add_view(
                 img_new,
                 img_ref,
                 track_manager,
@@ -325,19 +345,36 @@ def process_graph_component(
                 matches=best_edge.get_matches(img_ref.idx, img_new.idx),
                 depth_threshold=depth_threshold,
             )
-            logger.debug(f"After add_view: {track_manager.is_valid()=}")
-
+            add_success = True
         except ValueError as e:
             # failed to add new view: indicate the (img_ref, img_new) pair as bad and move on
             # best_edge was the best chance to add img_new (don't consider next best edge w/ img_new)
             U.remove(img_new.idx)
             leftover_edges.remove(best_edge)
+
             logger.warning(
                 f"Failed to add view: {img_new.idx}:{img_new.path.name} with ref: {img_ref.idx}:{img_ref.path.name} due to {e}"
             )
-            continue
 
-        # TODO: log into rich.Table: {img_ref.idx=} {img_new.idx=} {best_edge.i=} {best_edge.j=} {best_edge.matches_ij.shape=} baseline success new_filename ref_filename
+            n_pnp_inliers, ratio_pnp_inlier, ratio_triang_depth_filtered = np.nan, np.nan, np.nan
+            add_success = False
+
+        baseline = np.linalg.norm((img_ref.cam_T_world * img_new.world_T_cam).translation)
+        log_table.add_data(
+            img_new.idx,
+            img_ref.idx,
+            add_success,
+            best_edge.weight,
+            n_pnp_inliers,
+            ratio_pnp_inlier,
+            ratio_triang_depth_filtered,
+            baseline,
+            img_new.path.name,
+            img_ref.path.name,
+        )
+
+        if not add_success:
+            continue
 
         # move currently processed image/node index from U to R
         R.add(img_new.idx)
@@ -350,7 +387,7 @@ def process_graph_component(
     logger.debug(f"{U = }")
     logger.debug(f"leftover_edges = {[(e.i, e.j) for e in leftover_edges]}")
 
-    return leftover_edges, U
+    return leftover_edges, U, log_table
 
 
 Dataset = Literal["corridor", "statue_orbit"]
@@ -404,7 +441,7 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
 
     # Process the first component
     logger.info("Processing graph component...")
-    process_graph_component(
+    _, _, log_view_table = process_graph_component(
         view_graph.edges.copy(), image_store, track_manager, point_cloud, kp_matcher, cfg.depth_threshold
     )
 
@@ -439,7 +476,7 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
         gsplat_file = f"{basename}_ba.pt" if cfg.run_ba else f"{basename}.pt"
         exporter.save_for_gsplat(out_dir / gsplat_file)
 
-    log_wandb_artifacts(run, cfg, track_manager, ba_summary)
+    log_wandb_artifacts(run, cfg, track_manager, ba_summary, log_view_table)
     run.finish()
 
     logger.success("✓ Done!")

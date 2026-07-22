@@ -20,17 +20,7 @@ def build_track_length_histogram(track_lengths: list[int]):
     return fig
 
 
-def log_wandb_artifacts(run, cfg: SfMConfig, track_manager: TrackManager, ba_summary):
-
-    # TODO: log interesting stats:
-    # Reconstruction progress
-    # number of registered views
-    # number of matches and inlier ratios per image pair
-    # Quality metrics
-    # reprojection error before and after bundle adjustment
-    # baseline length between views
-
-    wandb.Graph.
+def log_wandb_artifacts(run, cfg: SfMConfig, track_manager: TrackManager, ba_summary, view_table: wandb.Table):
     # log model
     basename = cfg.out_basename
     model_name = cfg.loader.dataset
@@ -44,6 +34,15 @@ def log_wandb_artifacts(run, cfg: SfMConfig, track_manager: TrackManager, ba_sum
         model_artifact = wandb.Artifact(name=f"{model_name}", type="model")
         model_artifact.add_file(model_path)
         run.log_artifact(model_artifact)
+
+    # log the status info about how each view was incorporated
+    table_artifact = wandb.Artifact(
+        name="view_table",
+        type="table",
+        description="Each row shows how each view was incorporated into the final 3D reconstruction.",
+    )
+    table_artifact.add(view_table, "view_table")
+    run.log_artifact(table_artifact)
 
     # log camera parameters
     camera_model = cfg.loader.camera_model
