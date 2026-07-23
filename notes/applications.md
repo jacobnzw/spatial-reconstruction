@@ -54,6 +54,7 @@ Overlap = number of matched keypoints between two images.
 
 ## SLAM
 
+
 ### Factor Graph
 A factor graph is a bipartite graph that represents the factorization of a function. 
 Two types of nodes: variables and factors (functions). The edges indicate which variables participate in which factors.
@@ -65,32 +66,67 @@ In the context of SLAM, the function is the error between the predicted measurem
 Factor graphs represent the problem as a set of variables (poses, points, velocities) and factors (constraints, measurements, priors) 
 between them. The goal is to find the variable values that best satisfy all the factors, typically by minimizing an objective 
 function that measures the error between the factors and the variables.
-Factor graph optimization is a generalization of bundle adjustment that can handle a wider range of problems in SLAM and computer vision. 
+
+Factor graphs are a very general framework subsuming a wide range of optimization problems:
+
+- Bundle adjustment
+  - Factor: reprojection error (between the 3D points and their corresponding 2D image points)
+  - Variables (unknowns): camera poses and 3D points, 
+  - Parameters (observations): .
+
+- Pose graph optimization
+  - The variables are the robot poses, and the factors are the relative pose measurements between pairs of poses (odometry or loop closures).
+
+- Visual-inertial odometry
+  - The variables are the robot poses, velocities, and IMU biases, and the factors are parameterized by the IMU measurements and visual observations.
 
 <!-- TODO: example of factor graph for 3D reconstruction, show how factor graph is reflected in the terms of the objective function -->
 
-
 Sliding-window approach: Only the most recent N frames are kept in the graph, and as new frames arrive, the oldest ones 
 are removed to maintain a fixed-size window. This approach is common in real-time SLAM systems where memory and 
-processing constraints are important.
+processing constraints are important. 
+Structurally isomorphic to fixed-lag smoothing.
 
-Can be seen as generalization of bundle adjustment which is a special case for structure-from-motion.
 
 ### Pose Graph
 Pose graph optimization (PGO) is a specific case of factor graph optimization where the variables are poses (rigid transformations) 
 and the factors are relative pose constraints (odometry measurements or loop closures). The goal is to find a consistent 
 configuration of poses that satisfies all constraints.
 
-A pose graph is a factor graph whose variables are poses and whose measurements are relative measurements between pairs of poses. Optimizing a pose graph means determining the configuration of poses that is maximally consistent with the measurements. PGO is very common in the SLAM community, and several ad-hoc approaches have been proposed. Similar to BA, PGO is highly non-convex, and its solution with ILS requires a reasonably good initial guess.
+A pose graph is a factor graph whose variables are poses and whose measurements are relative measurements between pairs of poses. 
+Optimizing a pose graph means determining the configuration of poses that is maximally consistent with the measurements. 
+PGO is very common in the SLAM community, and several ad-hoc approaches have been proposed. 
+Similar to BA, PGO is highly non-convex, and its solution with ILS requires a reasonably good initial guess.
+
+
+### [Structure from Motion (SfM) via GTSAM](https://gtsam-jlblanco-docs.readthedocs.io/en/latest/StructureFromMotion.html)
+Important note: a very tricky and difficult part of making SFM work is (a) data association, and (b) initialization. 
+*GTSAM does neither of these things for you*: it simply provides the “bundle adjustment” optimization. 
+In the example, we simply assume the data association is known (it is encoded in the J sets), and we initialize with 
+the ground truth, as the intent of the example is simply to show you how to set up the optimization problem.
+
 
 ### Relocalization
+Assumption: Map is known.
+Solve the kidnapped robot problem: given a map of the environment and a set of sensor measurements, determine the robot's pose in the map.
 
-### IMU Preintegration
+
+### Loop Closure
+Loop closure is the process of recognizing that the robot has returned to a previously visited location, 
+and using this information to correct the accumulated drift in the estimated trajectory. 
+Loop closure is an important component of SLAM systems, as it allows for more accurate mapping and localization.
+
+
+### [IMU Preintegration](https://docs.openvins.com/propagation.html)
+
+See also [OpenIMU docs](https://openimu.readthedocs.io/en/latest/algorithms/STM_Quaternion.html).
+
 IMU delivers measurements at a orders of magnitude higher rate (100-1000 Hz) than the camera images (10-30 Hz).
 
-IMU does not observe the pose directly, but rather the angular velocity $ \boldsymbol{\omega} $ and linear acceleration $\mathbf{a}$ which need to be integrated over time to obtain the pose.
+IMU does not observe the pose directly, but rather the angular velocity $ \boldsymbol{\omega} $ and linear acceleration $\mathbf{a}$ which need to be integrated over time to obtain the pose $\mathbf{p}$.
 
-<!-- TODO: needs verification -->
+<!-- TODO: needs fleshing out: formulate model, describe everything, then continue with the estimation algorithm on that model -->
+
 The continuous-time dynamcs are:
 $$
    \begin{align*}
