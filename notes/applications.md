@@ -121,6 +121,8 @@ Loop closure is an important component of SLAM systems, as it allows for more ac
 
 See also [OpenIMU docs](https://openimu.readthedocs.io/en/latest/algorithms/STM_Quaternion.html).
 
+NED Coordinate Frame: North-East-Down coordinate frame
+
 IMU delivers measurements at a orders of magnitude higher rate (100-1000 Hz) than the camera images (10-30 Hz).
 
 IMU does not observe the pose directly, but rather the angular velocity $ \boldsymbol{\omega} $ and linear acceleration $\mathbf{a}$ which need to be integrated over time to obtain the pose $\mathbf{p}$.
@@ -140,3 +142,35 @@ $$
 
 IMU preintegration is a technique to compute the IMU measurements in the local frame of the IMU. 
 It is used to compute the relative pose between two keyframes $i$ and $j$
+
+
+$$
+\begin{align*}
+  \dot{\bar{\mathbf{q}}}(t) &= \frac{1}{2} \bar{\mathbf{q}}(t) \otimes \begin{bmatrix} \mathbf{0} \\ \boldsymbol{\omega}(t) \end{bmatrix} \\
+  \dot{\mathbf{p}}(t) &= \mathbf{v}(t) \\
+  \dot{\mathbf{v}}(t) &= \mathbf{R}(\bar{\mathbf{q}}(t))^\top \mathbf{a}(t) + \mathbf{g} \\
+  \dot{\mathbf{b}}_g(t) &= \mathbf{n}_{wg}(t) \\
+  \dot{\mathbf{b}}_a(t) &= \mathbf{n}_{wa}(t) 
+\end{align*}
+$$
+
+Between keyframes the IMU biases are assumed constant, and the IMU measurements are integrated to compute the relative pose, velocity, and biases between the two keyframes.
+
+Solution to the IMU kinematics is given by the following equations:
+$$
+\begin{align*}
+  \Delta \mathbf{R}_{i+1} &= \Delta \mathbf{R}_i \cdot \exp([\tilde{\boldsymbol{\omega}}_i \Delta t]_\times) \\
+  \Delta \mathbf{v}_{i+1} &= \Delta \mathbf{v}_i + \Delta \mathbf{R}_i \cdot \tilde{\mathbf{a}}_i \Delta t \\
+  \Delta \mathbf{p}_{i+1} &= \Delta \mathbf{p}_i + \Delta \mathbf{v}_i \Delta t + \frac12 \Delta \mathbf{R}_i \cdot \tilde{\mathbf{a}}_i \Delta t^2 
+\end{align*}
+$$
+
+These need to be fed with estimates of the true angular velocity and linear acceleration, which are obtained from bias estimates:
+$$
+\begin{align*}
+  \tilde{\boldsymbol{\omega}}_i &= \boldsymbol{\omega}_{m,i} - \hat{\mathbf{b}}_g \\
+  \tilde{\mathbf{a}}_i &= \mathbf{a}_{m,i} - \hat{\mathbf{b}}_a
+\end{align*}
+$$
+The IMU bias estimates are held constant for the duration of the preintegration between keyframes.
+However, the IMU bias estimates are actively updated using EKF (or other filter) running independently.

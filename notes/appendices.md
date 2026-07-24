@@ -156,6 +156,12 @@ where:
 Can represent a full 6DOF rigid transformation (rotation + translation) with no gimbal lock and easy interpolation.
 
 
+### SGal(3) Special Galilean Group
+Currently investigated for joint modelling of uncertainty in pose, velocity and time.
+pose + velocity + time
+
+
+
 ## Scene Representation
 
 ### Truncated Signed Distance Function (TSDF)
