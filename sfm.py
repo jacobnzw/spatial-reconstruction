@@ -7,7 +7,7 @@ from loguru import logger
 from rich.pretty import pprint
 
 import wandb
-from ba import bundle_adjustment
+from ba import bundle_adjustment, bundle_adjustment_gtsam
 from config import FrameLoaderConfig, SfMConfig, frame_loader_preset, write_config_to_json
 from utils import (
     FeatureExtractor,
@@ -465,7 +465,9 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     ba_summary = None
     if cfg.run_ba:
         logger.info("Running bundle adjustment...")
-        ba_summary = bundle_adjustment(image_store, point_cloud, track_manager, fix_first_camera=cfg.fix_first_camera)
+        ba_summary = bundle_adjustment_gtsam(
+            image_store, point_cloud, track_manager, fix_first_camera=cfg.fix_first_camera
+        )
 
         logger.info(f"Final point cloud size: {point_cloud.size}")
         logger.info(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")

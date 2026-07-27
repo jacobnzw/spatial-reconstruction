@@ -1,3 +1,4 @@
+import gtsam
 import numpy as np
 import pyceres
 import pycolmap
@@ -131,6 +132,118 @@ def bundle_adjustment(
     logger.info("Bundle adjustment complete.")
 
     return summary
+
+
+def bundle_adjustment_gtsam(
+    images: FeatureStore,
+    point_cloud: PointCloud,
+    track_manager: TrackManager,
+    fix_first_camera: bool = True,
+):
+    """Run bundle adjustment with GTSAM using reprojection factors.
+
+    Optimizes camera poses and 3D points while keeping camera intrinsics fixed.
+    The routine uses the same ``FeatureStore``, ``PointCloud`` and ``TrackManager``
+    structures as the other BA implementations in this module.
+    """
+
+    if not images.size:
+        logger.warning("No images available for GTSAM bundle adjustment; skipping.")
+        return None
+
+    first_img = images[0]
+    K = first_img.camera_model.get_camera_matrix(rescaled=True)
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+    calibration = gtsam.Cal3_S2(fx, fy, 0.0, cx, cy)
+
+    graph = gtsam.NonlinearFactorGraph()
+    initial_values = gtsam.Values()
+
+    pose_keys: dict[int, int] = {}
+    point_keys: dict[int, int] = {}
+
+    for img in images.iter_images_with_pose():
+        pose_key = gtsam.symbol("x", img.idx)
+        pose_keys[img.idx] = pose_key
+        initial_values.insert(pose_key, gtsam.Pose3(gtsam.Rot3(img.R.copy()), img.t.copy()))
+
+    for track_id, xyz in point_cloud.items():
+        point_key = gtsam.symbol("p", track_id)
+        point_keys[track_id] = point_key
+        initial_values.insert(point_key, gtsam.Point3(*xyz.copy()))
+
+    # Keypoint noise in 2D image plane
+    noise_model = gtsam.noiseModel.Isotropic.Sigma(2, 1.0)
+    # TODO: try w/ robust loss/noise
+    # huber_mest = gtsam.noiseModel.mEstimator.Huber(1.0)
+    # robust_noise = gtsam.noiseModel.Robust(huber_mest, noise_model)
+
+    # For every triangulated 3D point (landmark) and its corresponding 2D keypoints ...
+    for track_id, kp_keys in track_manager.track_to_kps.items():
+        point_xyz = point_cloud.get_point(track_id)
+        if point_xyz is None:
+            continue
+
+        point_key = point_keys.get(track_id)
+        if point_key is None:
+            continue
+
+        for img_idx, kp_idx in kp_keys:
+            if img_idx not in pose_keys:
+                continue
+
+            view = images[img_idx]
+            if view.kp is None:
+                continue
+
+            observed = np.asarray(view.kp[kp_idx], dtype=np.float64)
+            if observed.shape != (2,):
+                continue
+
+            pose_key = pose_keys[img_idx]
+            factor = gtsam.GenericProjectionFactorCal3_S2(
+                observed,
+                noise_model,
+                pose_key,
+                point_key,
+                calibration,
+            )
+            graph.add(factor)
+
+    if fix_first_camera and pose_keys:
+        first_img_idx = min(pose_keys)
+        first_pose_key = pose_keys[first_img_idx]
+        first_pose = gtsam.Pose3(gtsam.Rot3(images[first_img_idx].R), images[first_img_idx].t)
+        graph.add(
+            gtsam.PriorFactorPose3(
+                first_pose_key,
+                first_pose,
+                gtsam.noiseModel.Isotropic.Sigma(6, 1e-12),
+            )
+        )
+
+    # NOTE: Getting gtsam::IndeterminantLinearSystemException w/ DoglegOptimizer
+    # optimizer = gtsam.DoglegOptimizer(graph, initial_values, gtsam.DoglegParams())
+    params = gtsam.LevenbergMarquardtParams()
+    # params.setMaxIterations(200)
+    params.setVerbosity("TERMINATION")  # SILENT, TERMINATION, ERROR, VALUES, DELTA, LINEAR
+    params.setVerbosityLM("TERMINATION")
+    # params.setLogFile()
+    # params.setLinearSolverType()  # MULTIFRONTAL_SOLVER, MULTIFRONTAL_CHOLESKY, MULTIFRONTAL_QR, SEQUENTIAL_CHOLESKY, SEQUENTIAL_QR
+    params.print()
+    optimizer = gtsam.LevenbergMarquardtOptimizer(graph, initial_values, params)
+    result = optimizer.optimize()
+
+    for img_idx, pose_key in pose_keys.items():
+        pose = result.atPose3(pose_key)
+        images[img_idx].set_extrinsics(pose.rotation().matrix(), pose.translation())
+
+    for track_id, point_key in point_keys.items():
+        point = result.atPoint3(point_key)
+        point_cloud.set_point(track_id, point)
+
+    logger.info("GTSAM bundle adjustment complete.")
+    return result
 
 
 def bundle_adjustment_pycolmap(
