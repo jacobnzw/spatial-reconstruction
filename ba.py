@@ -165,7 +165,10 @@ def bundle_adjustment_gtsam(
     for img in images.iter_images_with_pose():
         pose_key = gtsam.symbol("x", img.idx)
         pose_keys[img.idx] = pose_key
-        initial_values.insert(pose_key, gtsam.Pose3(gtsam.Rot3(img.R.copy()), img.t.copy()))
+        # IMPORTANT(!): world_T_cam expected by GTSAM
+        pose = img.world_T_cam
+        R, t = gtsam.Rot3(pose.rotation.as_matrix().copy()), pose.translation.copy()
+        initial_values.insert(pose_key, gtsam.Pose3(R, t))
 
     for track_id, xyz in point_cloud.items():
         point_key = gtsam.symbol("p", track_id)
@@ -174,9 +177,9 @@ def bundle_adjustment_gtsam(
 
     # Keypoint noise in 2D image plane
     noise_model = gtsam.noiseModel.Isotropic.Sigma(2, 1.0)
-    # TODO: try w/ robust loss/noise
+    # NOTE: Huber loss for robustness
     # huber_mest = gtsam.noiseModel.mEstimator.Huber(1.0)
-    # robust_noise = gtsam.noiseModel.Robust(huber_mest, noise_model)
+    # noise_model = gtsam.noiseModel.Robust(huber_mest, noise_model)
 
     # For every triangulated 3D point (landmark) and its corresponding 2D keypoints ...
     for track_id, kp_keys in track_manager.track_to_kps.items():
@@ -201,6 +204,8 @@ def bundle_adjustment_gtsam(
                 continue
 
             pose_key = pose_keys[img_idx]
+            # TODO: try other suitable factors: SmartProjection...
+            # gtsam.SmartProjectionFactorPinholeCameraCal3_S2()
             factor = gtsam.GenericProjectionFactorCal3_S2(
                 observed,
                 noise_model,
@@ -210,32 +215,56 @@ def bundle_adjustment_gtsam(
             )
             graph.add(factor)
 
+    # Add priors on first camera for stability
     if fix_first_camera and pose_keys:
         first_img_idx = min(pose_keys)
         first_pose_key = pose_keys[first_img_idx]
-        first_pose = gtsam.Pose3(gtsam.Rot3(images[first_img_idx].R), images[first_img_idx].t)
+
+        pose = images[first_img_idx].world_T_cam
+        first_pose = gtsam.Pose3(gtsam.Rot3(pose.rotation.as_matrix()), pose.translation)
         graph.add(
             gtsam.PriorFactorPose3(
                 first_pose_key,
                 first_pose,
-                gtsam.noiseModel.Isotropic.Sigma(6, 1e-12),
+                # gtsam.noiseModel.Robust(huber_mest, gtsam.noiseModel.Isotropic.Sigma(6, 1e-4)),
+                gtsam.noiseModel.Isotropic.Sigma(6, 1e-4),
+            )
+        )
+        # Weak prior on first point
+        first_point_key, first_point = point_keys[0], initial_values.atPoint3(point_keys[0])
+        graph.add(
+            gtsam.PriorFactorPoint3(
+                first_point_key,
+                first_point,
+                # gtsam.noiseModel.Robust(huber_mest, gtsam.noiseModel.Isotropic.Sigma(3, 1.0)),
+                gtsam.noiseModel.Isotropic.Sigma(3, 1.0),
             )
         )
 
     # NOTE: Getting gtsam::IndeterminantLinearSystemException w/ DoglegOptimizer
     # optimizer = gtsam.DoglegOptimizer(graph, initial_values, gtsam.DoglegParams())
     params = gtsam.LevenbergMarquardtParams()
-    # params.setMaxIterations(200)
+    params.setMaxIterations(100)
     params.setVerbosity("TERMINATION")  # SILENT, TERMINATION, ERROR, VALUES, DELTA, LINEAR
     params.setVerbosityLM("TERMINATION")
+
+    # NOTE: Useful for tunning.
+    # params.setDiagonalDamping(True)
+    # params.setUseFixedLambdaFactor(False)
+    # params.setlambdaInitial(1e-4)
+    # params.setlambdaFactor(2.0)
+    # params.setlambdaUpperBound(1e32)
+    # params.setlambdaLowerBound(1e-16)
     # params.setLogFile()
     # params.setLinearSolverType()  # MULTIFRONTAL_SOLVER, MULTIFRONTAL_CHOLESKY, MULTIFRONTAL_QR, SEQUENTIAL_CHOLESKY, SEQUENTIAL_QR
     params.print()
+
     optimizer = gtsam.LevenbergMarquardtOptimizer(graph, initial_values, params)
     result = optimizer.optimize()
 
     for img_idx, pose_key in pose_keys.items():
-        pose = result.atPose3(pose_key)
+        # IMPORTANT(!): world_T_cam -> cam_T_world expected by set_extrinsics()
+        pose = result.atPose3(pose_key).inverse()
         images[img_idx].set_extrinsics(pose.rotation().matrix(), pose.translation())
 
     for track_id, point_key in point_keys.items():
