@@ -13,133 +13,12 @@ from utils import (
 )
 
 
-def bundle_adjustment(
-    images: FeatureStore,
-    point_cloud: PointCloud,
-    track_manager: TrackManager,
-    fix_first_camera: bool = True,
-) -> pyceres.SolverSummary:
-    """Run bundle adjustment on all cameras and 3D points.
-
-    Uses pyceres as the optimization backend with pycolmap's ReprojErrorCost
-    for computing reprojection errors and analytical Jacobians. Optimizes
-    camera poses (rotation + translation) and 3D point positions while keeping
-    camera intrinsics fixed.
-
-    Args:
-        images: Feature store containing keypoints and camera poses
-        point_cloud: 3D point cloud to optimize
-        track_manager: Manages correspondences between 2D keypoints and 3D points
-        fix_first_camera: If True, fixes the first camera pose to avoid gauge freedom
-    """
-
-    # Get camera intrinsics from first image
-    first_img = images[0]
-    K, dist = first_img.camera_model.get_camera_matrix(), first_img.camera_model.dist
-    # Create pycolmap camera model (OPENCV: fx, fy, cx, cy, k1, k2, p1, p2)
-    fx = K[0, 0]
-    fy = K[1, 1]
-    cx = K[0, 2]
-    cy = K[1, 2]
-    k1, k2, p1, p2 = dist[:4]
-    cam_params = np.array([fx, fy, cx, cy, k1, k2, p1, p2], dtype=np.float64)
-    camera_model = pycolmap.CameraModelId.OPENCV
-
-    # Prepare camera poses (as pycolmap.Rigid3d)
-    camera_poses = {}
-    for img in images.iter_images_with_pose():
-        # Create Rigid3d (cam_from_world transformation)
-        # pycolmap.Rotation3d can be constructed directly from rotation matrix
-        camera_poses[img.idx] = pycolmap.Rigid3d(rotation=pycolmap.Rotation3d(img.R.copy()), translation=img.t.copy())
-
-    # Prepare 3D points
-    point_params = {track_id: xyz.copy() for track_id, xyz in point_cloud.items()}
-
-    # Build the optimization problem
-    problem = pyceres.Problem()
-    loss = pyceres.HuberLoss(1.0)  # Robust loss for outliers
-
-    # Add residual blocks for each observation
-    for track_id, kp_keys in track_manager.track_to_kps.items():
-        if track_id not in point_params:
-            continue
-
-        point_3d = point_params[track_id].astype(np.float64)
-
-        for img_idx, kp_idx in kp_keys:
-            if img_idx not in camera_poses:
-                continue
-
-            # Get observed 2D point
-            observed_pt = np.array(images[img_idx].kp[kp_idx], dtype=np.float64)
-
-            # Create cost function using pycolmap (with built-in Jacobians)
-            cost = cost_functions.ReprojErrorCost(camera_model, observed_pt)
-
-            # Add residual block
-            # Parameter order: [quat, translation, point_3d, camera_params]
-            pose = camera_poses[img_idx]
-            problem.add_residual_block(
-                cost,
-                loss,
-                [
-                    pose.rotation.quat,
-                    pose.translation,
-                    point_3d,
-                    cam_params,
-                ],
-            )
-
-    # Set quaternion manifold for proper optimization on SO(3)
-    for pose in camera_poses.values():
-        problem.set_manifold(pose.rotation.quat, pyceres.EigenQuaternionManifold())
-
-    # Fix camera intrinsics
-    problem.set_parameter_block_constant(cam_params)
-
-    # Fix the first camera (to avoid gauge freedom)
-    if fix_first_camera and camera_poses:
-        first_img_idx = min(camera_poses.keys())
-        first_pose = camera_poses[first_img_idx]
-        problem.set_parameter_block_constant(first_pose.rotation.quat)
-        problem.set_parameter_block_constant(first_pose.translation)
-        print(f"Fixed camera {first_img_idx} to avoid gauge freedom")
-
-    # Configure solver
-    options = pyceres.SolverOptions()
-    options.linear_solver_type = pyceres.LinearSolverType.SPARSE_SCHUR
-    options.minimizer_progress_to_stdout = True
-    options.max_num_iterations = 100
-    options.num_threads = -1
-
-    # Solve
-    summary = pyceres.SolverSummary()
-    pyceres.solve(options, problem, summary)
-    logger.info(summary.BriefReport())
-    logger.debug(summary.FullReport())
-
-    # Update camera poses with optimized values
-    for img_idx, pose in camera_poses.items():
-        # Convert quaternion back to rotation matrix
-        R = pose.rotation.matrix()
-        t = pose.translation
-        images[img_idx].set_extrinsics(R, t)
-
-    # Update 3D points
-    for track_id, point_3d in point_params.items():
-        point_cloud.set_point(track_id, point_3d)
-
-    logger.info("Bundle adjustment complete.")
-
-    return summary
-
-
 def bundle_adjustment_gtsam(
     images: FeatureStore,
     point_cloud: PointCloud,
     track_manager: TrackManager,
     fix_first_camera: bool = True,
-):
+) -> dict:
     """Run bundle adjustment with GTSAM using reprojection factors.
 
     Optimizes camera poses and 3D points while keeping camera intrinsics fixed.
@@ -149,7 +28,7 @@ def bundle_adjustment_gtsam(
 
     if not images.size:
         logger.warning("No images available for GTSAM bundle adjustment; skipping.")
-        return None
+        return {}
 
     first_img = images[0]
     K = first_img.camera_model.get_camera_matrix(rescaled=True)
@@ -272,7 +151,155 @@ def bundle_adjustment_gtsam(
         point_cloud.set_point(track_id, point)
 
     logger.info("GTSAM bundle adjustment complete.")
-    return result
+
+    wandb_summary = {
+        "optimizer": str(optimizer).split()[0],
+        "initial_cost": graph.error(initial_values),
+        "final_cost": graph.error(result),
+        "optimizer_iterations": optimizer.iterations(),
+        "max_iterations": params.getMaxIterations(),
+        "absolute_error_tol": params.getAbsoluteErrorTol(),
+        "relative_error_tol": params.getRelativeErrorTol(),
+        "linear_solver_type": params.getLinearSolverType(),
+        "ordering_type": params.getOrderingType(),
+        "use_fixed_lambda_factor": params.getUseFixedLambdaFactor(),
+        "diagonal_damping": params.getDiagonalDamping(),
+        "lambda_initial": params.getlambdaInitial(),
+        "lambda_factor": params.getlambdaFactor(),
+        "lambda_lower_bound": params.getlambdaLowerBound(),
+        "lambda_upper_bound": params.getlambdaUpperBound(),
+    }
+    return wandb_summary
+
+
+def bundle_adjustment(
+    images: FeatureStore,
+    point_cloud: PointCloud,
+    track_manager: TrackManager,
+    fix_first_camera: bool = True,
+) -> dict:
+    """Run bundle adjustment on all cameras and 3D points.
+
+    Uses pyceres as the optimization backend with pycolmap's ReprojErrorCost
+    for computing reprojection errors and analytical Jacobians. Optimizes
+    camera poses (rotation + translation) and 3D point positions while keeping
+    camera intrinsics fixed.
+
+    Args:
+        images: Feature store containing keypoints and camera poses
+        point_cloud: 3D point cloud to optimize
+        track_manager: Manages correspondences between 2D keypoints and 3D points
+        fix_first_camera: If True, fixes the first camera pose to avoid gauge freedom
+    """
+
+    # Get camera intrinsics from first image
+    first_img = images[0]
+    K, dist = first_img.camera_model.get_camera_matrix(), first_img.camera_model.dist
+    # Create pycolmap camera model (OPENCV: fx, fy, cx, cy, k1, k2, p1, p2)
+    fx = K[0, 0]
+    fy = K[1, 1]
+    cx = K[0, 2]
+    cy = K[1, 2]
+    k1, k2, p1, p2 = dist[:4]
+    cam_params = np.array([fx, fy, cx, cy, k1, k2, p1, p2], dtype=np.float64)
+    camera_model = pycolmap.CameraModelId.OPENCV
+
+    # Prepare camera poses (as pycolmap.Rigid3d)
+    camera_poses = {}
+    for img in images.iter_images_with_pose():
+        # Create Rigid3d (cam_from_world transformation)
+        # pycolmap.Rotation3d can be constructed directly from rotation matrix
+        camera_poses[img.idx] = pycolmap.Rigid3d(rotation=pycolmap.Rotation3d(img.R.copy()), translation=img.t.copy())
+
+    # Prepare 3D points
+    point_params = {track_id: xyz.copy() for track_id, xyz in point_cloud.items()}
+
+    # Build the optimization problem
+    problem = pyceres.Problem()
+    loss = pyceres.HuberLoss(1.0)  # Robust loss for outliers
+
+    # Add residual blocks for each observation
+    for track_id, kp_keys in track_manager.track_to_kps.items():
+        if track_id not in point_params:
+            continue
+
+        point_3d = point_params[track_id].astype(np.float64)
+
+        for img_idx, kp_idx in kp_keys:
+            if img_idx not in camera_poses:
+                continue
+
+            # Get observed 2D point
+            observed_pt = np.array(images[img_idx].kp[kp_idx], dtype=np.float64)
+
+            # Create cost function using pycolmap (with built-in Jacobians)
+            cost = cost_functions.ReprojErrorCost(camera_model, observed_pt)
+
+            # Add residual block
+            # Parameter order: [quat, translation, point_3d, camera_params]
+            pose = camera_poses[img_idx]
+            problem.add_residual_block(
+                cost,
+                loss,
+                [
+                    pose.rotation.quat,
+                    pose.translation,
+                    point_3d,
+                    cam_params,
+                ],
+            )
+
+    # Set quaternion manifold for proper optimization on SO(3)
+    for pose in camera_poses.values():
+        problem.set_manifold(pose.rotation.quat, pyceres.EigenQuaternionManifold())
+
+    # Fix camera intrinsics
+    problem.set_parameter_block_constant(cam_params)
+
+    # Fix the first camera (to avoid gauge freedom)
+    if fix_first_camera and camera_poses:
+        first_img_idx = min(camera_poses.keys())
+        first_pose = camera_poses[first_img_idx]
+        problem.set_parameter_block_constant(first_pose.rotation.quat)
+        problem.set_parameter_block_constant(first_pose.translation)
+        print(f"Fixed camera {first_img_idx} to avoid gauge freedom")
+
+    # Configure solver
+    options = pyceres.SolverOptions()
+    options.linear_solver_type = pyceres.LinearSolverType.SPARSE_SCHUR
+    options.minimizer_progress_to_stdout = True
+    options.max_num_iterations = 100
+    options.num_threads = -1
+
+    # Solve
+    summary = pyceres.SolverSummary()
+    pyceres.solve(options, problem, summary)
+    logger.info(summary.BriefReport())
+    logger.debug(summary.FullReport())
+
+    # Update camera poses with optimized values
+    for img_idx, pose in camera_poses.items():
+        # Convert quaternion back to rotation matrix
+        R = pose.rotation.matrix()
+        t = pose.translation
+        images[img_idx].set_extrinsics(R, t)
+
+    # Update 3D points
+    for track_id, point_3d in point_params.items():
+        point_cloud.set_point(track_id, point_3d)
+
+    logger.info("Bundle adjustment complete.")
+
+    wandb_summary = {
+        "initial_cost": summary.initial_cost,
+        "final_cost": summary.final_cost,
+        "linear_solver_type_used": str(summary.linear_solver_type_used).split(".")[1],
+        "linear_solver_type_given": str(summary.linear_solver_type_given).split(".")[1],
+        "minimizer_type": str(summary.minimizer_type).split(".")[1],
+        "termination_type": str(summary.termination_type).split(".")[1],
+    }
+
+    return wandb_summary
 
 
 def bundle_adjustment_pycolmap(
