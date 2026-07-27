@@ -20,7 +20,7 @@ def frame_loader_preset(id: str) -> Dict:
         }
     elif id == "statue_orbit":
         return {
-            "calib_file": "data/calibration/redmi/calib.yaml",
+            "calib_file": "data/calibration/redmi/chessboard/calib.yaml",
             "data_path": f"data/raw/{id}",
         }
     else:

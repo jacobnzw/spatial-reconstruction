@@ -1,3 +1,4 @@
+import gtsam
 import numpy as np
 import pyceres
 import pycolmap
@@ -12,12 +13,171 @@ from utils import (
 )
 
 
+def bundle_adjustment_gtsam(
+    images: FeatureStore,
+    point_cloud: PointCloud,
+    track_manager: TrackManager,
+    fix_first_camera: bool = True,
+) -> dict:
+    """Run bundle adjustment with GTSAM using reprojection factors.
+
+    Optimizes camera poses and 3D points while keeping camera intrinsics fixed.
+    The routine uses the same ``FeatureStore``, ``PointCloud`` and ``TrackManager``
+    structures as the other BA implementations in this module.
+    """
+
+    if not images.size:
+        logger.warning("No images available for GTSAM bundle adjustment; skipping.")
+        return {}
+
+    first_img = images[0]
+    K = first_img.camera_model.get_camera_matrix(rescaled=True)
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+    calibration = gtsam.Cal3_S2(fx, fy, 0.0, cx, cy)
+
+    graph = gtsam.NonlinearFactorGraph()
+    initial_values = gtsam.Values()
+
+    pose_keys: dict[int, int] = {}
+    point_keys: dict[int, int] = {}
+
+    for img in images.iter_images_with_pose():
+        pose_key = gtsam.symbol("x", img.idx)
+        pose_keys[img.idx] = pose_key
+        # IMPORTANT(!): world_T_cam expected by GTSAM
+        pose = img.world_T_cam
+        R, t = gtsam.Rot3(pose.rotation.as_matrix().copy()), pose.translation.copy()
+        initial_values.insert(pose_key, gtsam.Pose3(R, t))
+
+    for track_id, xyz in point_cloud.items():
+        point_key = gtsam.symbol("p", track_id)
+        point_keys[track_id] = point_key
+        initial_values.insert(point_key, gtsam.Point3(*xyz.copy()))
+
+    # Keypoint noise in 2D image plane
+    noise_model = gtsam.noiseModel.Isotropic.Sigma(2, 1.0)
+    # NOTE: Huber loss for robustness
+    # huber_mest = gtsam.noiseModel.mEstimator.Huber(1.0)
+    # noise_model = gtsam.noiseModel.Robust(huber_mest, noise_model)
+
+    # For every triangulated 3D point (landmark) and its corresponding 2D keypoints ...
+    for track_id, kp_keys in track_manager.track_to_kps.items():
+        point_xyz = point_cloud.get_point(track_id)
+        if point_xyz is None:
+            continue
+
+        point_key = point_keys.get(track_id)
+        if point_key is None:
+            continue
+
+        for img_idx, kp_idx in kp_keys:
+            if img_idx not in pose_keys:
+                continue
+
+            view = images[img_idx]
+            if view.kp is None:
+                continue
+
+            observed = np.asarray(view.kp[kp_idx], dtype=np.float64)
+            if observed.shape != (2,):
+                continue
+
+            pose_key = pose_keys[img_idx]
+            # TODO: try other suitable factors: SmartProjection...
+            # gtsam.SmartProjectionFactorPinholeCameraCal3_S2()
+            factor = gtsam.GenericProjectionFactorCal3_S2(
+                observed,
+                noise_model,
+                pose_key,
+                point_key,
+                calibration,
+            )
+            graph.add(factor)
+
+    # Add priors on first camera for stability
+    if fix_first_camera and pose_keys:
+        first_img_idx = min(pose_keys)
+        first_pose_key = pose_keys[first_img_idx]
+
+        pose = images[first_img_idx].world_T_cam
+        first_pose = gtsam.Pose3(gtsam.Rot3(pose.rotation.as_matrix()), pose.translation)
+        graph.add(
+            gtsam.PriorFactorPose3(
+                first_pose_key,
+                first_pose,
+                # gtsam.noiseModel.Robust(huber_mest, gtsam.noiseModel.Isotropic.Sigma(6, 1e-4)),
+                gtsam.noiseModel.Isotropic.Sigma(6, 1e-4),
+            )
+        )
+        # Weak prior on first point
+        first_point_key, first_point = point_keys[0], initial_values.atPoint3(point_keys[0])
+        graph.add(
+            gtsam.PriorFactorPoint3(
+                first_point_key,
+                first_point,
+                # gtsam.noiseModel.Robust(huber_mest, gtsam.noiseModel.Isotropic.Sigma(3, 1.0)),
+                gtsam.noiseModel.Isotropic.Sigma(3, 1.0),
+            )
+        )
+
+    # NOTE: Getting gtsam::IndeterminantLinearSystemException w/ DoglegOptimizer
+    # optimizer = gtsam.DoglegOptimizer(graph, initial_values, gtsam.DoglegParams())
+    params = gtsam.LevenbergMarquardtParams()
+    params.setMaxIterations(100)
+    params.setVerbosity("TERMINATION")  # SILENT, TERMINATION, ERROR, VALUES, DELTA, LINEAR
+    params.setVerbosityLM("TERMINATION")
+
+    # NOTE: Useful for tunning.
+    # params.setDiagonalDamping(True)
+    # params.setUseFixedLambdaFactor(False)
+    # params.setlambdaInitial(1e-4)
+    # params.setlambdaFactor(2.0)
+    # params.setlambdaUpperBound(1e32)
+    # params.setlambdaLowerBound(1e-16)
+    # params.setLogFile()
+    # params.setLinearSolverType()  # MULTIFRONTAL_SOLVER, MULTIFRONTAL_CHOLESKY, MULTIFRONTAL_QR, SEQUENTIAL_CHOLESKY, SEQUENTIAL_QR
+    params.print()
+
+    optimizer = gtsam.LevenbergMarquardtOptimizer(graph, initial_values, params)
+    result = optimizer.optimize()
+
+    for img_idx, pose_key in pose_keys.items():
+        # IMPORTANT(!): world_T_cam -> cam_T_world expected by set_extrinsics()
+        pose = result.atPose3(pose_key).inverse()
+        images[img_idx].set_extrinsics(pose.rotation().matrix(), pose.translation())
+
+    for track_id, point_key in point_keys.items():
+        point = result.atPoint3(point_key)
+        point_cloud.set_point(track_id, point)
+
+    logger.info("GTSAM bundle adjustment complete.")
+
+    wandb_summary = {
+        "optimizer": str(optimizer).split()[0],
+        "initial_cost": graph.error(initial_values),
+        "final_cost": graph.error(result),
+        "optimizer_iterations": optimizer.iterations(),
+        "max_iterations": params.getMaxIterations(),
+        "absolute_error_tol": params.getAbsoluteErrorTol(),
+        "relative_error_tol": params.getRelativeErrorTol(),
+        "linear_solver_type": params.getLinearSolverType(),
+        "ordering_type": params.getOrderingType(),
+        "use_fixed_lambda_factor": params.getUseFixedLambdaFactor(),
+        "diagonal_damping": params.getDiagonalDamping(),
+        "lambda_initial": params.getlambdaInitial(),
+        "lambda_factor": params.getlambdaFactor(),
+        "lambda_lower_bound": params.getlambdaLowerBound(),
+        "lambda_upper_bound": params.getlambdaUpperBound(),
+    }
+    return wandb_summary
+
+
 def bundle_adjustment(
     images: FeatureStore,
     point_cloud: PointCloud,
     track_manager: TrackManager,
     fix_first_camera: bool = True,
-) -> pyceres.SolverSummary:
+) -> dict:
     """Run bundle adjustment on all cameras and 3D points.
 
     Uses pyceres as the optimization backend with pycolmap's ReprojErrorCost
@@ -130,7 +290,16 @@ def bundle_adjustment(
 
     logger.info("Bundle adjustment complete.")
 
-    return summary
+    wandb_summary = {
+        "initial_cost": summary.initial_cost,
+        "final_cost": summary.final_cost,
+        "linear_solver_type_used": str(summary.linear_solver_type_used).split(".")[1],
+        "linear_solver_type_given": str(summary.linear_solver_type_given).split(".")[1],
+        "minimizer_type": str(summary.minimizer_type).split(".")[1],
+        "termination_type": str(summary.termination_type).split(".")[1],
+    }
+
+    return wandb_summary
 
 
 def bundle_adjustment_pycolmap(

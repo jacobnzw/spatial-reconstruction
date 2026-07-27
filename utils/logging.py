@@ -20,7 +20,9 @@ def build_track_length_histogram(track_lengths: list[int]):
     return fig
 
 
-def log_wandb_artifacts(run, cfg: SfMConfig, track_manager: TrackManager, ba_summary, view_table: wandb.Table):
+def log_wandb_artifacts(
+    run, cfg: SfMConfig, track_manager: TrackManager, view_table: wandb.Table, ba_summary: dict | None
+):
     # log model
     basename = cfg.out_basename
     model_name = cfg.loader.dataset
@@ -64,16 +66,9 @@ def log_wandb_artifacts(run, cfg: SfMConfig, track_manager: TrackManager, ba_sum
     histogram_fig = build_track_length_histogram(track_lengths)
     run.log({"track_length_histogram": wandb.Plotly(histogram_fig)})
 
-    summary_update = {
+    summary = {
         "number_of_tracks": len(track_manager.track_to_kps),
     }
     if ba_summary is not None:
-        summary_update.update(
-            {
-                "initial_cost": ba_summary.initial_cost,
-                "final_cost": ba_summary.final_cost,
-                "minimizer_type": str(ba_summary.minimizer_type).split(".")[1],
-                "termination_type": str(ba_summary.termination_type).split(".")[1],
-            }
-        )
-    run.summary.update(summary_update)
+        summary.update(ba_summary)
+    run.summary.update(summary)
