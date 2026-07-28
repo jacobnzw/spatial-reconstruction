@@ -464,8 +464,22 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
 
     ba_summary = None
     if cfg.run_ba:
+        imu_data_file, imu_calibration = None, None
+        if cfg.use_imu:
+            # TODO: Hardcoded for now: add user choice
+            imu_data_file = "data/raw/statue_orbit/imu0.csv"
+            imu_calibration = {  # Kalibr values from Redmi phone IMU calibration
+                "accelerometer_noise_density": 0.01,
+                "accelerometer_random_walk": 0.0001,
+                "gyroscope_noise_density": 0.005,
+                "gyroscope_random_walk": 1.0e-05,
+                "update_rate": 409.1,
+                "timeshift_cam_imu": 0.012794703039743893,
+            }
         logger.info("Running bundle adjustment...")
-        ba_summary = bundle_adjustment_gtsam(image_store, point_cloud, track_manager, cfg.fix_first_camera)
+        ba_summary = bundle_adjustment_gtsam(
+            image_store, point_cloud, track_manager, cfg.fix_first_camera, imu_data_file, imu_calibration
+        )
 
         logger.info(f"Final point cloud size: {point_cloud.size}")
         logger.info(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")

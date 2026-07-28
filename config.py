@@ -88,6 +88,9 @@ class SfMConfig(BaseConfig):
     save_gsplat: bool = False
     """Save tensors for gsplat (without BA)"""
 
+    use_imu: bool = False
+    """Whether to include IMU data in the bundle adjustment."""
+
 
 @dataclass
 class SLAMConfig(BaseConfig):
