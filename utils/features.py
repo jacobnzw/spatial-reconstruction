@@ -138,6 +138,11 @@ class FeatureStore:
     def size(self) -> int:
         return len(self._store)
 
+    @property
+    def timestamps(self) -> NDArrayInt:
+        """Get frame timestamps in consecutive order."""
+        return np.array([img.timestamp for img in self._store])
+
     def __getitem__(self, img_idx: int) -> ViewData:
         return self._store[img_idx]
 

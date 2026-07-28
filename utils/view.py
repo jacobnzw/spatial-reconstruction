@@ -62,6 +62,7 @@ class ViewData:
 
     Attributes:
         idx: Unique image index in the reconstruction.
+        timestamp: Timestamp of the camera image.
         path: Path to the image file.
         pixels: RGB pixel data for rendering and debugging (H, W, 3).
         camera_model: Camera intrinsic model containing K and distortion coefficients.
@@ -71,6 +72,7 @@ class ViewData:
     """
 
     idx: int
+    timestamp: int | None = None
     path: Path
     # Useful for rendering and debugging
     pixels: NDArray[Any]  # GRAYs and RBGs as (H, W, C) unit8
