@@ -96,9 +96,9 @@ $$
 
 where $\tilde{\mathbf{x}}$ is a projection of the world point $\tilde{\mathbf{w}}$ onto the image plane expressed in homogeneous coordinates, and $\mathbf{K}$ is the intrinsic matrix and rotation matrix $\mathbf{R}$ and translation vector $\mathbf{t}$ are the extrinsic parameters that determine the camera pose in the world frame.
 
-*In the SE3 variable naming convention the camera pose in the world frame is a transformation 
-from the world frame to the camera frame: `camera_SE3_world`. 
+*In the SE3 variable naming convention, the camera pose in the world frame `world_T_cam` is a transformation `cam -> world`: from the camera frame to the world frame.
 See [this great summary](https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.transform.RigidTransform.html#scipy.spatial.transform.RigidTransform).*
+Note, camera extrinsics are `cam_T_world`, because they transform the points in world frame to camera frame.
 
 **Caveats:** the rays go through the optical center of the camera and form the same ray bundle geometry, 
 just reflected through the optical center, on the back of the camera. For example, routines for solving a PnP problem
