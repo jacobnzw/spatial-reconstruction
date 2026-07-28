@@ -1,4 +1,7 @@
+from pathlib import Path
+
 import gtsam
+from gtsam.symbol_shorthand import X, P, V, B
 import numpy as np
 import pyceres
 import pycolmap
@@ -42,7 +45,8 @@ def bundle_adjustment_gtsam(
     point_keys: dict[int, int] = {}
 
     for img in images.iter_images_with_pose():
-        pose_key = gtsam.symbol("x", img.idx)
+        # pose_key = gtsam.symbol("x", img.idx)
+        pose_key = X(img.idx)
         pose_keys[img.idx] = pose_key
         # IMPORTANT(!): world_T_cam expected by GTSAM
         pose = img.world_T_cam
@@ -50,7 +54,8 @@ def bundle_adjustment_gtsam(
         initial_values.insert(pose_key, gtsam.Pose3(R, t))
 
     for track_id, xyz in point_cloud.items():
-        point_key = gtsam.symbol("p", track_id)
+        # point_key = gtsam.symbol("p", track_id)
+        point_key = P(track_id)
         point_keys[track_id] = point_key
         initial_values.insert(point_key, gtsam.Point3(*xyz.copy()))
 
@@ -170,6 +175,71 @@ def bundle_adjustment_gtsam(
         "lambda_upper_bound": params.getlambdaUpperBound(),
     }
     return wandb_summary
+
+
+def add_imu_factors(graph, initial, data_file: str, calibration: dict):
+
+    pim_params = gtsam.PreintegrationParams.MakeSharedU(9.81)
+
+    # Accel, gyro noise covariances
+    gyro_sigma = calibration["gyroscope_noise_density"]
+    accel_sigma = calibration["accelerometer_noise_density"]
+    I_3x3 = np.eye(3)
+    pim_params.setGyroscopeCovariance(gyro_sigma**2 * I_3x3)
+    pim_params.setAccelerometerCovariance(accel_sigma**2 * I_3x3)
+    pim_params.setIntegrationCovariance(1e-7**2 * I_3x3)
+
+    # TODO: Bias values?
+    accBias = np.array([-0.3, 0.1, 0.2])
+    gyroBias = np.array([0.1, 0.3, -0.1])
+    actualBias = gtsam.imuBias.ConstantBias(accBias, gyroBias)
+
+    # Noise models for
+    priorNoise = gtsam.noiseModel.Isotropic.Sigma(6, 0.1)
+    velNoise = gtsam.noiseModel.Isotropic.Sigma(3, 0.1)
+
+    graph.push_back(gtsam.PriorFactorPose3(X(0), initial_state.pose(), priorNoise))
+    graph.push_back(gtsam.PriorFactorVector(V(0), initial_state.velocity(), velNoise))
+
+    initial.insert(B(0), actualBias)
+    initial.insert(X(0), initial_state.pose())
+    initial.insert(V(0), initial_state.velocity())
+
+    # IMU Pre-integration object
+    pim = gtsam.PreintegratedImuMeasurements(pim_params, actualBias)
+    i = 0
+    dt = 1 / calibration["update_rate"]
+    imu_iter = stream_imu_from_csv(data_file)
+    for k, (t_imu, omega, accel) in enumerate(imu_iter):
+        ### This is where all the magic happens!
+        pim.integrateMeasurement(accel, omega, dt)
+
+        # Create one IMU factor per cam frame (except the initial), integrating IMU measurements between previous and current cam frame
+        # TODO: Generalize: creating IMU factor every second => cam frames are 1s apart
+        # Need to add IMUFactor when t_imu is close to the next t_cam (frame timestamp), may not be uniformly spaced
+        # Create IMU factor every second => uniformly spaced cam frames
+        if (k + 1) % int(calibration["update_rate"]) == 0:
+            factor = gtsam.ImuFactor(X(i), V(i), X(i + 1), V(i + 1), B(0), pim)
+            graph.push_back(factor)
+
+            # We have created the binary constraint, so we clear out the preintegration values.
+            pim.resetIntegration()
+
+            i += 1
+
+    return graph
+
+
+def stream_imu_from_csv(data_file: str):
+    import csv
+
+    imu_data = csv.reader(Path(data_file).open())
+    next(imu_data)  # skip header
+    for row in imu_data:
+        timestamp = int(row[0])
+        omega = np.fromstring(" ".join(row[1:4]), sep=" ")
+        accel = np.fromstring(" ".join(row[4:]), sep=" ")
+        yield timestamp, omega, accel
 
 
 def bundle_adjustment(
