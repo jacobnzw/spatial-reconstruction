@@ -21,6 +21,9 @@ class FrameLoaderConfig:
     data_path: str = ""
     """Path to image directory"""
 
+    every_n_frame: int = 1
+    """Take every every_n_frame-th frame from input video file."""
+
     @property
     def img_dir(self) -> Path:
         return Path(self.data_path)
@@ -29,6 +32,12 @@ class FrameLoaderConfig:
     def img_paths(self) -> list[Path]:
         """List of images in the data_path directory."""
         return sorted(list(Path(self.img_dir).glob("*")))
+
+    @property
+    def video_path(self) -> Path | None:
+        """Return first found *.mp4 file in data_path."""
+        videos = Path(self.data_path).glob("*.mp4")
+        return next(videos, None)
 
     @property
     def dataset(self) -> str:
@@ -72,15 +81,18 @@ class ViewData:
     """
 
     idx: int
-    timestamp: int | None = None
     path: Path
     # Useful for rendering and debugging
     pixels: NDArray[Any]  # GRAYs and RBGs as (H, W, C) unit8
     # Camera model
     camera_model: CameraModel
+
+    timestamp: int | None = None
+
     # Extracted keypoints and descriptors
     kp: NDArrayFloat | None = None
     des: NDArrayFloat | None = None
+
     # Estimated camera extrinsics, i.e world-to-camera transform; output of cv.solvePnP etc.
     cam_T_world: SE3Pose | None = None
 
@@ -228,6 +240,8 @@ class FrameLoader:
         self.scale = 1.0
         self.camera_model = cfg.camera_model
         self.undistort = cfg.undistort
+        self.video_path = cfg.video_path
+        self.every_n_frame = cfg.every_n_frame
 
     def __call__(self, idx: int) -> ViewData:
         """Load frame at given index in internally stored list of image paths."""
@@ -238,14 +252,10 @@ class FrameLoader:
             raise FileNotFoundError(f"FrameLoader: Failed to load image: {path}")
         return ViewData(idx, path, img, self.camera_model)
 
-    def iter_frames(self) -> Iterable[ViewData]:
-        """Yields images as ImageData objects.
+    def iter_from_image_paths(self) -> Iterable[ViewData]:
+        """Yields ViewData object for each image in the input folder.
 
-        Returns:
-            ImageData object containing the image and its metadata.
-
-            ImageData.pixels contains the loaded image as a (H, W, 3) uint8 array in RGB format,
-            regardless of original format.
+        Effectively loads images into ViewData for later feature extraction.
         """
         for idx, path in enumerate(self.img_paths[self.offset_frames :], start=self.offset_frames):
             if self.max_frames and idx >= self.max_frames:
@@ -286,6 +296,119 @@ class FrameLoader:
                 # NOTE: camera_model.get_camera_matrix() will handle rescaling K based on self.scale
 
             yield ViewData(idx, path, img, camera_model=camera_model)
+
+    def iter_from_video(self) -> Iterable[ViewData]:
+        """Yields ViewData objects for frames in a video file in the input folder."""
+
+        if self.video_path is None:
+            raise ValueError(f"Specified {self.video_path=} doesn't exist!")
+
+        # ASSUMES: frame_timestamps.txt is present
+        stamps_file = self.video_path.parent / "frame_timestamps.txt"
+        if not stamps_file.exists():
+            raise ValueError(f"No frame_timestamps.txt found in {self.video_path}!")
+
+        frame_stamps = [int(t_str.strip()) for t_str in stamps_file.open() if t_str.strip().isdigit()]
+
+        idx: int = 0
+
+        cap = cv.VideoCapture(self.video_path)
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                cap.release()
+                break
+
+            # downsampling: take only every_n_frame
+            if idx % self.every_n_frame:
+                # logger.debug(f"Skiped frame {idx=}")
+                idx += 1
+                continue
+
+            # Safety check: Stop if video has more frames than timestamps
+            if idx >= len(frame_stamps):
+                break
+
+            frame, camera_model = self._undistort(frame)
+            timestamp = frame_stamps[idx]
+            view_data = ViewData(idx, self.video_path, frame, camera_model, timestamp)
+
+            idx += 1
+            logger.debug(f"Yielding frame: {idx=} {timestamp=}")
+            yield view_data
+
+    def iter_frames(self) -> Iterable[ViewData]:
+        """Yields images as ViewData objects.
+
+        iter_frames() is called by FeatureExtractor.
+
+        Returns:
+            ViewData object containing the image and its metadata.
+
+            ViewData.pixels contains the loaded image as a (H, W, 3) uint8 array in RGB format,
+            regardless of original format.
+        """
+        if self.video_path is not None:
+            return self.iter_from_video()
+        else:
+            return self.iter_from_image_paths()
+
+        # for idx, path in enumerate(self.img_paths[self.offset_frames :], start=self.offset_frames):
+        #     if self.max_frames and idx >= self.max_frames:
+        #         logger.info(f"Reached max_frames={self.max_frames}, stopping further loading.")
+        #         break
+
+        #     # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order
+        #     img = cv.imread(str(path), cv.IMREAD_COLOR_RGB)
+        #     if img is None:
+        #         raise FileNotFoundError(f"FrameLoader: Failed to load image: {path}")
+
+        #     camera_model = self.camera_model
+        #     if self.undistort:
+        #         if self.camera_model.type == CameraType.FISHEYE:
+        #             img, K_undistorted = self._undistort_fisheye(img)
+        #         elif self.camera_model.type == CameraType.PINHOLE:
+        #             img, K_undistorted = self._undistort_pinhole(img)
+        #         else:
+        #             raise ValueError(f"Uknown {camera_model=}! Only PINHOLE and FISHEYE supported.")
+
+        #         # After undistortion, it's pinhole camera with new intrinsics K_undistorted and no distortion
+        #         camera_model = CameraModel(
+        #             type=CameraType.PINHOLE, K=K_undistorted, dist=np.zeros(len(self.camera_model.dist))
+        #         )
+
+        #     # Compute scale based on first image
+        #     # Assumption: all images have the same resolution and thus the same scale factor applies to all
+        #     if idx == self.offset_frames and self.max_size is not None:
+        #         h, w = img.shape[:2]
+        #         self.scale = self.max_size / max(h, w) if max(h, w) > self.max_size else 1.0
+
+        #     # Apply scaling if needed
+        #     if self.scale < 1.0:
+        #         h, w = img.shape[:2]
+        #         new_w, new_h = int(w * self.scale), int(h * self.scale)
+        #         img = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
+        #         camera_model.scale = self.scale
+        #         # NOTE: camera_model.get_camera_matrix() will handle rescaling K based on self.scale
+
+        #     yield ViewData(idx, path, img, camera_model=camera_model)
+
+    def _undistort(self, img: NDArray[Any]) -> tuple[NDArray[Any], CameraModel]:
+        camera_model = self.camera_model
+        if self.undistort:
+            if self.camera_model.type == CameraType.FISHEYE:
+                img, K_undistorted = self._undistort_fisheye(img)
+            elif self.camera_model.type == CameraType.PINHOLE:
+                img, K_undistorted = self._undistort_pinhole(img)
+            else:
+                raise ValueError(f"Uknown {camera_model=}! Only PINHOLE and FISHEYE supported.")
+
+            # After undistortion, it's pinhole camera with new intrinsics K_undistorted and no distortion
+            camera_model = CameraModel(
+                type=CameraType.PINHOLE, K=K_undistorted, dist=np.zeros(len(self.camera_model.dist))
+            )
+        return img, camera_model
 
     def _undistort_fisheye(self, img: NDArray[Any], balance=0.0, fov_scale=1.0) -> tuple[NDArray[Any], NDArrayFloat]:
         """Undistortion for equidistant fisheye.

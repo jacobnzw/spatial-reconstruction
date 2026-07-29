@@ -7,6 +7,7 @@ import kornia as K
 import kornia.feature as KF
 import numpy as np
 import torch
+from loguru import logger
 from numpy.typing import NDArray
 
 from .camera import NDArrayFloat, NDArrayInt
@@ -124,7 +125,10 @@ class FeatureStore:
     """
 
     def __init__(self, feature_extractor: FeatureExtractor):
-        self._store: list[ViewData] = list(feature_extractor.iter_frames_with_features())
+        self._store: dict[int, ViewData] = {
+            view_data.idx: view_data for view_data in feature_extractor.iter_frames_with_features()
+        }
+        logger.info(f"Loaded {len(self._store)} frames.")
 
     def get_pixels(self, kp_keys: list[KPKey]) -> NDArray[np.uint8]:
         """Get pixel color for a given keypoint in an image."""
@@ -141,7 +145,12 @@ class FeatureStore:
     @property
     def timestamps(self) -> NDArrayInt:
         """Get frame timestamps in consecutive order."""
-        return np.array([img.timestamp for img in self._store])
+        return np.array([img.timestamp for img in self._store.values()])
+
+    @property
+    def image_indexes(self) -> NDArrayInt:
+        """Get frame timestamps in consecutive order."""
+        return np.array([idx for idx in self._store.keys()])
 
     def __getitem__(self, img_idx: int) -> ViewData:
         return self._store[img_idx]
@@ -153,15 +162,15 @@ class FeatureStore:
 
     def get_keypoints(self) -> list[NDArrayFloat]:
         """Get keypoints of all images."""
-        return [img_data.kp for img_data in self._store]  # ty:ignore[invalid-return-type]
+        return [img_data.kp for img_data in self._store.values()]  # ty:ignore[invalid-return-type]
 
     def get_descriptors(self) -> list[NDArrayFloat]:
         """Get descriptors of all images."""
-        return [img_data.des for img_data in self._store]  # ty:ignore[invalid-return-type]
+        return [img_data.des for img_data in self._store.values()]  # ty:ignore[invalid-return-type]
 
     def iter_images_with_pose(self) -> Iterable[ViewData]:
         """Yield images for which we have a pose estimate."""
-        yield from (img_data for img_data in self._store if img_data.has_pose)
+        yield from (img_data for img_data in self._store.values() if img_data.has_pose)
 
 
 def _match_lightglue(
