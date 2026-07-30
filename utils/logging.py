@@ -3,7 +3,9 @@ from pathlib import Path
 import plotly.graph_objects as go
 
 import wandb
-from config import SfMConfig
+
+# FIXME: only for type hints: circular import SfMConfig -> utils.__init__ -> .logging;
+# from config import SfMConfig
 from utils import TrackManager
 
 
@@ -20,9 +22,7 @@ def build_track_length_histogram(track_lengths: list[int]):
     return fig
 
 
-def log_wandb_artifacts(
-    run, cfg: SfMConfig, track_manager: TrackManager, view_table: wandb.Table, ba_summary: dict | None
-):
+def log_wandb_artifacts(run, cfg, track_manager: TrackManager, view_table: wandb.Table, ba_summary: dict | None):
     # log model
     basename = cfg.out_basename
     model_name = cfg.loader.dataset

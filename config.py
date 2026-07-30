@@ -3,10 +3,14 @@
 import json
 from dataclasses import asdict, dataclass, field
 from enum import Enum
+
+from functools import cached_property
 from pathlib import Path
 from typing import Dict
 
 import numpy as np
+import yaml
+from loguru import logger
 
 from utils.features import FeatureExtractorConfig, MatcherConfig
 from utils.view import FrameLoaderConfig
@@ -88,8 +92,45 @@ class SfMConfig(BaseConfig):
     save_gsplat: bool = False
     """Save tensors for gsplat (without BA)"""
 
-    use_imu: bool = False
-    """Whether to include IMU data in the bundle adjustment."""
+    imu_data: str | None = None
+    """Path to the CSV file w/ IMU measurements."""
+
+    imu_calib_dir: str | None = None
+    """Path to the IMU calibration directory containining Kalibr YAML files."""
+
+    @cached_property
+    def imu_calibration(self) -> dict | None:
+        if self.imu_calib_dir is not None:
+            YAML_FORMAT = (".yml", ".yaml")
+            yaml_files = [file for file in Path(self.imu_calib_dir).glob("*") if file.suffix.lower() in YAML_FORMAT]
+            imu_file = [file for file in yaml_files if "-imu." in file.name][0]
+            imucam_file = [file for file in yaml_files if "imucam." in file.name][0]
+
+            logger.info(f"Loading IMU calibration from:\n{imu_file=}\n{imucam_file=}")
+
+            imu = yaml.safe_load(Path(imu_file).open())
+            imucam = yaml.safe_load(Path(imucam_file).open())
+            imu_attrs = (
+                "accelerometer_noise_density",
+                "accelerometer_random_walk",
+                "gyroscope_noise_density",
+                "gyroscope_random_walk",
+                "update_rate",
+            )
+            calibration = {attr: imu["imu0"][attr] for attr in imu_attrs}
+            calibration.update({"timeshift_cam_imu": imucam["cam0"]["timeshift_cam_imu"]})
+            return calibration
+
+        return None
+
+    # {  # Kalibr values from Redmi phone IMU calibration
+    #     "accelerometer_noise_density": 0.01,
+    #     "accelerometer_random_walk": 0.0001,
+    #     "gyroscope_noise_density": 0.005,
+    #     "gyroscope_random_walk": 1.0e-05,
+    #     "update_rate": 409.1,
+    #     "timeshift_cam_imu": 0.012794703039743893,
+    # # }
 
 
 @dataclass
