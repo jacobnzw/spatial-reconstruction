@@ -31,7 +31,8 @@ class FrameLoaderConfig:
     @property
     def img_paths(self) -> list[Path]:
         """List of images in the data_path directory."""
-        return sorted(list(Path(self.img_dir).glob("*")))
+        IMG_FORMATS = (".png", ".jpg", ".jpeg")
+        return [p for p in Path(self.data_path).glob("*") if p.suffix.lower() in IMG_FORMATS]
 
     @property
     def video_path(self) -> Path | None:
