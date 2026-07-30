@@ -78,10 +78,10 @@ def construct_view_graph(
     kp, des = image_store.get_keypoints(), image_store.get_descriptors()
     assert len(kp) == len(des)
 
-    N = len(kp)
-    for i in range(N):
-        for j in range(i + 1, N):
-            img_i, img_j = image_store[i], image_store[j]
+    images_idx = image_store.image_indexes
+    for i, i_idx in enumerate(images_idx):
+        for j_idx in images_idx[i:]:
+            img_i, img_j = image_store[i_idx], image_store[j_idx]
             # TODO: 1 direction enough, when matches bi-directional (e.g. crossCheck=True)
             # TODO: Drop unidirectional matches altogether??
             # NOTE: For bi-directional matches: matches_ij == sorted(matches_ji.fliplr())
@@ -91,12 +91,12 @@ def construct_view_graph(
 
             matches_ij_shape = matches_ij.shape if matches_ij is not None else None
             matches_ji_shape = matches_ij.shape if matches_ij is not None else None
-            logger.debug(f"Matcher result for images {i} -> {j}: {ij_overlap=} {matches_ij_shape=} {inliers_ij=}")
-            logger.debug(f"Matcher result for images {j} -> {i}: {ji_overlap=} {matches_ji_shape=} {inliers_ji=}")
+            logger.debug(f"Matches for images {i_idx} -> {j_idx}: {ij_overlap=} {matches_ij_shape=} {inliers_ij=}")
+            logger.debug(f"Matches for images {j_idx} -> {i_idx}: {ji_overlap=} {matches_ji_shape=} {inliers_ji=}")
 
             if ij_overlap and ji_overlap:
-                view_graph.add_edge(i, j, inliers_ij, inliers_ij, matches_ij, matches_ji)
-                logger.debug(f"Added ViewEdge {i} -> {j}: {inliers_ij=}")
+                view_graph.add_edge(i_idx, j_idx, inliers_ij, inliers_ij, matches_ij, matches_ji)
+                logger.debug(f"Added ViewEdge {i_idx} -> {j_idx}: {inliers_ij=}")
 
     return view_graph
 

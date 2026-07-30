@@ -62,9 +62,9 @@ class CameraModel:
 
         calibration = yaml.safe_load(Path(calib_file).open())
 
-        fx, fy, cx, cy = calibration["intrinsics"]
+        fx, fy, cx, cy = calibration["cam0"]["intrinsics"]
         return CameraModel(
-            type=CameraType(calibration["camera_type"]),
+            type=CameraType(calibration["cam0"]["camera_model"]),
             K=np.array(
                 [
                     [fx, 0, cx],
@@ -72,7 +72,7 @@ class CameraModel:
                     [0, 0, 1],
                 ]
             ),
-            dist=np.array(calibration["distortion_coeffs"]),
+            dist=np.array(calibration["cam0"]["distortion_coeffs"]),
         )
 
 
@@ -147,10 +147,12 @@ def calibrate_camera(camera_params_file: Path, force_recalibrate: bool = False):
     fx, fy, cx, cy = k[0][0], k[1][1], k[0][2], k[1][2]
     height, width, _ = img.shape
     calib_data = {
-        "camera_type": "pinhole",
-        "intrinsics": [fx, fy, cx, cy],
-        "distortion_coeffs": dist.tolist(),
-        "resolution": [width, height],
+        "cam0": {  # ETH format
+            "camera_type": "pinhole",
+            "intrinsics": [fx, fy, cx, cy],
+            "distortion_coeffs": dist.tolist(),
+            "resolution": [width, height],
+        }
     }
 
     write_mode = "x"  # creates non-existent file, throws if already exists

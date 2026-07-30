@@ -286,6 +286,10 @@ def process_graph_component(
     match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
     depth_threshold: float,
 ) -> tuple[list[ViewEdge], set[int], wandb.Table]:
+    if not edges:
+        raise ValueError(f"No view graph edges present! {edges=}")
+    edges = edges.copy()
+
     # Pick strongest baseline:
     # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
     img_0, img_1, best_edge = pick_best_image_pair(edges, store)
@@ -442,7 +446,7 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     # Process the first component
     logger.info("Processing graph component...")
     _, _, log_view_table = process_graph_component(
-        view_graph.edges.copy(), image_store, track_manager, point_cloud, kp_matcher, cfg.depth_threshold
+        view_graph.edges, image_store, track_manager, point_cloud, kp_matcher, cfg.depth_threshold
     )
 
     # Process all connected components of the view graph
@@ -464,8 +468,13 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
 
     ba_summary = None
     if cfg.run_ba:
+        # IMU data for BA are optional: when None, BA ignores it.
+        imu_data_file, imu_calibration = cfg.imu_data, cfg.imu_calibration
+
         logger.info("Running bundle adjustment...")
-        ba_summary = bundle_adjustment_gtsam(image_store, point_cloud, track_manager, cfg.fix_first_camera)
+        ba_summary = bundle_adjustment_gtsam(
+            image_store, point_cloud, track_manager, cfg.fix_first_camera, imu_data_file, imu_calibration
+        )
 
         logger.info(f"Final point cloud size: {point_cloud.size}")
         logger.info(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")
