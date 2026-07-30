@@ -17,6 +17,7 @@ from utils import (
 )
 
 
+# TODO: extract add image factors()
 def bundle_adjustment_gtsam(
     images: FeatureStore,
     point_cloud: PointCloud,
@@ -130,24 +131,13 @@ def bundle_adjustment_gtsam(
 
     # IMU Factors
     if imu_data is not None and imu_calibration is not None:
-        add_imu_factors(graph, initial_values, imu_data, imu_calibration, images.timestamps)
+        add_imu_factors(graph, initial_values, imu_data, imu_calibration, images.timestamps, images.image_indexes)
 
-    # NOTE: Getting gtsam::IndeterminantLinearSystemException w/ DoglegOptimizer
-    # optimizer = gtsam.DoglegOptimizer(graph, initial_values, gtsam.DoglegParams())
     params = gtsam.LevenbergMarquardtParams()
     params.setMaxIterations(100)
     params.setVerbosity("TERMINATION")  # SILENT, TERMINATION, ERROR, VALUES, DELTA, LINEAR
     params.setVerbosityLM("TERMINATION")
 
-    # NOTE: Useful for tunning.
-    # params.setDiagonalDamping(True)
-    # params.setUseFixedLambdaFactor(False)
-    # params.setlambdaInitial(1e-4)
-    # params.setlambdaFactor(2.0)
-    # params.setlambdaUpperBound(1e32)
-    # params.setlambdaLowerBound(1e-16)
-    # params.setLogFile()
-    # params.setLinearSolverType()  # MULTIFRONTAL_SOLVER, MULTIFRONTAL_CHOLESKY, MULTIFRONTAL_QR, SEQUENTIAL_CHOLESKY, SEQUENTIAL_QR
     params.print()
 
     optimizer = gtsam.LevenbergMarquardtOptimizer(graph, initial_values, params)
@@ -185,7 +175,12 @@ def bundle_adjustment_gtsam(
 
 
 def add_imu_factors(
-    graph: gtsam.NonlinearFactorGraph, initial: gtsam.Values, data_file: str, calibration: dict, cam_time: NDArrayInt
+    graph: gtsam.NonlinearFactorGraph,
+    initial: gtsam.Values,
+    data_file: str,
+    calibration: dict,
+    cam_time: NDArrayInt,
+    image_indexes: NDArrayInt,
 ):
 
     pim_params = gtsam.PreintegrationParams.MakeSharedU(9.81)
@@ -205,20 +200,23 @@ def add_imu_factors(
     imu_bias = gtsam.imuBias.ConstantBias(acc_bias, gyro_bias)
 
     # Initial velocity prior
-    # NOTE: X(0) pose prior set during SfM
+    # NOTE: X(image_indexes[0]) pose prior set during SfM
     zeros_3 = np.zeros((3, 1))
     vel_noise = gtsam.noiseModel.Isotropic.Sigma(3, 0.1)
     graph.add(gtsam.PriorFactorVector(V(0), zeros_3, vel_noise))
 
-    initial.insert(B(0), imu_bias)
-    initial.insert(V(0), zeros_3)
+    n_images = len(cam_time)
+    for i in image_indexes:
+        # TODO: check adding the right values?
+        initial.insert(B(i), imu_bias)
+        initial.insert(V(i), zeros_3)
 
     # IMU Pre-integration object
     pim = gtsam.PreintegratedImuMeasurements(pim_params, imu_bias)
-    i_img = 0  # frame index
     dt = 1 / calibration["update_rate"]
-    t_cam = cam_time[i_img + 1].timestamp
-    cam_tdelta_imu = calibration["timeshift_cam_imu"]
+    i_img = 1  # frame index
+    t_cam = cam_time[i_img]
+    cam_tdelta_imu = int(1e9 * calibration["timeshift_cam_imu"])  # 1e9: sec -> nsec
 
     # Create one IMU factor per cam frame (except the initial), integrating IMU measurements between previous and current cam frame
     for k, (t_imu, omega, accel) in enumerate(stream_imu_from_csv(data_file)):
@@ -229,25 +227,27 @@ def add_imu_factors(
             t_imu_last = t_imu
 
         # Add IMUFactor when t_imu is closer than IMU sampling period dt from the next t_cam (frame timestamp)
-        # TODO: correction for timeshift btw. cam imu stamps: t_cam = t_imu - cam_tdelta_imu
+        # Correction for timeshift btw. cam imu stamps: t_cam_imu = t_imu - cam_tdelta_imu
+        t_imu -= cam_tdelta_imu
         if abs(t_imu - t_cam) < int(1e9 * dt):  # 1e9: sec -> nsec
-            factor = gtsam.ImuFactor(X(i_img), V(i_img), X(i_img + 1), V(i_img + 1), B(i_img), pim)
+            idx_current, idx_past = image_indexes[i_img], image_indexes[i_img - 1]
+            graph.add(gtsam.ImuFactor(X(idx_past), V(idx_past), X(idx_current), V(idx_current), B(idx_past), pim))
 
             # Between cam frame integration time
             # Would be constant if we sampled keyframes equidistantly
             t_imu_delta = t_imu - t_imu_last
             imu_bias_noise = gtsam.noiseModel.Diagonal.Sigmas(np.sqrt(t_imu_delta) * imu_bias.vector())
-            factor = gtsam.BetweenFactorConstantBias(B(i_img), B(i_img + 1), imu_bias, imu_bias_noise)
-            graph.add(factor)
+            graph.add(gtsam.BetweenFactorConstantBias(B(idx_past), B(idx_current), imu_bias, imu_bias_noise))
+
+            logger.debug(f"{i_img=} {idx_current=} {idx_past=}")
 
             # We have created the binary constraint, so we clear out the preintegration values.
             pim.resetIntegration()
 
             i_img += 1
             t_imu_last = t_imu
-            t_cam = cam_time[i_img]
-
-    return graph
+            if i < n_images:
+                t_cam = cam_time[i]
 
 
 def stream_imu_from_csv(data_file: str):

@@ -229,10 +229,7 @@ class FrameLoader:
     def __init__(self, cfg: FrameLoaderConfig):
         img_paths = cfg.img_paths
         if not img_paths:
-            raise ValueError(
-                f"No images found in '{cfg.img_dir}' .  "
-                f"\nSpecify valid path by setting 'pre_path', 'dataset', 'post_path' config fields. "
-            )
+            logger.warning(f"No images found in {cfg.img_dir}")
 
         self.img_paths = img_paths
         self.max_frames = cfg.max_read_frames
@@ -331,6 +328,7 @@ class FrameLoader:
             if idx >= len(frame_stamps):
                 break
 
+            frame = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
             frame, camera_model = self._undistort(frame)
             timestamp = frame_stamps[idx]
             view_data = ViewData(idx, self.video_path, frame, camera_model, timestamp)
@@ -354,46 +352,6 @@ class FrameLoader:
             return self.iter_from_video()
         else:
             return self.iter_from_image_paths()
-
-        # for idx, path in enumerate(self.img_paths[self.offset_frames :], start=self.offset_frames):
-        #     if self.max_frames and idx >= self.max_frames:
-        #         logger.info(f"Reached max_frames={self.max_frames}, stopping further loading.")
-        #         break
-
-        #     # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order
-        #     img = cv.imread(str(path), cv.IMREAD_COLOR_RGB)
-        #     if img is None:
-        #         raise FileNotFoundError(f"FrameLoader: Failed to load image: {path}")
-
-        #     camera_model = self.camera_model
-        #     if self.undistort:
-        #         if self.camera_model.type == CameraType.FISHEYE:
-        #             img, K_undistorted = self._undistort_fisheye(img)
-        #         elif self.camera_model.type == CameraType.PINHOLE:
-        #             img, K_undistorted = self._undistort_pinhole(img)
-        #         else:
-        #             raise ValueError(f"Uknown {camera_model=}! Only PINHOLE and FISHEYE supported.")
-
-        #         # After undistortion, it's pinhole camera with new intrinsics K_undistorted and no distortion
-        #         camera_model = CameraModel(
-        #             type=CameraType.PINHOLE, K=K_undistorted, dist=np.zeros(len(self.camera_model.dist))
-        #         )
-
-        #     # Compute scale based on first image
-        #     # Assumption: all images have the same resolution and thus the same scale factor applies to all
-        #     if idx == self.offset_frames and self.max_size is not None:
-        #         h, w = img.shape[:2]
-        #         self.scale = self.max_size / max(h, w) if max(h, w) > self.max_size else 1.0
-
-        #     # Apply scaling if needed
-        #     if self.scale < 1.0:
-        #         h, w = img.shape[:2]
-        #         new_w, new_h = int(w * self.scale), int(h * self.scale)
-        #         img = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
-        #         camera_model.scale = self.scale
-        #         # NOTE: camera_model.get_camera_matrix() will handle rescaling K based on self.scale
-
-        #     yield ViewData(idx, path, img, camera_model=camera_model)
 
     def _undistort(self, img: NDArray[Any]) -> tuple[NDArray[Any], CameraModel]:
         camera_model = self.camera_model
