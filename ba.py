@@ -105,8 +105,11 @@ def bundle_adjustment_gtsam(
 
     # Add priors on first camera for stability
     if fix_first_camera and pose_keys:
-        first_img_idx = min(pose_keys)
+        sorted_pose_keys = sorted(pose_keys)  # returns keys of pose_keys dict
+        first_img_idx = sorted_pose_keys[0]
         first_pose_key = pose_keys[first_img_idx]
+
+        logger.debug(f"First image ({first_img_idx=}) pose fixed.")
 
         pose = images[first_img_idx].world_T_cam
         first_pose = gtsam.Pose3(gtsam.Rot3(pose.rotation.as_matrix()), pose.translation)
@@ -128,6 +131,18 @@ def bundle_adjustment_gtsam(
                 gtsam.noiseModel.Isotropic.Sigma(3, 1.0),
             )
         )
+        # Fix relative pose between first two cameras: 1st cam pose == world origin == [I|0], 2nd cam pose [R|t]
+        # FIXME:Levenberg-Marquardt giving up because cannot decrease error with maximum lambda converged
+        # second_img_idx = sorted_pose_keys[1]
+        # second_pose_key = pose_keys[second_img_idx]
+        # pose = images[second_img_idx].world_T_cam
+        # second_pose = gtsam.Pose3(gtsam.Rot3(pose.rotation.as_matrix()), pose.translation)
+        # relative_pose = first_pose.between(second_pose)
+        # graph.add(
+        #     gtsam.BetweenFactorPose3(
+        #         first_pose_key, second_pose_key, relative_pose, gtsam.noiseModel.Isotropic.Sigma(6, 1e-12)
+        #     )
+        # )
 
     # IMU Factors
     if imu_data is not None and imu_calibration is not None:
@@ -213,22 +228,33 @@ def add_imu_factors(
 
     # IMU Pre-integration object
     pim = gtsam.PreintegratedImuMeasurements(pim_params, imu_bias)
-    dt = 1 / calibration["update_rate"]
+    dt = 1 / calibration["update_rate"]  # sec
     i_img = 1  # frame index
     t_cam = cam_time[i_img]
     cam_tdelta_imu = int(1e9 * calibration["timeshift_cam_imu"])  # 1e9: sec -> nsec
 
     # Create one IMU factor per cam frame (except the initial), integrating IMU measurements between previous and current cam frame
+    # NOTE: tradeoff: IMU pre-intergration prefers shorter delta btw. keyframes; SfM likes greater baseline/translation.
     for k, (t_imu, omega, accel) in enumerate(stream_imu_from_csv(data_file)):
-        # Measurement pre-integration
-        pim.integrateMeasurement(accel, omega, dt)
-
         if k == 0:
             t_imu_last = t_imu
 
         # Add IMUFactor when t_imu is closer than IMU sampling period dt from the next t_cam (frame timestamp)
         # Correction for timeshift btw. cam imu stamps: t_cam_imu = t_imu - cam_tdelta_imu
         t_imu -= cam_tdelta_imu
+        t_cam = cam_time[i_img]
+
+        # TODO: dt = t_imu - t_imu_last
+        # TODO: measurement correction w/ t_cam_imu from *-camchain-imucam.yaml
+        # Measurement pre-integration
+        pim.integrateMeasurement(accel, omega, dt)
+
+        # TODO: simplify logic
+        # while next_imu.timestamp < current_camera_timestamp:
+        #     integrate()
+        # add_factor()
+        # reset()
+        # FIXME: will integrate up to int(1e9 * dt) past t_cam
         if abs(t_imu - t_cam) < int(1e9 * dt):  # 1e9: sec -> nsec
             idx_current, idx_past = image_indexes[i_img], image_indexes[i_img - 1]
             graph.add(gtsam.ImuFactor(X(idx_past), V(idx_past), X(idx_current), V(idx_current), B(idx_past), pim))
@@ -239,20 +265,26 @@ def add_imu_factors(
             imu_bias_noise = gtsam.noiseModel.Diagonal.Sigmas(np.sqrt(t_imu_delta) * imu_bias.vector())
             graph.add(gtsam.BetweenFactorConstantBias(B(idx_past), B(idx_current), imu_bias, imu_bias_noise))
 
-            logger.debug(f"{i_img=} {idx_current=} {idx_past=}")
+            logger.debug(
+                f"{i_img=} {idx_current=} {idx_past=} {t_imu_delta=}"
+                f"\ndPij = {pim.deltaPij()} dVij={pim.deltaVij()}"
+                f"dTij={pim.deltaTij()} |dPij|={np.linalg.norm(pim.deltaPij()):.2e} |dVij|={np.linalg.norm(pim.deltaVij()):.2e}"
+            )
 
-            # We have created the binary constraint, so we clear out the preintegration values.
+            # Factor created: clear out the preintegration values.
             pim.resetIntegration()
 
-            i_img += 1
             t_imu_last = t_imu
-            if i < n_images:
-                t_cam = cam_time[i]
+            i_img += 1
+
+            if i_img >= n_images:
+                break  # we might have more IMU data, but no more cam frames
 
 
 def stream_imu_from_csv(data_file: str):
     import csv
 
+    # TODO: do timestamp correction here
     imu_data = csv.reader(Path(data_file).open())
     next(imu_data)  # skip header
     for row in imu_data:

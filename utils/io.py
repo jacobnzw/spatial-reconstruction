@@ -243,5 +243,6 @@ class ReconIO:
         pcd = o3d.t.geometry.PointCloud()
         pcd.point.positions = xyz_all  # o3d.utility.Vector3dVector(xyz_all)
         pcd.point.colors = colors_all  # o3d.utility.Vector3dVector(colors_all)
+        # TODO: outlier removal using o3d? the median filter leaves outliers on statue_video every 15th frame cloud
         o3d.io.write_point_cloud(filename, pcd.to_legacy(), write_ascii=True)
         logger.info(f"Saved PLY point cloud to {filename}")
