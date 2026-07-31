@@ -18,7 +18,6 @@ from utils import (
 )
 
 
-# TODO: extract add image factors()
 def bundle_adjustment_gtsam(
     images: FeatureStore,
     point_cloud: PointCloud,
@@ -38,13 +37,62 @@ def bundle_adjustment_gtsam(
         logger.warning("No images available for GTSAM bundle adjustment; skipping.")
         return {}
 
+    graph = gtsam.NonlinearFactorGraph()
+    initial_values = gtsam.Values()
+
+    pose_keys, point_keys = add_camera_factors(
+        graph, initial_values, images, point_cloud, track_manager, fix_first_camera
+    )
+
+    if imu_data is not None and imu_calibration is not None:
+        add_imu_factors(graph, initial_values, imu_data, imu_calibration, images.timestamps, images.image_indexes)
+
+    params = gtsam.LevenbergMarquardtParams()
+    params.setMaxIterations(100)
+    params.setVerbosity("TERMINATION")  # SILENT, TERMINATION, ERROR, VALUES, DELTA, LINEAR
+    params.setVerbosityLM("TERMINATION")
+
+    params.print()
+
+    optimizer = gtsam.LevenbergMarquardtOptimizer(graph, initial_values, params)
+    result = optimizer.optimize()
+
+    for img_idx, pose_key in pose_keys.items():
+        # IMPORTANT(!): world_T_cam expected by set_pose()
+        pose = result.atPose3(pose_key)
+        images[img_idx].set_pose(pose.rotation().matrix(), pose.translation())
+
+    for track_id, point_key in point_keys.items():
+        point = result.atPoint3(point_key)
+        point_cloud.set_point(track_id, point)
+
+    logger.info("GTSAM bundle adjustment complete.")
+
+    wandb_summary = {
+        "optimizer": str(optimizer).split()[0],
+        "initial_cost": graph.error(initial_values),
+        "final_cost": graph.error(result),
+        "optimizer_iterations": optimizer.iterations(),
+        "max_iterations": params.getMaxIterations(),
+        "absolute_error_tol": params.getAbsoluteErrorTol(),
+        "relative_error_tol": params.getRelativeErrorTol(),
+        "linear_solver_type": params.getLinearSolverType(),
+        "ordering_type": params.getOrderingType(),
+        "use_fixed_lambda_factor": params.getUseFixedLambdaFactor(),
+        "diagonal_damping": params.getDiagonalDamping(),
+        "lambda_initial": params.getlambdaInitial(),
+        "lambda_factor": params.getlambdaFactor(),
+        "lambda_lower_bound": params.getlambdaLowerBound(),
+        "lambda_upper_bound": params.getlambdaUpperBound(),
+    }
+    return wandb_summary
+
+
+def add_camera_factors(graph, initial_values, images, point_cloud, track_manager, fix_first_camera=True):
     first_img = images[0]
     K = first_img.camera_model.get_camera_matrix(rescaled=True)
     fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
     calibration = gtsam.Cal3_S2(fx, fy, 0.0, cx, cy)
-
-    graph = gtsam.NonlinearFactorGraph()
-    initial_values = gtsam.Values()
 
     pose_keys: dict[int, int] = {}
     point_keys: dict[int, int] = {}
@@ -114,6 +162,8 @@ def bundle_adjustment_gtsam(
 
         pose = images[first_img_idx].world_T_cam
         first_pose = gtsam.Pose3(gtsam.Rot3(pose.rotation.as_matrix()), pose.translation)
+
+        # Prior on pose: fix rotation + translation (6 dof)
         graph.add(
             gtsam.PriorFactorPose3(
                 first_pose_key,
@@ -122,7 +172,9 @@ def bundle_adjustment_gtsam(
                 gtsam.noiseModel.Isotropic.Sigma(6, 1e-4),
             )
         )
-        # Weak prior on first point
+
+        # Weak prior on first point: fix of scale (via distance fix since pose is fixed)
+        # not strictly needed w/ IMU factors, since they bring in metric scale info
         first_point_key, first_point = point_keys[0], initial_values.atPoint3(point_keys[0])
         graph.add(
             gtsam.PriorFactorPoint3(
@@ -132,8 +184,8 @@ def bundle_adjustment_gtsam(
                 gtsam.noiseModel.Isotropic.Sigma(3, 1.0),
             )
         )
+
         # Fix relative pose between first two cameras: 1st cam pose == world origin == [I|0], 2nd cam pose [R|t]
-        # FIXME:Levenberg-Marquardt giving up because cannot decrease error with maximum lambda converged
         # second_img_idx = sorted_pose_keys[1]
         # second_pose_key = pose_keys[second_img_idx]
         # pose = images[second_img_idx].world_T_cam
@@ -141,53 +193,11 @@ def bundle_adjustment_gtsam(
         # relative_pose = first_pose.between(second_pose)
         # graph.add(
         #     gtsam.BetweenFactorPose3(
-        #         first_pose_key, second_pose_key, relative_pose, gtsam.noiseModel.Isotropic.Sigma(6, 1e-12)
+        #         first_pose_key, second_pose_key, relative_pose, gtsam.noiseModel.Isotropic.Sigma(6, 1e-3)
         #     )
         # )
 
-    # IMU Factors
-    if imu_data is not None and imu_calibration is not None:
-        add_imu_factors(graph, initial_values, imu_data, imu_calibration, images.timestamps, images.image_indexes)
-
-    params = gtsam.LevenbergMarquardtParams()
-    params.setMaxIterations(100)
-    params.setVerbosity("TERMINATION")  # SILENT, TERMINATION, ERROR, VALUES, DELTA, LINEAR
-    params.setVerbosityLM("TERMINATION")
-
-    params.print()
-
-    optimizer = gtsam.LevenbergMarquardtOptimizer(graph, initial_values, params)
-    result = optimizer.optimize()
-
-    for img_idx, pose_key in pose_keys.items():
-        # IMPORTANT(!): world_T_cam -> cam_T_world expected by set_extrinsics()
-        pose = result.atPose3(pose_key).inverse()
-        images[img_idx].set_extrinsics(pose.rotation().matrix(), pose.translation())
-
-    for track_id, point_key in point_keys.items():
-        point = result.atPoint3(point_key)
-        point_cloud.set_point(track_id, point)
-
-    logger.info("GTSAM bundle adjustment complete.")
-
-    wandb_summary = {
-        "optimizer": str(optimizer).split()[0],
-        "initial_cost": graph.error(initial_values),
-        "final_cost": graph.error(result),
-        "optimizer_iterations": optimizer.iterations(),
-        "max_iterations": params.getMaxIterations(),
-        "absolute_error_tol": params.getAbsoluteErrorTol(),
-        "relative_error_tol": params.getRelativeErrorTol(),
-        "linear_solver_type": params.getLinearSolverType(),
-        "ordering_type": params.getOrderingType(),
-        "use_fixed_lambda_factor": params.getUseFixedLambdaFactor(),
-        "diagonal_damping": params.getDiagonalDamping(),
-        "lambda_initial": params.getlambdaInitial(),
-        "lambda_factor": params.getlambdaFactor(),
-        "lambda_lower_bound": params.getlambdaLowerBound(),
-        "lambda_upper_bound": params.getlambdaUpperBound(),
-    }
-    return wandb_summary
+    return pose_keys, point_keys
 
 
 def add_imu_factors(
