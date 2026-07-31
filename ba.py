@@ -209,21 +209,17 @@ def add_imu_factors(
     pim_params.setAccelerometerCovariance(acc_sigma**2 * eye_3)
     pim_params.setIntegrationCovariance(1e-7**2 * eye_3)
 
-    # Bias model
-    # NOTE: see https://borglab.github.io/gtsam/combined-vs-imufactor/
-    # NOTE: see https://github.com/ethz-asl/kalibr/wiki/IMU-Noise-Model
-    # FIXME: suspect wrong set per chatgpt; should be zero, *_random_walk are intensities of bias noise
-    # These have quite an effect!
-    gyro_bias = np.full((3, 1), calibration["gyroscope_random_walk"])
-    acc_bias = np.full((3, 1), calibration["accelerometer_random_walk"])
-    # imu_bias_var =
-    imu_bias = gtsam.imuBias.ConstantBias(acc_bias, gyro_bias)
+    # Bias model: see https://github.com/ethz-asl/kalibr/wiki/IMU-Noise-Model
     zeros_3 = np.zeros((3, 1))
-    # imu_bias = gtsam.imuBias.ConstantBias(zeros_3, zeros_3)
+    imu_bias = gtsam.imuBias.ConstantBias(zeros_3, zeros_3)
+    # These have quite an effect!
+    acc_bias_sigmas = np.full((3, 1), calibration["accelerometer_random_walk"])
+    gyro_bias_sigmas = np.full((3, 1), calibration["gyroscope_random_walk"])
+    imu_bias_sigmas = np.r_[acc_bias_sigmas, gyro_bias_sigmas]
 
     # Initial velocity prior
     # NOTE: X(image_indexes[0]) pose prior set during SfM
-    vel_noise = gtsam.noiseModel.Isotropic.Sigma(3, 0.1)
+    vel_noise = gtsam.noiseModel.Isotropic.Sigma(3, 10.0)
     graph.add(gtsam.PriorFactorVector(V(0), zeros_3, vel_noise))
 
     n_images = len(cam_time)
@@ -240,11 +236,7 @@ def add_imu_factors(
     # Create one IMU factor per cam frame (except the initial), integrating IMU measurements between previous and current cam frame
     # NOTE: tradeoff: IMU pre-intergration prefers shorter delta btw. keyframes; SfM likes greater baseline/translation.
     for k, (t_imu, omega, accel, dt, dt_mean) in enumerate(stream_imu_from_csv(data_file, calibration)):
-        # Add IMUFactor when t_imu is closer than IMU sampling period dt from the next t_cam (frame timestamp)
         t_cam = cam_time[i_img]
-
-        if k == 0:
-            t_imu_last = t_imu
 
         if t_imu < t_cam:
             # Measurement preintegration
@@ -252,12 +244,14 @@ def add_imu_factors(
             continue
         else:
             idx_current, idx_past = image_indexes[i_img], image_indexes[i_img - 1]
+            # NOTE: see https://borglab.github.io/gtsam/combined-vs-imufactor/
+            # TODO: Try combinedImu factor
             graph.add(gtsam.ImuFactor(X(idx_past), V(idx_past), X(idx_current), V(idx_current), B(idx_past), pim))
 
             # Between cam frame integration time
             # Would be constant if we sampled keyframes equidistantly
-            t_imu_delta = t_imu - t_imu_last
-            imu_bias_noise = gtsam.noiseModel.Diagonal.Sigmas(np.sqrt(t_imu_delta) * imu_bias.vector())
+            t_imu_delta = pim.deltaTij()
+            imu_bias_noise = gtsam.noiseModel.Diagonal.Sigmas(np.sqrt(t_imu_delta) * imu_bias_sigmas)
             # Bias random walk
             graph.add(gtsam.BetweenFactorConstantBias(B(idx_past), B(idx_current), imu_bias, imu_bias_noise))
 
@@ -272,7 +266,6 @@ def add_imu_factors(
             pim.resetIntegration()
             pim.integrateMeasurement(accel, omega, dt)
 
-            t_imu_last = t_imu
             i_img += 1
 
         if i_img >= n_images:
@@ -298,8 +291,9 @@ def stream_imu_from_csv(data_file: str, calibration: dict):
 
         # Apply corrections: transform to camera frame
         timestamp -= cam_tdelta_imu
-        accel = cam_T_imu.apply(accel)
-        omega = cam_T_imu.apply(omega)
+        # Only rotation: accel, omega read the same for two same sensors in different locations.
+        accel = cam_T_imu.rotation.apply(accel)
+        omega = cam_T_imu.rotation.apply(omega)
 
         dt = 1e-9 * (timestamp - last_timestamp) if last_timestamp is not None else dt
         dt_mean = dt_mean + (dt - dt_mean) / n
