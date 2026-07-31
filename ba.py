@@ -7,6 +7,7 @@ import pycolmap
 import pycolmap._core.cost_functions as cost_functions
 from gtsam.symbol_shorthand import B, P, V, X
 from loguru import logger
+from scipy.spatial.transform import RigidTransform as SE3Pose
 
 from utils import (
     FeatureStore,
@@ -210,13 +211,18 @@ def add_imu_factors(
 
     # Bias model
     # NOTE: see https://borglab.github.io/gtsam/combined-vs-imufactor/
+    # NOTE: see https://github.com/ethz-asl/kalibr/wiki/IMU-Noise-Model
+    # FIXME: suspect wrong set per chatgpt; should be zero, *_random_walk are intensities of bias noise
+    # These have quite an effect!
     gyro_bias = np.full((3, 1), calibration["gyroscope_random_walk"])
     acc_bias = np.full((3, 1), calibration["accelerometer_random_walk"])
+    # imu_bias_var =
     imu_bias = gtsam.imuBias.ConstantBias(acc_bias, gyro_bias)
+    zeros_3 = np.zeros((3, 1))
+    # imu_bias = gtsam.imuBias.ConstantBias(zeros_3, zeros_3)
 
     # Initial velocity prior
     # NOTE: X(image_indexes[0]) pose prior set during SfM
-    zeros_3 = np.zeros((3, 1))
     vel_noise = gtsam.noiseModel.Isotropic.Sigma(3, 0.1)
     graph.add(gtsam.PriorFactorVector(V(0), zeros_3, vel_noise))
 
@@ -228,34 +234,23 @@ def add_imu_factors(
 
     # IMU Pre-integration object
     pim = gtsam.PreintegratedImuMeasurements(pim_params, imu_bias)
-    dt = 1 / calibration["update_rate"]  # sec
     i_img = 1  # frame index
     t_cam = cam_time[i_img]
-    cam_tdelta_imu = int(1e9 * calibration["timeshift_cam_imu"])  # 1e9: sec -> nsec
 
     # Create one IMU factor per cam frame (except the initial), integrating IMU measurements between previous and current cam frame
     # NOTE: tradeoff: IMU pre-intergration prefers shorter delta btw. keyframes; SfM likes greater baseline/translation.
-    for k, (t_imu, omega, accel) in enumerate(stream_imu_from_csv(data_file)):
+    for k, (t_imu, omega, accel, dt, dt_mean) in enumerate(stream_imu_from_csv(data_file, calibration)):
+        # Add IMUFactor when t_imu is closer than IMU sampling period dt from the next t_cam (frame timestamp)
+        t_cam = cam_time[i_img]
+
         if k == 0:
             t_imu_last = t_imu
 
-        # Add IMUFactor when t_imu is closer than IMU sampling period dt from the next t_cam (frame timestamp)
-        # Correction for timeshift btw. cam imu stamps: t_cam_imu = t_imu - cam_tdelta_imu
-        t_imu -= cam_tdelta_imu
-        t_cam = cam_time[i_img]
-
-        # TODO: dt = t_imu - t_imu_last
-        # TODO: measurement correction w/ t_cam_imu from *-camchain-imucam.yaml
-        # Measurement pre-integration
-        pim.integrateMeasurement(accel, omega, dt)
-
-        # TODO: simplify logic
-        # while next_imu.timestamp < current_camera_timestamp:
-        #     integrate()
-        # add_factor()
-        # reset()
-        # FIXME: will integrate up to int(1e9 * dt) past t_cam
-        if abs(t_imu - t_cam) < int(1e9 * dt):  # 1e9: sec -> nsec
+        if t_imu < t_cam:
+            # Measurement preintegration
+            pim.integrateMeasurement(accel, omega, dt)
+            continue
+        else:
             idx_current, idx_past = image_indexes[i_img], image_indexes[i_img - 1]
             graph.add(gtsam.ImuFactor(X(idx_past), V(idx_past), X(idx_current), V(idx_current), B(idx_past), pim))
 
@@ -263,35 +258,53 @@ def add_imu_factors(
             # Would be constant if we sampled keyframes equidistantly
             t_imu_delta = t_imu - t_imu_last
             imu_bias_noise = gtsam.noiseModel.Diagonal.Sigmas(np.sqrt(t_imu_delta) * imu_bias.vector())
+            # Bias random walk
             graph.add(gtsam.BetweenFactorConstantBias(B(idx_past), B(idx_current), imu_bias, imu_bias_noise))
 
+            logger.debug(f"{i_img = } {idx_current = } {idx_past = } {t_imu_delta = }")
             logger.debug(
-                f"{i_img=} {idx_current=} {idx_past=} {t_imu_delta=}"
-                f"\ndPij = {pim.deltaPij()} dVij={pim.deltaVij()}"
-                f"dTij={pim.deltaTij()} |dPij|={np.linalg.norm(pim.deltaPij()):.2e} |dVij|={np.linalg.norm(pim.deltaVij()):.2e}"
+                f"\ndPij = {pim.deltaPij()} dVij={pim.deltaVij()} dTij={pim.deltaTij()}"
+                f"|dPij|={np.linalg.norm(pim.deltaPij()):.2e} |dVij|={np.linalg.norm(pim.deltaVij()):.2e}"
             )
+            logger.debug(f"{dt-dt_mean = :.2e}")
 
-            # Factor created: clear out the preintegration values.
+            # Factor created: reset and re-initialize for next inter-frame preintegration
             pim.resetIntegration()
+            pim.integrateMeasurement(accel, omega, dt)
 
             t_imu_last = t_imu
             i_img += 1
 
-            if i_img >= n_images:
-                break  # we might have more IMU data, but no more cam frames
+        if i_img >= n_images:
+            break  # we might have more IMU data, but no more cam frames
 
 
-def stream_imu_from_csv(data_file: str):
+def stream_imu_from_csv(data_file: str, calibration: dict):
     import csv
 
-    # TODO: do timestamp correction here
+    cam_tdelta_imu = int(1e9 * calibration["timeshift_cam_imu"])  # 1e9: sec -> nsec
+    cam_T_imu = SE3Pose.from_matrix(np.array(calibration["T_cam_imu"]))  # IMU pose in camera frame
+    dt = 1 / calibration["update_rate"]  # sec
+    # Runing mean of the dt
+    dt_mean = dt
+
     imu_data = csv.reader(Path(data_file).open())
     next(imu_data)  # skip header
-    for row in imu_data:
+    last_timestamp = None
+    for n, row in enumerate(imu_data, start=1):
         timestamp = int(row[0])
         omega = np.fromstring(" ".join(row[1:4]), sep=" ")
         accel = np.fromstring(" ".join(row[4:]), sep=" ")
-        yield timestamp, omega, accel
+
+        # Apply corrections: transform to camera frame
+        timestamp -= cam_tdelta_imu
+        accel = cam_T_imu.apply(accel)
+        omega = cam_T_imu.apply(omega)
+
+        dt = 1e-9 * (timestamp - last_timestamp) if last_timestamp is not None else dt
+        dt_mean = dt_mean + (dt - dt_mean) / n
+
+        yield timestamp, omega, accel, dt, dt_mean
 
 
 def bundle_adjustment(

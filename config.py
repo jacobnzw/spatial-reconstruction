@@ -3,7 +3,6 @@
 import json
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-
 from functools import cached_property
 from pathlib import Path
 from typing import Dict
@@ -118,7 +117,9 @@ class SfMConfig(BaseConfig):
                 "update_rate",
             )
             calibration = {attr: imu["imu0"][attr] for attr in imu_attrs}
-            calibration.update({"timeshift_cam_imu": imucam["cam0"]["timeshift_cam_imu"]})
+            calibration.update(
+                {"timeshift_cam_imu": imucam["cam0"]["timeshift_cam_imu"], "T_cam_imu": imucam["cam0"]["T_cam_imu"]}
+            )
             return calibration
 
         return None
