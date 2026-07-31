@@ -333,8 +333,9 @@ class FrameLoader:
             timestamp = frame_stamps[idx]
             view_data = ViewData(idx, self.video_path, frame, camera_model, timestamp)
 
-            idx += 1
             logger.debug(f"Yielding frame: {idx=} {timestamp=}")
+
+            idx += 1
             yield view_data
 
     def iter_frames(self) -> Iterable[ViewData]:
