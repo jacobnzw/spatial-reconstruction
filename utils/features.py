@@ -11,9 +11,9 @@ from loguru import logger
 from numpy.typing import NDArray
 
 from .camera import NDArrayFloat, NDArrayInt
+from .embedding import ViewEmbedder
 from .tracks import KPKey
 from .view import FrameLoader, ViewData
-from .embedding import ViewEmbedder
 
 # Initialize device for Kornia/PyTorch operations
 device = K.core.utils.get_cuda_or_mps_device_if_available()
@@ -76,7 +76,6 @@ class FeatureExtractor:
 
         if hasattr(self, "_embedder"):
             frame = self._embedder(frame)
-            return frame
 
         return frame
 
