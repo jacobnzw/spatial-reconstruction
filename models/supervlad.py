@@ -9,7 +9,6 @@ import torch.nn.functional as F
 import tqdm
 from torch import nn
 from torch.utils.data import DataLoader, SubsetRandomSampler
-from torchvision import transforms
 
 from models.vision_transformer import vit_base
 
@@ -230,20 +229,3 @@ def get_backbone(args, backbone_path: str | None = None):
 def get_output_channels_dim(model):
     """Return the number of channels in the output of a model."""
     return model(torch.ones([1, 3, 224, 224])).shape[1]
-
-
-def get_image_embeding(img: np.ndarray, model: SuperVLADModel, device: torch.device):
-    IMAGENET_MEAN, IMAGENET_STD = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
-    transform = transforms.Compose(
-        [
-            transforms.ToTensor(),
-            transforms.Resize((322, 322)),  # or whatever size you trained with
-            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-        ]
-    )
-
-    x = transform(img).unsqueeze(0).to(device)  # [1, 3, 322, 322]
-
-    with torch.no_grad():
-        emb = model(x)  # [1, 3072]
-        emb = torch.nn.functional.normalize(emb, p=2, dim=-1)

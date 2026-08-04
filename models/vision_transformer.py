@@ -34,6 +34,7 @@ def named_apply(fn: Callable, module: nn.Module, name="", depth_first=True, incl
         fn(module=module, name=name)
     return module
 
+
 class BlockChunk(nn.ModuleList):
     def forward(self, x):
         for b in self:
@@ -230,7 +231,7 @@ class DinoVisionTransformer(nn.Module):
         return {
             "x_norm_clstoken": x_norm[:, 0],
             "x_norm_patchtokens": x_norm[:, 1:],
-            "x_prenorm": x_norm,#x,
+            "x_prenorm": x_norm,  # x,
             "masks": masks,
         }
 
@@ -291,7 +292,7 @@ class DinoVisionTransformer(nn.Module):
         if is_training:
             return ret
         else:
-            return ret#self.head(ret["x_norm_clstoken"])
+            return ret  # self.head(ret["x_norm_clstoken"])
 
 
 def init_weights_vit_timm(module: nn.Module, name: str = ""):
