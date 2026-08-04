@@ -1,10 +1,11 @@
 [project]
 name = "spatial-reconstruction"
 version = "0.1.0"
-description = "Add your description here"
+description = "Structure from Motion learning project"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "faiss-gpu>=1.14.3",
     "gsplat>=1.5.3",
     "gtsam-develop>=4.3a1.dev202603261854",
     "kornia>=0.8.2",
@@ -20,8 +21,10 @@ dependencies = [
     "pycolmap==3.13.0",
     "rich>=14.3.1",
     "torch>=2.11.0",
+    "torchvision>=0.27.1",
     "tyro>=1.0.5",
     "wandb>=0.19.0",
+    "xformers>=0.0.35",
 ]
 
 [tool.ruff]

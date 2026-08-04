@@ -11,6 +11,7 @@ from loguru import logger
 from numpy.typing import NDArray
 
 from .camera import NDArrayFloat, NDArrayInt
+from .embedding import ViewEmbedder
 from .tracks import KPKey
 from .view import FrameLoader, ViewData
 
@@ -51,9 +52,14 @@ class MatcherConfig:
 class FeatureExtractor:
     """Feature extractor class that curries the extraction function based on config."""
 
-    def __init__(self, cfg: FeatureExtractorConfig, loader: FrameLoader):  # noqa: F821
+    def __init__(self, cfg: FeatureExtractorConfig, loader: FrameLoader, extract_embeddings=False):  # noqa: F821
         self.loader = loader
         self.num_features = cfg.num
+
+        # NOTE: For now embedder dropped here as it is a kind of feature extractor, but it could be separated if needed
+        # TODO: FeatureExtractor could accept any type that has .iter_frames() -> Iterable[ViewData] via typing Protocol
+        if extract_embeddings:
+            self._embedder = ViewEmbedder()  # Initialize the embedding model
 
         if cfg.type == "sift":
             sift = cv.SIFT_create(nfeatures=cfg.num)  # ty:ignore[unresolved-attribute]
@@ -66,7 +72,12 @@ class FeatureExtractor:
 
     def __call__(self, frame: ViewData) -> ViewData:
         """Extract features from a single frame using the curried extraction function."""
-        return self._extract_fn(frame)
+        frame = self._extract_fn(frame)
+
+        if hasattr(self, "_embedder"):
+            frame = self._embedder(frame)
+
+        return frame
 
     def _extract_sift(self, frame: ViewData, sift: cv.SIFT) -> ViewData:
         """Extract SIFT features from a single image."""
