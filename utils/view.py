@@ -97,6 +97,9 @@ class ViewData:
     # Estimated camera extrinsics, i.e world-to-camera transform; output of cv.solvePnP etc.
     cam_T_world: SE3Pose | None = None
 
+    # Image embedding vector from ViewEmbedder
+    embedding: NDArrayFloat | None = None
+
     def _check_pose(self):
         if not self.has_pose:
             raise ValueError("Pose not set for this image")
@@ -261,6 +264,7 @@ class FrameLoader:
                 break
 
             # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order
+            # TODO: similar code to __call__,
             img = cv.imread(str(path), cv.IMREAD_COLOR_RGB)
             if img is None:
                 raise FileNotFoundError(f"FrameLoader: Failed to load image: {path}")
