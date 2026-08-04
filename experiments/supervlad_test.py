@@ -211,12 +211,20 @@ def _(img_data_list):
 def _(Path, img_data_list, img_index_number, k, search_results):
     search_idx = img_index_number.value
     idx, img_path, distances, indices = search_results[search_idx]
-    print(f"{idx=} {Path(img_path).name} {distances[0]=} {indices[0]=}")
+    print(f"{idx=} {Path(img_path).name}\n{distances[0]=}\n{indices[0]=}")
+
+    resize = transforms.Compose(
+        [
+            transforms.ToPILImage(),
+            transforms.Resize(512),
+        ]
+    )
+
     from matplotlib import pyplot as plt
     fig, ax = plt.subplots(1, k, figsize=(12, 6))
-
     for i, img_idx in enumerate(indices.squeeze()):
-        ax[i].imshow(img_data_list[img_idx].pixels, )
+        img = resize(img_data_list[img_idx].pixels)
+        ax[i].imshow(img)
         ax[i].set_title(f"d={float(distances[0][i]):.2f} ({int(img_idx)})", fontsize=10)
         ax[i].axis("off")
 
