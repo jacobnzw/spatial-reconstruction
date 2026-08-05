@@ -7,6 +7,7 @@ from torchvision import transforms
 from models import SuperVLADModel
 
 from .view import ViewData
+from .camera import NDArrayFloat
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -18,6 +19,7 @@ class ViewEmbedder:
 
     def __init__(self, model_checkpoint: str = SUPERVLAD_CHECKPOINT):
         self.model = self._load_embedder(model_checkpoint)
+        self.embedding_dim = 3072  # SuperVLAD embedding dimension
 
     def _load_embedder(self, checkpoint: str) -> SuperVLADModel:
         if not Path(checkpoint).exists():
@@ -34,7 +36,7 @@ class ViewEmbedder:
         model.load_state_dict(supervlad_state_dict)
         return model
 
-    def __call__(self, view: ViewData) -> ViewData:
+    def __call__(self, view: ViewData) -> NDArrayFloat:
         """Compute and attach the embedding for a given view."""
 
         IMAGENET_MEAN, IMAGENET_STD = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
@@ -49,6 +51,4 @@ class ViewEmbedder:
         x = transform(view.pixels).unsqueeze(0).to(device)  # [1, 3, 322, 322]
 
         with torch.inference_mode():
-            view.embedding = self.model(x).cpu().numpy()  # [1, 3072]
-
-        return view
+            return self.model(x).cpu().numpy()  # [1, 3072]

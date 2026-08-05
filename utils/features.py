@@ -32,6 +32,7 @@ class FeatureExtractorConfig:
 
 
 MatcherType = Literal["bf", "lg"]
+KPMatches = tuple[NDArrayFloat, NDArrayInt]
 
 
 @dataclass
@@ -52,14 +53,10 @@ class MatcherConfig:
 class FeatureExtractor:
     """Feature extractor class that curries the extraction function based on config."""
 
+    # TODO: FeatureExtractor could accept any type that has .iter_frames() -> Iterable[ViewData] via typing Protocol
     def __init__(self, cfg: FeatureExtractorConfig, loader: FrameLoader, extract_embeddings=False):  # noqa: F821
         self.loader = loader
         self.num_features = cfg.num
-
-        # NOTE: For now embedder dropped here as it is a kind of feature extractor, but it could be separated if needed
-        # TODO: FeatureExtractor could accept any type that has .iter_frames() -> Iterable[ViewData] via typing Protocol
-        if extract_embeddings:
-            self._embedder = ViewEmbedder()  # Initialize the embedding model
 
         if cfg.type == "sift":
             sift = cv.SIFT_create(nfeatures=cfg.num)  # ty:ignore[unresolved-attribute]
@@ -72,12 +69,7 @@ class FeatureExtractor:
 
     def __call__(self, frame: ViewData) -> ViewData:
         """Extract features from a single frame using the curried extraction function."""
-        frame = self._extract_fn(frame)
-
-        if hasattr(self, "_embedder"):
-            frame = self._embedder(frame)
-
-        return frame
+        return self._extract_fn(frame)
 
     def _extract_sift(self, frame: ViewData, sift: cv.SIFT) -> ViewData:
         """Extract SIFT features from a single image."""
@@ -183,6 +175,11 @@ class FeatureStore:
         """Yield images for which we have a pose estimate."""
         yield from (img_data for img_data in self._store.values() if img_data.has_pose)
 
+    # TODO: Unify iter_* naming across FrameLoader, FeatureExtractor, FeatureStore
+    def iter_views(self) -> Iterable[ViewData]:
+        """Yield all images in the store."""
+        yield from self._store.values()
+
 
 def _match_lightglue(
     img_from: ViewData,
@@ -266,7 +263,7 @@ def _match_brute_force(
 
 def make_keypoint_matcher(
     cfg: MatcherConfig,
-) -> Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]]:
+) -> Callable[[ViewData, ViewData], KPMatches]:
     """Factory for keypoint matchers."""
     if cfg.type == "bf":
         return partial(_match_brute_force, lowe_ratio=cfg.bf_lowe_ratio, cross_check=cfg.bf_cross_check)

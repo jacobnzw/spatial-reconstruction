@@ -299,6 +299,7 @@ def process_graph_component(
     # matches -> E -> pose -> triangulation
     bootstrap_from_two_views(img_0, img_1, track_manager, point_cloud, matches=best_edge.matches_ij)
 
+    # TODO: Move edge management mess to ViewGraph
     R = set((img_0.idx, img_1.idx))
     U = {node for e in edges for node in (e.i, e.j)}
     U.difference_update(R)
