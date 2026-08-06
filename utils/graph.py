@@ -8,7 +8,7 @@ from loguru import logger
 
 from .camera import NDArrayInt
 from .embedding import ViewEmbedder
-from .features import FeatureStore, KPMatches
+from .features import FeatureStore, KPMatches, KeypointMatcher, MatcherResult
 from .view import ViewData
 
 
@@ -24,13 +24,11 @@ class ViewGraph:
     def __init__(
         self,
         feature_store: FeatureStore,
-        matcher_fn: Callable[[ViewData, ViewData], KPMatches],
-        min_inliers: int = 50,
+        kp_matcher: KeypointMatcher,
         k: int = 5,
     ):
         self._feature_store: FeatureStore = feature_store
-        self._matcher_fn = matcher_fn
-        self._min_inliers = min_inliers
+        self._kp_matcher = kp_matcher
         self._k = min(k, feature_store.size)  # K <= feature_store.size
 
         # Create vector DB index for image embeddings using FAISS
@@ -112,42 +110,42 @@ class ViewGraph:
 
     # TODO: DRY: merge the two find_* funcs? Keep in case debugging reveals design flaw! Merge when all checks out!
     # FIXME: Inefficient to re-sort edges on every call
-    def find_initial_view_pair(self) -> tuple[ViewData, ViewData, NDArrayInt] | None:
+    def find_initial_view_pair(self) -> tuple[ViewData, ViewData, MatcherResult] | None:
         # Try to validate the most visually similar pair of views
         for u, v, edge_data in sorted(self.unregistered_edges, key=lambda e: e[-1]["distance"]):
             view_u, view_v = self._feature_store[u], self._feature_store[v]
-            matches_ok, n_inliers, matches = self._match_and_validate(view_u, view_v)
+            matcher_result = self._kp_matcher(view_u, view_v)
 
             # Record matching results to graph edge; writes through to self._graph.edges
-            edge_data["matches"] = matches
-            edge_data["n_inliers"] = n_inliers
-            edge_data["matches_ok"] = matches_ok
+            edge_data["matches"] = matcher_result.matches
+            edge_data["n_inliers"] = matcher_result.n_inliers
+            edge_data["matches_ok"] = matcher_result.success
 
             # If match validation fails, continue w/ next best candidate view pair
-            if matches_ok:
-                return view_u, view_v, matches  # ty:ignore[invalid-return-type]
+            if matcher_result:
+                return view_u, view_v, matcher_result
 
         # In this case, we can't even start the reconstruction
         logger.critical("Failed to find initial view pair!")
         return None
 
-    def find_next_best_view_pair(self) -> tuple[ViewData, ViewData, NDArrayInt] | None:
+    def find_next_best_view_pair(self) -> tuple[ViewData, ViewData, MatcherResult] | None:
         # Iterate from the most similar pair of views: edge connects registered and unregistered view
         for u, v, edge_data in sorted(self.connecting_edges, key=lambda e: e[-1]["distance"]):
             view_u, view_v = self._new_ref_order_views(u, v)
             # NOTE: (!) ref -> new is the assumed match direction in add_view()
-            matches_ok, n_inliers, matches = self._match_and_validate(view_v, view_u)
+            matcher_result = self._kp_matcher(view_v, view_u)
 
             # Record matching results to graph edge; writes through to self._graph.edges
-            edge_data["matches"] = matches
-            edge_data["n_inliers"] = n_inliers
-            edge_data["matches_ok"] = matches_ok
+            edge_data["matches"] = matcher_result.matches
+            edge_data["n_inliers"] = matcher_result.n_inliers
+            edge_data["matches_ok"] = matcher_result.success
 
             # if match-validate fails, continue w/ next best candidate view pair
-            if matches_ok:
+            if matcher_result:
                 # TODO: Could this be a generator? Would likely not respect updated connecting_edges: => add filter for registered edges in the loop
                 # BUT: even if we filter out registered edges, we might skip; with every registered edge more views become registered and .connecting_edges will change
-                return view_u, view_v, matches  # ty:ignore[invalid-return-type]
+                return view_u, view_v, matcher_result
 
         # Exhausting connecting edges means:
         # (a) all nodes (views) in the graph component are registered (good), or
@@ -165,48 +163,3 @@ class ViewGraph:
         self._graph.edges[(new_idx, ref_idx)]["pnp_ok"] = False
         self._graph.edges[(new_idx, ref_idx)]["registered"] = False
         self._graph.nodes[new_idx]["registered"] = False
-
-    # TODO: Limit ViewGraph responsibilities: Create Matcher class and move there; return MatchResult struct to keep it clean
-    def _match_and_validate(self, img_from: ViewData, img_to: ViewData) -> tuple[bool, int | None, NDArrayInt | None]:
-        """Computes keypoint matches and performs geometric validation.
-
-        Matches are validated geometrically by checking for existance of essential matrix.
-        Uses supplied matcher_fn passed to ViewGraph.__init__().
-
-        Args:
-            img_from: Source image.
-            img_to: Target image.
-
-        Returns:
-            Tuple of (flag, n_inliers, matches):
-                - flag: Flag set to True if images overlap.
-                - n_inliers: Number of inlier matches after geometric validation.
-                - matches: Array of match indices (N, 2) where each row is (queryIdx, trainIdx).
-        """
-
-        _, matches = self._matcher_fn(img_from, img_to)
-        if len(matches) < self._min_inliers:
-            logger.debug(
-                f"Not enough matches for views ({img_from.idx}, {img_to.idx}) {len(matches)} < {self._min_inliers}"
-            )
-            return False, None, None
-
-        # geometric validation: rejects matches that cannot arise from a rigid 3D scene
-        # [:, 0] = queryIdx; [:, 1] = trainIdx
-        # TODO: repeated in bootstrap_from_two_views: save E, mask in ViewEdge?;
-        pts1, pts2 = img_from.kp[matches[:, 0]], img_to.kp[matches[:, 1]]  # ty:ignore[not-subscriptable]
-
-        K = img_from.camera_model.get_camera_matrix()
-        # NOTE: RANSAC sensitive to point shuffling, due to its randomness => slightly different inliers
-        E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.RANSAC, threshold=1.0)
-
-        if E is None:
-            logger.debug(f"Failed geometric match validation for views ({img_from.idx}, {img_to.idx})")
-            return False, None, None
-
-        n_inliers = int((mask > 0).sum())
-        if n_inliers < self._min_inliers:
-            return False, None, None
-
-        # FIXME: Return only inlier matches; all are returned now
-        return True, n_inliers, matches

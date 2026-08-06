@@ -76,9 +76,6 @@ class SfMConfig(BaseConfig):  # TODO: Investigate marked delay when importing th
     matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig(type="lg"))
 
     # SfM-specific fields
-    min_inliers: int = 50
-    """Minimum number of inliers to consider two views as overlapping"""
-
     run_ba: bool = True
     """Run bundle adjustment optimization after initial reconstruction"""
 

@@ -11,13 +11,16 @@ All public APIs are re-exported at the package level for backward compatibility.
 from .camera import CameraModel, CameraType, NDArrayFloat, NDArrayInt, calibrate_camera
 
 # Features module
-from .features import FeatureExtractor, FeatureStore, KPKey, make_keypoint_matcher
+from .features import FeatureExtractor, FeatureStore, KeypointMatcher, KPKey, MatcherResult
 
 # View graph module
 from .graph import ViewGraph
 
 # I/O module
 from .io import ReconIO
+
+# Logging module
+from .logging import build_track_length_histogram, log_wandb_artifacts
 
 # Point cloud module
 from .pointcloud import Point3D, PointCloud
@@ -27,9 +30,6 @@ from .tracks import TrackManager
 
 # View module
 from .view import FrameLoader, ViewData
-
-# Logging module
-from .logging import build_track_length_histogram, log_wandb_artifacts
 
 __all__ = [
     # Camera
@@ -44,7 +44,8 @@ __all__ = [
     # Features
     "FeatureExtractor",
     "FeatureStore",
-    "make_keypoint_matcher",
+    "KeypointMatcher",
+    "MatcherResult",
     "KPKey",
     # Tracks
     "TrackManager",
