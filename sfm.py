@@ -127,7 +127,7 @@ def _estimate_pose_pnp(world_points: NDArrayFloat, image_points: NDArrayFloat, i
         flags=cv.SOLVEPNP_EPNP,
     )
 
-    n_inliers = len(inliers)
+    n_inliers = len(inliers) if inliers is not None else 0
     ratio_inlier = n_inliers / len(world_points)
 
     if not pnp_ok:
@@ -331,7 +331,9 @@ def process_graph_component(
             add_success = False
             view_graph.mark_edge_failed(img_new.idx, img_ref.idx)
 
-        baseline = np.linalg.norm((img_ref.cam_T_world * img_new.world_T_cam).translation)
+        baseline = (
+            np.linalg.norm((img_ref.cam_T_world * img_new.world_T_cam).translation) if img_new.has_pose else np.nan
+        )
         log_table.add_data(
             img_new.idx,
             img_ref.idx,
