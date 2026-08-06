@@ -68,7 +68,7 @@ class BaseConfig:
 
 
 @dataclass
-class SfMConfig(BaseConfig):
+class SfMConfig(BaseConfig):  # TODO: Investigate marked delay when importing this!
     """Configuration for Structure from Motion pipeline."""
 
     features: FeatureExtractorConfig = field(default_factory=lambda: FeatureExtractorConfig(type="disk"))

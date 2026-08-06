@@ -295,12 +295,13 @@ def process_graph_component(
     img_0, img_1, matches = view_pair_status
 
     logger.info(
-        f"Establishing baseline ({len(matches)} matches) from: "
+        f"Initializing reconstruction w/ {len(matches)} matches from: "
         f"{img_0.idx}:{img_0.path.name} and {img_1.idx}:{img_1.path.name}"
     )
 
     # matches -> E -> pose -> triangulation
     bootstrap_from_two_views(img_0, img_1, track_manager, point_cloud, matches=matches)
+    view_graph.mark_edge_registered(img_0.idx, img_1.idx)
 
     log_table = wandb.Table(
         columns=[
@@ -324,7 +325,7 @@ def process_graph_component(
         if view_pair_status is None:
             break
         # FIXME: IMPORTANT to know which one is reference for add_view! Can't mix these up!
-        img_ref, img_new, matches = view_pair_status
+        img_new, img_ref, matches = view_pair_status
 
         logger.info(
             (
@@ -345,16 +346,18 @@ def process_graph_component(
                 depth_threshold=depth_threshold,
             )
             add_success = True
+            view_graph.mark_edge_registered(img_new.idx, img_ref.idx)
         except ValueError as e:
             # failed to add new view: indicate the (img_ref, img_new) pair as bad and move on
             # best_edge was the best chance to add img_new (don't consider next best edge w/ img_new)
 
             logger.warning(
-                f"Failed to add view: {img_new.idx}:{img_new.path.name} with ref: {img_ref.idx}:{img_ref.path.name} due to {e}"
+                f"Failed to add view: {img_new.idx}:{img_new.path.name} w/ ref: {img_ref.idx}:{img_ref.path.name} due to {e}"
             )
 
             n_pnp_inliers, ratio_pnp_inlier, ratio_triang_depth_filtered = np.nan, np.nan, np.nan
             add_success = False
+            view_graph.mark_edge_failed(img_new.idx, img_ref.idx)
 
         baseline = np.linalg.norm((img_ref.cam_T_world * img_new.world_T_cam).translation)
         log_table.add_data(
