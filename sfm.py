@@ -19,8 +19,7 @@ from utils import (
     ReconIO,
     TrackManager,
     ViewData,
-    ViewEdge,
-    construct_view_graph,
+    ViewGraph,
     log_wandb_artifacts,
     make_keypoint_matcher,
 )
@@ -206,7 +205,7 @@ def add_view(
     match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]] | None = None,
     matches: NDArrayInt | None = None,
     depth_threshold: float = 0.0,
-):
+) -> tuple[int, float, float]:
     """Adds 3D points from new view using PnP and triangulation.
 
     img_ref is reference image for which we already have 2D-3D pt correspondence in track_manager
@@ -264,47 +263,44 @@ def add_view(
     return n_pnp_inliers, ratio_pnp_inlier, ratio_triang_depth_filtered
 
 
-def pick_best_image_pair(
-    edges: list[ViewEdge], store: FeatureStore, R: set[int] | None = None
-) -> tuple[ViewData, ViewData, ViewEdge]:
-    """Pick best image pair from list of edges.
+# def pick_best_image_pair(
+#     edges: list[ViewEdge], store: FeatureStore, R: set[int] | None = None
+# ) -> tuple[ViewData, ViewData, ViewEdge]:
+#     """Pick best image pair from list of edges.
 
-    Assumption: ImageData.idx matches the node indexes, which it should if the graph was constructed correctly.
-    """
-    best_edge = max(edges, key=lambda e: e.weight)
-    if R:  # if R is not None or not empty
-        idx_ref, idx_new = (best_edge.i, best_edge.j) if best_edge.i in R else (best_edge.j, best_edge.i)
-        return store[idx_ref], store[idx_new], best_edge
-    return store[best_edge.i], store[best_edge.j], best_edge
+#     Assumption: ImageData.idx matches the node indexes, which it should if the graph was constructed correctly.
+#     """
+#     best_edge = max(edges, key=lambda e: e.weight)
+#     if R:  # if R is not None or not empty
+#         idx_ref, idx_new = (best_edge.i, best_edge.j) if best_edge.i in R else (best_edge.j, best_edge.i)
+#         return store[idx_ref], store[idx_new], best_edge
+#     return store[best_edge.i], store[best_edge.j], best_edge
 
 
 def process_graph_component(
-    edges: list[ViewEdge],
-    store: FeatureStore,
+    view_graph: ViewGraph,
     track_manager: TrackManager,
     point_cloud: PointCloud,
     match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
     depth_threshold: float,
-) -> tuple[list[ViewEdge], set[int], wandb.Table]:
-    if not edges:
-        raise ValueError(f"No view graph edges present! {edges=}")
-    edges = edges.copy()
+) -> wandb.Table:
 
     # Pick strongest baseline:
     # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
-    img_0, img_1, best_edge = pick_best_image_pair(edges, store)
-    logger.info(
-        f"Establishing baseline ({best_edge.weight} matches) from: {img_0.idx}:{img_0.path.name} and {img_1.idx}:{img_1.path.name}"
-    )
-    # matches -> E -> pose -> triangulation
-    bootstrap_from_two_views(img_0, img_1, track_manager, point_cloud, matches=best_edge.matches_ij)
+    view_pair_status = view_graph.find_initial_view_pair()
 
-    # TODO: Move edge management mess to ViewGraph
-    R = set((img_0.idx, img_1.idx))
-    U = {node for e in edges for node in (e.i, e.j)}
-    U.difference_update(R)
-    leftover_edges = edges.copy()
-    leftover_edges.remove(best_edge)
+    if view_pair_status is None:
+        raise ValueError("Couldn't find initial view pair!")
+
+    img_0, img_1, matches = view_pair_status
+
+    logger.info(
+        f"Establishing baseline ({len(matches)} matches) from: "
+        f"{img_0.idx}:{img_0.path.name} and {img_1.idx}:{img_1.path.name}"
+    )
+
+    # matches -> E -> pose -> triangulation
+    bootstrap_from_two_views(img_0, img_1, track_manager, point_cloud, matches=matches)
 
     log_table = wandb.Table(
         columns=[
@@ -321,24 +317,22 @@ def process_graph_component(
         ]
     )
 
+    # Process all remaining views one by one
     while True:
-        # find unregistered images connected to the registered ones
-        # "connected" == "sharing matched keypoints"
-        candidate_edges = [e for e in edges if (e.i in R and e.j in U) or (e.j in R and e.i in U)]
+        view_pair_status = view_graph.find_next_best_view_pair()
 
-        if not candidate_edges:
-            # U could still be non-empty (disconnected graph)
-            logger.info(f"No more candidate edges. Exiting. {len(U)} images left.")
+        if view_pair_status is None:
             break
+        # FIXME: IMPORTANT to know which one is reference for add_view! Can't mix these up!
+        img_ref, img_new, matches = view_pair_status
 
-        img_ref, img_new, best_edge = pick_best_image_pair(candidate_edges, store, R)
         logger.info(
             (
                 f"Adding view {img_new.idx}:{img_new.path.name} w/ ref {img_ref.idx}:{img_ref.path.name}"
-                f" (matches: {best_edge.weight})"
+                f" (matches: {len(matches)})"
             )
         )
-        logger.debug(f"{img_ref.idx=} {img_new.idx=} {best_edge.i=} {best_edge.j=} {best_edge.matches_ij.shape=}.")
+        logger.debug(f"{img_ref.idx=} {img_new.idx=} {matches.shape=}.")
 
         try:
             # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
@@ -347,15 +341,13 @@ def process_graph_component(
                 img_ref,
                 track_manager,
                 point_cloud,
-                matches=best_edge.get_matches(img_ref.idx, img_new.idx),
+                matches=matches,
                 depth_threshold=depth_threshold,
             )
             add_success = True
         except ValueError as e:
             # failed to add new view: indicate the (img_ref, img_new) pair as bad and move on
             # best_edge was the best chance to add img_new (don't consider next best edge w/ img_new)
-            U.remove(img_new.idx)
-            leftover_edges.remove(best_edge)
 
             logger.warning(
                 f"Failed to add view: {img_new.idx}:{img_new.path.name} with ref: {img_ref.idx}:{img_ref.path.name} due to {e}"
@@ -369,7 +361,7 @@ def process_graph_component(
             img_new.idx,
             img_ref.idx,
             add_success,
-            best_edge.weight,
+            len(matches),
             n_pnp_inliers,
             ratio_pnp_inlier,
             ratio_triang_depth_filtered,
@@ -381,18 +373,14 @@ def process_graph_component(
         if not add_success:
             continue
 
-        # move currently processed image/node index from U to R
-        R.add(img_new.idx)
-        U.remove(img_new.idx)
-        leftover_edges.remove(best_edge)
-
     # Filter out any remaining edges that connect registered views/images
-    leftover_edges = [e for e in leftover_edges if not (e.i in R and e.j in R)]
-    logger.debug(f"{R = }")
-    logger.debug(f"{U = }")
-    logger.debug(f"leftover_edges = {[(e.i, e.j) for e in leftover_edges]}")
+    # TODO: report registered, unregistered views, failed edges, remaining edges
+    # leftover_edges = [e for e in leftover_edges if not (e.i in R and e.j in R)]
+    # logger.debug(f"{R = }")
+    # logger.debug(f"{U = }")
+    # logger.debug(f"leftover_edges = {[(e.i, e.j) for e in leftover_edges]}")
 
-    return leftover_edges, U, log_table
+    return log_table
 
 
 Dataset = Literal["corridor", "statue_orbit"]
@@ -442,13 +430,13 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     kp_matcher = make_keypoint_matcher(cfg.matcher)
 
     logger.info("Constructing view graph...")
-    view_graph = construct_view_graph(image_store, kp_matcher, min_inliers=cfg.min_inliers)
+    # view_graph = construct_view_graph(image_store, kp_matcher, min_inliers=cfg.min_inliers)
+    # TODO: Add k to config
+    view_graph = ViewGraph(image_store, kp_matcher, min_inliers=cfg.min_inliers, k=5)
 
     # Process the first component
     logger.info("Processing graph component...")
-    _, _, log_view_table = process_graph_component(
-        view_graph.edges, image_store, track_manager, point_cloud, kp_matcher, cfg.depth_threshold
-    )
+    log_view_table = process_graph_component(view_graph, track_manager, point_cloud, kp_matcher, cfg.depth_threshold)
 
     # Process all connected components of the view graph
     # Each component will lead to a point cloud with its own reference frame

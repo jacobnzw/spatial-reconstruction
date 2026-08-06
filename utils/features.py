@@ -11,7 +11,6 @@ from loguru import logger
 from numpy.typing import NDArray
 
 from .camera import NDArrayFloat, NDArrayInt
-from .embedding import ViewEmbedder
 from .tracks import KPKey
 from .view import FrameLoader, ViewData
 

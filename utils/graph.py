@@ -9,6 +9,7 @@ from loguru import logger
 from .embedding import ViewEmbedder
 from .features import FeatureStore, KPMatches
 from .view import ViewData
+from .camera import NDArrayInt
 
 
 class ViewGraph:
@@ -27,7 +28,7 @@ class ViewGraph:
         min_inliers: int = 50,
         k: int = 5,
     ):
-        self._feature_store = feature_store
+        self._feature_store: FeatureStore = feature_store
         self._matcher_fn = matcher_fn
         self._min_inliers = min_inliers
         self._k = max(k, feature_store.size)  # K >= feature_store.size
@@ -102,7 +103,7 @@ class ViewGraph:
 
     # TODO: DRY: merge the two find_* funcs? Keep in case debugging reveals design flaw! Merge when all checks out!
     # FIXME: Inefficient to re-sort edges on every call
-    def find_initial_view_pair(self) -> tuple[ViewData, ViewData, KPMatches] | None:
+    def find_initial_view_pair(self) -> tuple[ViewData, ViewData, NDArrayInt] | None:
         # Try to validate the most visually similar pair of views
         for u, v, edge_data in sorted(self.unregistered_edges, key=lambda e: e[-1]["distance"]):
             view_u, view_v = self._feature_store[u], self._feature_store[v]
@@ -115,13 +116,13 @@ class ViewGraph:
 
             # If match validation fails, continue w/ next best candidate view pair
             if matches_ok:
-                return view_u, view_v, matches
+                return view_u, view_v, matches  # ty:ignore[invalid-return-type]
 
         # In this case, we can't even start the reconstruction
         logger.critical("Failed to find initial view pair!")
         return None
 
-    def find_next_best_view_pair(self) -> tuple[ViewData, ViewData, KPMatches] | None:
+    def find_next_best_view_pair(self) -> tuple[ViewData, ViewData, NDArrayInt] | None:
         # Iterate from the most similar pair of views: edge connects registered and unregistered view
         for u, v, edge_data in sorted(self.connecting_edges, key=lambda e: e[-1]["distance"]):
             view_u, view_v = self._feature_store[u], self._feature_store[v]
@@ -134,9 +135,9 @@ class ViewGraph:
 
             # if match-validate fails, continue w/ next best candidate view pair
             if matches_ok:
-                # TODO: THINK: could this be a generator? Would likely not respect updated connecting_edges: => add filter for registered edges in the loop
+                # TODO: Could this be a generator? Would likely not respect updated connecting_edges: => add filter for registered edges in the loop
                 # BUT: even if we filter out registered edges, we might skip; with every registered edge more views become registered and .connecting_edges will change
-                return view_u, view_v, matches
+                return view_u, view_v, matches  # ty:ignore[invalid-return-type]
 
         # Exhausting connecting edges means:
         # (a) all nodes (views) in the graph component are registered (good), or
@@ -150,7 +151,7 @@ class ViewGraph:
         self._graph.nodes[u]["registered"] = True
         self._graph.nodes[v]["registered"] = True
 
-    def _match_and_validate(self, img_from: ViewData, img_to: ViewData) -> tuple[bool, int | None, KPMatches | None]:
+    def _match_and_validate(self, img_from: ViewData, img_to: ViewData) -> tuple[bool, int | None, NDArrayInt | None]:
         """Computes keypoint matches and performs geometric validation.
 
         Matches are validated geometrically by checking for existance of essential matrix.
