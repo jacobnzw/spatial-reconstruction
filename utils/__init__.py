@@ -14,7 +14,7 @@ from .camera import CameraModel, CameraType, NDArrayFloat, NDArrayInt, calibrate
 from .features import FeatureExtractor, FeatureStore, KPKey, make_keypoint_matcher
 
 # View graph module
-from .graph import ViewEdge, ViewGraph, construct_view_graph, has_overlap
+from .graph import ViewGraph
 
 # I/O module
 from .io import ReconIO
