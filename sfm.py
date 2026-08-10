@@ -1,4 +1,4 @@
-from typing import Callable, Literal
+from typing import Literal
 
 import cv2 as cv
 import numpy as np
@@ -13,16 +13,16 @@ from utils import (
     FeatureExtractor,
     FeatureStore,
     FrameLoader,
+    KeypointMatcher,
+    MatcherResult,
     NDArrayFloat,
     NDArrayInt,
     PointCloud,
     ReconIO,
     TrackManager,
     ViewData,
-    ViewEdge,
-    construct_view_graph,
+    ViewGraph,
     log_wandb_artifacts,
-    make_keypoint_matcher,
 )
 
 
@@ -31,8 +31,7 @@ def bootstrap_from_two_views(
     img_1: ViewData,
     track_manager: TrackManager,
     point_cloud: PointCloud,
-    match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]] | None = None,
-    matches: NDArrayInt | None = None,
+    matcher_result: MatcherResult,
 ):
     """Computes two-view baseline estimate of 3D points and camera poses.
 
@@ -49,10 +48,7 @@ def bootstrap_from_two_views(
         img_1: Second ImageData object to match against img_0
         track_manager: TrackManager instance for managing keypoint tracks
         point_cloud: PointCloud instance for storing triangulated 3D points
-        match_fn: Callable that takes two ImageData objects and returns a tuple of
-                  (descriptors: NDArrayFloat, matches: NDArrayInt) where matches
-                  contains pairs of keypoint indices [kp_0_idx, kp_1_idx]
-        matches: Matches between keypoints in views in img_0 and img_1.
+        matcher_result: MatcherResult containing matches between img_0 and img_1
 
     Returns:
         None. Modifies in-place: updates track_manager with new tracks, point_cloud
@@ -65,15 +61,11 @@ def bootstrap_from_two_views(
           triangulated are included
         - Camera intrinsics are extracted from img_0 and assumed to be identical for img_1
     """
-    if matches is None and match_fn is None:
-        raise ValueError("One of matches or match_fn must be supplied.")
-
-    # Match key points (via descriptors) if not given
-    if matches is None:
-        logger.debug(f"baseline: Computing matches from {img_0.idx}:{img_0.path.name} to {img_1.idx}:{img_1.path.name}")
-        _, matches = match_fn(img_0, img_1)  # ty:ignore[call-non-callable]
+    if not matcher_result:
+        raise ValueError("Bad matcher result!")
 
     # extract corresponding pixel coordinates
+    matches = matcher_result.matches
     pts0, pts1 = img_0.kp[matches[:, 0]], img_1.kp[matches[:, 1]]  # ty:ignore[not-subscriptable]
     # FIXME: undistorted keypoints cause mess on statue_orbit
     # pts0, pts1 = img_0.get_undistorted_keypoints(), img_1.get_undistorted_keypoints()
@@ -97,7 +89,7 @@ def bootstrap_from_two_views(
     # Homogeneous --> Euclidean; filter out outliers
     inliers = mask.ravel() > 0
     points_3d = (points_4d[:3, inliers] / points_4d[3, inliers]).T
-    matches = matches[inliers]
+    matches = matches[inliers]  # ty:ignore[not-subscriptable]
 
     # Create new tracks for the triangulated 3D object points
     # first create tracks for KPs in img_0, then add KPs in img_1 that match to KPs in img_0
@@ -135,7 +127,7 @@ def _estimate_pose_pnp(world_points: NDArrayFloat, image_points: NDArrayFloat, i
         flags=cv.SOLVEPNP_EPNP,
     )
 
-    n_inliers = len(inliers)
+    n_inliers = len(inliers) if inliers is not None else 0
     ratio_inlier = n_inliers / len(world_points)
 
     if not pnp_ok:
@@ -172,6 +164,7 @@ def _triangulate_new_points(
 
     # If undistortion applied during image loading, K is the corrected camera matrix for the undistorted image
     K = img_ref.camera_model.get_camera_matrix()  # assume same intrinsics for both images
+    # TODO: get this from MatcherResult; don't recompute there; ACTUALLY this is geom. val. on untracked_matches
     _, mask = cv.findEssentialMat(pts_ref, pts_new, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
     inliers = mask.ravel() > 0
 
@@ -203,10 +196,9 @@ def add_view(
     img_ref: ViewData,
     track_manager: TrackManager,
     point_cloud: PointCloud,
-    match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]] | None = None,
-    matches: NDArrayInt | None = None,
+    matcher_result: MatcherResult,
     depth_threshold: float = 0.0,
-):
+) -> tuple[int, float, float]:
     """Adds 3D points from new view using PnP and triangulation.
 
     img_ref is reference image for which we already have 2D-3D pt correspondence in track_manager
@@ -216,24 +208,17 @@ def add_view(
         img_ref: Reference image with known pose.
         track_manager: Track manager. Required parameter.
         point_cloud: Point cloud. Required parameter.
-        match_fn: Keypoint matcher function. Required parameter.
-        matches: Matches between keypoints in views in img_0 and img_1.
+        matcher_result: Matcher result dataclass.
         depth_threshold: Triangulated points closer than this in either camera (ref or new) are filtered out.
     """
-    if matches is None and match_fn is None:
-        raise ValueError("One of matches or match_fn must be supplied.")
-
-    # Compute KP matches from ref image to new image if not supplied
-    if matches is None:
-        logger.debug(
-            f"add_view: Computing matches from {img_ref.idx}:{img_ref.path.name} to {img_new.idx}:{img_new.path.name}"
-        )
-        _, matches = match_fn(img_ref, img_new)  # ty:ignore[call-non-callable]
+    if not matcher_result:
+        raise ValueError("Bad matcher result!")
 
     # add new img KPs, that are matched to from tracked ref img KPs, to current tracks (3D pts)
     # returns track_ids and (un)tracked KPs in the new image; track_ids used as indices to point cloud
     track_ids_seen, tracked_matches, untracked_matches = track_manager.get_track_observations_for_view(
-        img_ref.idx, matches
+        img_ref.idx,
+        matcher_result.matches,  # ty:ignore[invalid-argument-type]
     )
     kp_idx_seen = tracked_matches[:, 1]
 
@@ -264,46 +249,31 @@ def add_view(
     return n_pnp_inliers, ratio_pnp_inlier, ratio_triang_depth_filtered
 
 
-def pick_best_image_pair(
-    edges: list[ViewEdge], store: FeatureStore, R: set[int] | None = None
-) -> tuple[ViewData, ViewData, ViewEdge]:
-    """Pick best image pair from list of edges.
-
-    Assumption: ImageData.idx matches the node indexes, which it should if the graph was constructed correctly.
-    """
-    best_edge = max(edges, key=lambda e: e.weight)
-    if R:  # if R is not None or not empty
-        idx_ref, idx_new = (best_edge.i, best_edge.j) if best_edge.i in R else (best_edge.j, best_edge.i)
-        return store[idx_ref], store[idx_new], best_edge
-    return store[best_edge.i], store[best_edge.j], best_edge
-
-
 def process_graph_component(
-    edges: list[ViewEdge],
-    store: FeatureStore,
+    view_graph: ViewGraph,
     track_manager: TrackManager,
     point_cloud: PointCloud,
-    match_fn: Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]],
+    kp_matcher: KeypointMatcher,
     depth_threshold: float,
-) -> tuple[list[ViewEdge], set[int], wandb.Table]:
-    if not edges:
-        raise ValueError(f"No view graph edges present! {edges=}")
-    edges = edges.copy()
+) -> wandb.Table:
 
     # Pick strongest baseline:
     # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
-    img_0, img_1, best_edge = pick_best_image_pair(edges, store)
-    logger.info(
-        f"Establishing baseline ({best_edge.weight} matches) from: {img_0.idx}:{img_0.path.name} and {img_1.idx}:{img_1.path.name}"
-    )
-    # matches -> E -> pose -> triangulation
-    bootstrap_from_two_views(img_0, img_1, track_manager, point_cloud, matches=best_edge.matches_ij)
+    view_pair_status = view_graph.find_initial_view_pair()
 
-    R = set((img_0.idx, img_1.idx))
-    U = {node for e in edges for node in (e.i, e.j)}
-    U.difference_update(R)
-    leftover_edges = edges.copy()
-    leftover_edges.remove(best_edge)
+    if view_pair_status is None:
+        raise ValueError("Couldn't find initial view pair!")
+
+    img_0, img_1, matcher_result = view_pair_status
+
+    logger.info(
+        f"Initializing reconstruction w/ {len(matcher_result)} matches from: "
+        f"{img_0.idx}:{img_0.path.name} and {img_1.idx}:{img_1.path.name}"
+    )
+
+    # matches -> E -> pose -> triangulation
+    bootstrap_from_two_views(img_0, img_1, track_manager, point_cloud, matcher_result)
+    view_graph.mark_edge_registered(img_0.idx, img_1.idx)
 
     log_table = wandb.Table(
         columns=[
@@ -320,24 +290,22 @@ def process_graph_component(
         ]
     )
 
+    # Process all remaining views one by one
     while True:
-        # find unregistered images connected to the registered ones
-        # "connected" == "sharing matched keypoints"
-        candidate_edges = [e for e in edges if (e.i in R and e.j in U) or (e.j in R and e.i in U)]
+        view_pair_status = view_graph.find_next_best_view_pair()
 
-        if not candidate_edges:
-            # U could still be non-empty (disconnected graph)
-            logger.info(f"No more candidate edges. Exiting. {len(U)} images left.")
+        if view_pair_status is None:
             break
 
-        img_ref, img_new, best_edge = pick_best_image_pair(candidate_edges, store, R)
+        img_new, img_ref, matcher_result = view_pair_status
+
         logger.info(
             (
                 f"Adding view {img_new.idx}:{img_new.path.name} w/ ref {img_ref.idx}:{img_ref.path.name}"
-                f" (matches: {best_edge.weight})"
+                f" (matches: {len(matcher_result)})"
             )
         )
-        logger.debug(f"{img_ref.idx=} {img_new.idx=} {best_edge.i=} {best_edge.j=} {best_edge.matches_ij.shape=}.")
+        logger.debug(f"{img_ref.idx=} {img_new.idx=} {matcher_result.matches.shape=}.")
 
         try:
             # matches --> 2D-3D pairs --PnP--> pose -> triangulate untracked
@@ -346,29 +314,31 @@ def process_graph_component(
                 img_ref,
                 track_manager,
                 point_cloud,
-                matches=best_edge.get_matches(img_ref.idx, img_new.idx),
+                matcher_result,
                 depth_threshold=depth_threshold,
             )
             add_success = True
+            view_graph.mark_edge_registered(img_new.idx, img_ref.idx)
         except ValueError as e:
             # failed to add new view: indicate the (img_ref, img_new) pair as bad and move on
             # best_edge was the best chance to add img_new (don't consider next best edge w/ img_new)
-            U.remove(img_new.idx)
-            leftover_edges.remove(best_edge)
 
             logger.warning(
-                f"Failed to add view: {img_new.idx}:{img_new.path.name} with ref: {img_ref.idx}:{img_ref.path.name} due to {e}"
+                f"Failed to add view: {img_new.idx}:{img_new.path.name} w/ ref: {img_ref.idx}:{img_ref.path.name} due to {e}"
             )
 
             n_pnp_inliers, ratio_pnp_inlier, ratio_triang_depth_filtered = np.nan, np.nan, np.nan
             add_success = False
+            view_graph.mark_edge_failed(img_new.idx, img_ref.idx)
 
-        baseline = np.linalg.norm((img_ref.cam_T_world * img_new.world_T_cam).translation)
+        baseline = (
+            np.linalg.norm((img_ref.cam_T_world * img_new.world_T_cam).translation) if img_new.has_pose else np.nan
+        )
         log_table.add_data(
             img_new.idx,
             img_ref.idx,
             add_success,
-            best_edge.weight,
+            len(matcher_result),  # NOTE: this is the number of matches, not the number of geo valid matches (inliers)
             n_pnp_inliers,
             ratio_pnp_inlier,
             ratio_triang_depth_filtered,
@@ -380,18 +350,9 @@ def process_graph_component(
         if not add_success:
             continue
 
-        # move currently processed image/node index from U to R
-        R.add(img_new.idx)
-        U.remove(img_new.idx)
-        leftover_edges.remove(best_edge)
+    # TODO: report registered, unregistered views, failed edges, remaining edges
 
-    # Filter out any remaining edges that connect registered views/images
-    leftover_edges = [e for e in leftover_edges if not (e.i in R and e.j in R)]
-    logger.debug(f"{R = }")
-    logger.debug(f"{U = }")
-    logger.debug(f"leftover_edges = {[(e.i, e.j) for e in leftover_edges]}")
-
-    return leftover_edges, U, log_table
+    return log_table
 
 
 Dataset = Literal["corridor", "statue_orbit"]
@@ -437,26 +398,16 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     point_cloud = PointCloud()
     exporter = ReconIO(point_cloud, image_store, track_manager)
 
-    # Create keypoint matcher with appropriate parameters
-    kp_matcher = make_keypoint_matcher(cfg.matcher)
-
     logger.info("Constructing view graph...")
-    view_graph = construct_view_graph(image_store, kp_matcher, min_inliers=cfg.min_inliers)
+    kp_matcher = KeypointMatcher(cfg.matcher)
+    view_graph = ViewGraph(image_store, kp_matcher, k=5)  # TODO: Add k to config
 
-    # Process the first component
     logger.info("Processing graph component...")
-    _, _, log_view_table = process_graph_component(
-        view_graph.edges, image_store, track_manager, point_cloud, kp_matcher, cfg.depth_threshold
-    )
+    log_view_table = process_graph_component(view_graph, track_manager, point_cloud, kp_matcher, cfg.depth_threshold)
 
-    # Process all connected components of the view graph
-    # Each component will lead to a point cloud with its own reference frame
-    # and thus appear disconnected from the others
-    # leftover_edges = view_graph.edges.copy()
-    # while True:
-    #     leftover_edges, U = process_graph_component(leftover_edges, image_store, track_manager, point_cloud, kp_matcher)
-    #     if not U:
-    #         break
+    # TODO: Process all connected components of the view graph. nx.connected_components
+    # Each component will lead to a point cloud with its own reference frame and
+    # thus appear disconnected from the others
 
     logger.info(f"Saving initial reconstruction to {out_dir / f'{basename}.ply'}...")
     exporter.save_ply(filename=out_dir / f"{basename}.ply")

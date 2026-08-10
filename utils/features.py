@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Iterable, Literal
+from typing import Iterable, Literal
 
 import cv2 as cv
 import kornia as K
@@ -11,7 +11,6 @@ from loguru import logger
 from numpy.typing import NDArray
 
 from .camera import NDArrayFloat, NDArrayInt
-from .embedding import ViewEmbedder
 from .tracks import KPKey
 from .view import FrameLoader, ViewData
 
@@ -20,6 +19,8 @@ device = K.core.utils.get_cuda_or_mps_device_if_available()
 
 
 FeatureType = Literal["sift", "disk"]
+MatcherType = Literal["bf", "lg"]
+KPMatches = tuple[NDArrayFloat, NDArrayInt]
 
 
 @dataclass
@@ -31,35 +32,13 @@ class FeatureExtractorConfig:
     """Maximum number of features to extract per image"""
 
 
-MatcherType = Literal["bf", "lg"]
-
-
-@dataclass
-class MatcherConfig:
-    type: MatcherType = "bf"
-    """Keypoint matching method: 'bf' (brute-force) or 'lg' (lightglue)"""
-
-    bf_lowe_ratio: float = 0.75
-    """Lowe's ratio test threshold for BF matcher"""
-
-    bf_cross_check: bool = True
-    """Whether to use cross-checking for BF matcher"""
-
-    lg_min_conf: float = 0.1
-    """LightGlue matches with confidence below this threshold are filtered out"""
-
-
 class FeatureExtractor:
     """Feature extractor class that curries the extraction function based on config."""
 
+    # TODO: FeatureExtractor could accept any type that has .iter_frames() -> Iterable[ViewData] via typing Protocol
     def __init__(self, cfg: FeatureExtractorConfig, loader: FrameLoader, extract_embeddings=False):  # noqa: F821
         self.loader = loader
         self.num_features = cfg.num
-
-        # NOTE: For now embedder dropped here as it is a kind of feature extractor, but it could be separated if needed
-        # TODO: FeatureExtractor could accept any type that has .iter_frames() -> Iterable[ViewData] via typing Protocol
-        if extract_embeddings:
-            self._embedder = ViewEmbedder()  # Initialize the embedding model
 
         if cfg.type == "sift":
             sift = cv.SIFT_create(nfeatures=cfg.num)  # ty:ignore[unresolved-attribute]
@@ -72,12 +51,7 @@ class FeatureExtractor:
 
     def __call__(self, frame: ViewData) -> ViewData:
         """Extract features from a single frame using the curried extraction function."""
-        frame = self._extract_fn(frame)
-
-        if hasattr(self, "_embedder"):
-            frame = self._embedder(frame)
-
-        return frame
+        return self._extract_fn(frame)
 
     def _extract_sift(self, frame: ViewData, sift: cv.SIFT) -> ViewData:
         """Extract SIFT features from a single image."""
@@ -183,95 +157,195 @@ class FeatureStore:
         """Yield images for which we have a pose estimate."""
         yield from (img_data for img_data in self._store.values() if img_data.has_pose)
 
-
-def _match_lightglue(
-    img_from: ViewData,
-    img_to: ViewData,
-    lg_matcher: KF.LightGlueMatcher,
-    min_conf: float | None = None,
-) -> tuple[NDArrayFloat, NDArrayInt]:
-    """Match descriptors using LightGlue matcher.
-
-    Args:
-        img_from: Query image.
-        img_to: Train image.
-        lg_matcher: kornia.feature.LightGlueMatcher object.
-        min_conf: Minimum confidence threshold for match preservation.
-
-    Returns:
-        Tuple of (distances, matches):
-            - distances: Array of match distances (N,).
-            - matches: Array of match indices (N, 2) where each row is (queryIdx, trainIdx).
-    """
-    kp_from = torch.from_numpy(img_from.kp).to(device)
-    des_from = torch.from_numpy(img_from.des).to(device)
-    kp_to = torch.from_numpy(img_to.kp).to(device)
-    des_to = torch.from_numpy(img_to.des).to(device)
-
-    lafs_from = KF.laf_from_center_scale_ori(kp_from[None], torch.ones(1, len(kp_from), 1, 1, device=device))
-    lafs_to = KF.laf_from_center_scale_ori(kp_to[None], torch.ones(1, len(kp_to), 1, 1, device=device))
-
-    with torch.inference_mode():
-        # LG matcher returns confidence scores instead of distances
-        confs, idxs = lg_matcher(des_from, des_to, lafs_from, lafs_to)
-
-        if min_conf:  # not None and > 0.0
-            if min_conf < 0.0 or min_conf > 1.0:
-                raise ValueError(f"min_conf must be in [0, 1], got {min_conf}")
-            mask = (confs > min_conf).squeeze()
-            confs, idxs = confs[mask], idxs[mask]
-
-        # min_conf=0.0 is valid (retain all matches)
-        return confs.detach().cpu().numpy(), idxs.detach().cpu().numpy()
+    # TODO: Unify iter_* naming across FrameLoader, FeatureExtractor, FeatureStore
+    def iter_views(self) -> Iterable[ViewData]:
+        """Yield all images in the store."""
+        yield from self._store.values()
 
 
-def _match_brute_force(
-    img_from: ViewData,
-    img_to: ViewData,
-    lowe_ratio: float | None = None,
-    cross_check: bool = False,
-) -> tuple[NDArrayFloat, NDArrayInt]:
-    """Match descriptors using brute-force matcher with optional Lowe's ratio test.
+@dataclass
+class MatcherConfig:
+    type: MatcherType = "bf"
+    """Keypoint matching method: 'bf' (brute-force) or 'lg' (lightglue)"""
 
-    Args:
-        img_from: Query image.
-        img_to: Train image.
-        lowe_ratio: Ratio threshold for Lowe's ratio test. If None, no filtering is applied.
-        cross_check: If True, only keep matches that are mutual best matches.
+    min_inliers: int = 50
+    """Minimum number of inliers to consider two views as overlapping (for geometric validation)"""
 
-    Returns:
-        Tuple of (distances, matches):
-            - distances: Array of match distances (N,).
-            - matches: Array of match indices (N, 2) where each row is (queryIdx, trainIdx).
+    bf_lowe_ratio: float = 0.75
+    """Lowe's ratio test threshold for BF matcher"""
 
-    Note:
-        Using crossCheck=False means that multiple KPs in img_from can match to the same KP in img_to. Consequently,
-        this might result in one KP in img_to triangulating to multiple 3D points.
-        Using crossCheck=True would remove this ambiguity, but might also remove valid matches.
-    """
-    des_from, des_to = img_from.des, img_to.des
-    bf = cv.BFMatcher(cv.NORM_L2, crossCheck=cross_check)
-    if cross_check:
-        matches = bf.match(des_from, des_to)  # ty:ignore[no-matching-overload]
-    else:
-        matches = bf.knnMatch(des_from, des_to, k=2)  # ty:ignore[no-matching-overload]
-        if lowe_ratio:
-            matches = [m for m, n in matches if m.distance < lowe_ratio * n.distance]
+    bf_cross_check: bool = True
+    """Whether to use cross-checking for BF matcher"""
+
+    lg_min_conf: float = 0.1
+    """LightGlue matches with confidence below this threshold are filtered out"""
+
+
+@dataclass
+class MatcherResult:  # TODO: harmonize naming with KeypointMatcher, MatcherConfig
+    scores: NDArrayFloat | None = None
+    """Scores for each match. Either confidences or distances based on the chosen matcher type."""
+
+    matches: NDArrayInt | None = None
+    """Matches in the form of (N, 2) int array where each row is [queryIdx, trainIdx]."""
+
+    inlier_mask: NDArrayInt | None = None
+    """Mask for matches that passed geometric validation."""
+
+    def __bool__(self) -> bool:
+        return self.matches is not None and self.scores is not None
+
+    def __len__(self) -> int:
+        return len(self.matches)
+
+    @property
+    def success(self) -> bool:
+        return self.__bool__()
+
+    @property
+    def n_inliers(self) -> int | None:
+        if self.inlier_mask is None:
+            return None
+        return (self.inlier_mask.ravel() > 0).sum()
+
+    @property
+    def geometrically_valid_matches(self) -> NDArrayInt | None:
+        if self.matches is None or self.inlier_mask is None:
+            return None
+        return self.matches[self.inlier_mask.ravel() > 0]
+
+
+class KeypointMatcher:
+    def __init__(self, cfg: MatcherConfig):
+        self.cfg = cfg
+
+        if cfg.type == "bf":
+            self._matcher_fn = partial(
+                self._match_brute_force, lowe_ratio=cfg.bf_lowe_ratio, cross_check=cfg.bf_cross_check
+            )
+        if cfg.type == "lg":
+            lightglue_matcher = KF.LightGlueMatcher("disk").eval().to(device)
+            self._matcher_fn = partial(self._match_lightglue, min_conf=cfg.lg_min_conf, lg_matcher=lightglue_matcher)
         else:
-            matches = [m for m, n in matches]
+            ValueError(f"Unknown matcher type {cfg.type=} in config!")
 
-    dist = np.array([m.distance for m in matches])  # (N,)
-    return dist, np.array([(m.queryIdx, m.trainIdx) for m in matches])  # (N, 2)
+    def __call__(self, img_from: ViewData, img_to: ViewData) -> MatcherResult:
+        return self.match_and_validate(img_from, img_to)
 
+    def _match_lightglue(
+        self,
+        img_from: ViewData,
+        img_to: ViewData,
+        lg_matcher: KF.LightGlueMatcher,
+        min_conf: float | None = None,
+    ) -> tuple[NDArrayFloat, NDArrayInt]:
+        """Match descriptors using LightGlue matcher.
 
-def make_keypoint_matcher(
-    cfg: MatcherConfig,
-) -> Callable[[ViewData, ViewData], tuple[NDArrayFloat, NDArrayInt]]:
-    """Factory for keypoint matchers."""
-    if cfg.type == "bf":
-        return partial(_match_brute_force, lowe_ratio=cfg.bf_lowe_ratio, cross_check=cfg.bf_cross_check)
-    if cfg.type == "lg":
-        lightglue_matcher = KF.LightGlueMatcher("disk").eval().to(device)
-        return partial(_match_lightglue, min_conf=cfg.lg_min_conf, lg_matcher=lightglue_matcher)
-    else:
-        ValueError(f"Unknown matcher type {cfg.type=} in config!")
+        Args:
+            img_from: Query image.
+            img_to: Train image.
+            lg_matcher: kornia.feature.LightGlueMatcher object.
+            min_conf: Minimum confidence threshold for match preservation.
+
+        Returns:
+            Tuple of (distances, matches):
+                - distances: Array of match distances (N,).
+                - matches: Array of match indices (N, 2) where each row is (queryIdx, trainIdx).
+        """
+        kp_from = torch.from_numpy(img_from.kp).to(device)
+        des_from = torch.from_numpy(img_from.des).to(device)
+        kp_to = torch.from_numpy(img_to.kp).to(device)
+        des_to = torch.from_numpy(img_to.des).to(device)
+
+        lafs_from = KF.laf_from_center_scale_ori(kp_from[None], torch.ones(1, len(kp_from), 1, 1, device=device))
+        lafs_to = KF.laf_from_center_scale_ori(kp_to[None], torch.ones(1, len(kp_to), 1, 1, device=device))
+
+        with torch.inference_mode():
+            # LG matcher returns confidence scores instead of distances
+            confs, idxs = lg_matcher(des_from, des_to, lafs_from, lafs_to)
+
+            if min_conf:  # not None and > 0.0
+                if min_conf < 0.0 or min_conf > 1.0:
+                    raise ValueError(f"min_conf must be in [0, 1], got {min_conf}")
+                mask = (confs > min_conf).squeeze()
+                confs, idxs = confs[mask], idxs[mask]
+
+            # min_conf=0.0 is valid (retain all matches)
+            return confs.detach().cpu().numpy(), idxs.detach().cpu().numpy()
+
+    def _match_brute_force(
+        self,
+        img_from: ViewData,
+        img_to: ViewData,
+        lowe_ratio: float | None = None,
+        cross_check: bool = False,
+    ) -> tuple[NDArrayFloat, NDArrayInt]:
+        """Match descriptors using brute-force matcher with optional Lowe's ratio test.
+
+        Args:
+            img_from: Query image.
+            img_to: Train image.
+            lowe_ratio: Ratio threshold for Lowe's ratio test. If None, no filtering is applied.
+            cross_check: If True, only keep matches that are mutual best matches.
+
+        Returns:
+            Tuple of (distances, matches):
+                - distances: Array of match distances (N,).
+                - matches: Array of match indices (N, 2) where each row is (queryIdx, trainIdx).
+
+        Note:
+            Using crossCheck=False means that multiple KPs in img_from can match to the same KP in img_to. Consequently,
+            this might result in one KP in img_to triangulating to multiple 3D points.
+            Using crossCheck=True would remove this ambiguity, but might also remove valid matches.
+        """
+        des_from, des_to = img_from.des, img_to.des
+        bf = cv.BFMatcher(cv.NORM_L2, crossCheck=cross_check)
+        if cross_check:
+            matches = bf.match(des_from, des_to)  # ty:ignore[no-matching-overload]
+        else:
+            matches = bf.knnMatch(des_from, des_to, k=2)  # ty:ignore[no-matching-overload]
+            if lowe_ratio:
+                matches = [m for m, n in matches if m.distance < lowe_ratio * n.distance]
+            else:
+                matches = [m for m, n in matches]
+
+        dist = np.array([m.distance for m in matches])  # (N,)
+        return dist, np.array([(m.queryIdx, m.trainIdx) for m in matches])  # (N, 2)
+
+    def match_and_validate(self, img_from: ViewData, img_to: ViewData) -> MatcherResult:
+        """Computes keypoint matches and performs geometric validation.
+
+        Matches are validated geometrically by checking for existance of essential matrix.
+
+        Args:
+            img_from: Source image.
+            img_to: Target image.
+
+        Returns:
+            MatcherResult object containing matches, scores, and inlier mask.
+        """
+
+        scores, matches = self._matcher_fn(img_from, img_to)
+        if len(matches) < self.cfg.min_inliers:
+            logger.debug(
+                f"Not enough matches for views ({img_from.idx}, {img_to.idx}) {len(matches)} < {self.cfg.min_inliers}"
+            )
+            return MatcherResult()
+
+        # Geometric validation: rejects matches that cannot arise from a rigid 3D scene
+        # [:, 0] = queryIdx; [:, 1] = trainIdx
+        # TODO: repeated in bootstrap_from_two_views: save E, mask in ViewEdge?;
+        pts1, pts2 = img_from.kp[matches[:, 0]], img_to.kp[matches[:, 1]]  # ty:ignore[not-subscriptable]
+
+        K = img_from.camera_model.get_camera_matrix()
+        # NOTE: RANSAC sensitive to point shuffling, due to its randomness => slightly different inliers
+        E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.RANSAC, threshold=1.0)
+
+        if E is None:
+            logger.debug(f"Failed geometric match validation for views ({img_from.idx}, {img_to.idx})")
+            return MatcherResult()
+
+        if int((mask.ravel() > 0).sum()) < self.cfg.min_inliers:
+            return MatcherResult()
+
+        return MatcherResult(scores, matches, mask)

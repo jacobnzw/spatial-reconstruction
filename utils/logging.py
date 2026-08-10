@@ -6,7 +6,7 @@ import wandb
 
 # FIXME: only for type hints: circular import SfMConfig -> utils.__init__ -> .logging;
 # from config import SfMConfig
-from utils import TrackManager
+from .tracks import TrackManager
 
 
 def build_track_length_histogram(track_lengths: list[int]):
