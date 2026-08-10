@@ -350,12 +350,7 @@ def process_graph_component(
         if not add_success:
             continue
 
-    # Filter out any remaining edges that connect registered views/images
     # TODO: report registered, unregistered views, failed edges, remaining edges
-    # leftover_edges = [e for e in leftover_edges if not (e.i in R and e.j in R)]
-    # logger.debug(f"{R = }")
-    # logger.debug(f"{U = }")
-    # logger.debug(f"leftover_edges = {[(e.i, e.j) for e in leftover_edges]}")
 
     return log_table
 
@@ -410,14 +405,9 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     logger.info("Processing graph component...")
     log_view_table = process_graph_component(view_graph, track_manager, point_cloud, kp_matcher, cfg.depth_threshold)
 
-    # Process all connected components of the view graph
-    # Each component will lead to a point cloud with its own reference frame
-    # and thus appear disconnected from the others
-    # leftover_edges = view_graph.edges.copy()
-    # while True:
-    #     leftover_edges, U = process_graph_component(leftover_edges, image_store, track_manager, point_cloud, kp_matcher)
-    #     if not U:
-    #         break
+    # TODO: Process all connected components of the view graph. nx.connected_components
+    # Each component will lead to a point cloud with its own reference frame and
+    # thus appear disconnected from the others
 
     logger.info(f"Saving initial reconstruction to {out_dir / f'{basename}.ply'}...")
     exporter.save_ply(filename=out_dir / f"{basename}.ply")
