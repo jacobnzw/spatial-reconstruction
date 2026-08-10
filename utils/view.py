@@ -32,12 +32,13 @@ class FrameLoaderConfig:
     def img_paths(self) -> list[Path]:
         """List of images in the data_path directory."""
         IMG_FORMATS = (".png", ".jpg", ".jpeg")
-        filepaths = [p for p in Path(self.data_path).glob("*") if p.suffix.lower() in IMG_FORMATS]
+        filepaths = [p for p in Path(self.data_path).glob("*") if p.suffix.lower() in IMG_FORMATS].sort()
 
         if not filepaths:
-            logger.warning(f"No images found in {self.img_dir}")
+            logger.critical(f"No images found in {self.img_dir}!")
+            raise ValueError(f"No images found in {self.img_dir}!")
 
-        return sorted(filepaths)
+        return filepaths
 
     @property
     def video_path(self) -> Path | None:
