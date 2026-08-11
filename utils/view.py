@@ -151,6 +151,12 @@ class ViewData:
         K = self.camera_model.get_camera_matrix(rescaled=True)
         return K @ self.pose_matrix
 
+    @property
+    def keypoints_as_opencv(self) -> Iterable[cv.KeyPoint] | None:
+        """Return keypoints in opencv format."""
+        if self.kp is not None:
+            return [cv.KeyPoint(float(x), float(y), 1.0) for x, y in self.kp]
+
     def set_extrinsics(self, R, t):
         """Set camera extrinsics, i.e. cam_T_world."""
         rotation = Rotation.from_matrix(R)
@@ -240,7 +246,6 @@ class FrameLoader:
         self.max_frames = cfg.max_read_frames
         self.offset_frames = cfg.offset_frames if cfg.offset_frames is not None else 0
         self.max_size = cfg.max_size
-        self.scale = 1.0
         self.camera_model = cfg.camera_model
         self.undistort = cfg.undistort
         self.video_path = cfg.video_path
@@ -285,18 +290,20 @@ class FrameLoader:
                     type=CameraType.PINHOLE, K=K_undistorted, dist=np.zeros(len(self.camera_model.dist))
                 )
 
+            # TODO: extract resolution for each loaded image, camera_model.set_resolution(h, w, max_size);
+            # camera_model.scale returns
+
             # Compute scale based on first image
             # Assumption: all images have the same resolution and thus the same scale factor applies to all
-            if idx == self.offset_frames and self.max_size is not None:
-                h, w = img.shape[:2]
-                self.scale = self.max_size / max(h, w) if max(h, w) > self.max_size else 1.0
+            # if idx == self.offset_frames and self.max_size is not None:
+            # Set camera resolution
+            h, w = img.shape[:2]
+            camera_model.set_resolution(h, w, self.max_size)
 
             # Apply scaling if needed
-            if self.scale < 1.0:
-                h, w = img.shape[:2]
-                new_w, new_h = int(w * self.scale), int(h * self.scale)
+            if camera_model.scale < 1.0:
+                new_h, new_w = camera_model.get_resolution(rescaled=True)
                 img = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
-                camera_model.scale = self.scale
                 # NOTE: camera_model.get_camera_matrix() will handle rescaling K based on self.scale
 
             yield ViewData(idx, path, img, camera_model=camera_model)
