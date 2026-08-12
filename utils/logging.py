@@ -14,6 +14,7 @@ from .pointcloud import PointCloud
 # FIXME: only for type hints: circular import SfMConfig -> utils.__init__ -> .logging;
 # from config import SfMConfig
 from .tracks import TrackManager
+from .view import ViewData
 
 
 class ReRunLogger:
@@ -38,12 +39,15 @@ class ReRunLogger:
                 name="3D",
                 origin="/",
                 line_grid=False,  # There's no clearly defined ground plane.
+                contents=["/camera/**", "/points/**"],  # Filter out /view/**, it doesn't require a pinhole ancestor
             ),
             rrb.Horizontal(
                 rrb.Spatial2DView(name="Camera", origin="/camera/image"),
                 rrb.Spatial2DView(name="KP Matches (ref to new)", origin="/view/matches"),
-                rrb.TimeSeriesView(name="Triangulation Pairs", origin="/view/pairs"),
-                # rrb.TimeSeriesView()
+                rrb.Vertical(
+                    rrb.TimeSeriesView(name="Triangulation Pairs", origin="/view/pairs"),
+                    rrb.TimeSeriesView(name="Reprojection Error (Mean)", origin="/view/reprojection_error"),
+                ),
             ),
             row_shares=[3, 2],
         )
@@ -53,6 +57,7 @@ class ReRunLogger:
         rr.log("camera", rr.ViewCoordinates.RDF)  # [x, y, z]  <==> [Right, Down, Forward]
         rr.log("view/pairs/ref", rr.SeriesPoints(colors=[255, 0, 0], names=["Ref View Index"]))
         rr.log("view/pairs/new", rr.SeriesPoints(colors=[0, 255, 0], names=["New View Index"]))
+        rr.log("view/pairs/reprojection_error", rr.SeriesLines(colors=[0, 0, 255], names=["Reprojection Error (Mean)"]))
 
     def _set_step(self):
         rr.set_time("step", sequence=self.step)
@@ -88,8 +93,20 @@ class ReRunLogger:
         )
         rr.log("camera/image", rr.Image(view.pixels, color_model="RGB"))
 
-        kp_indices = list(map(lambda x: x[1], self.track_manager.get_triangulated_view_kp_keys(view.idx)))
-        rr.log("camera/image/keypoints", rr.Points2D(view.kp[kp_indices]))  # ty:ignore[not-subscriptable]
+        # Draw keypoints visible from the given view.idx
+        reprojection_error, keypoints, _ = self._reprojection_error(view)
+
+        # Color-code reprojection error: Robust normalisation
+        import matplotlib.cm as cm
+
+        vmin, vmax = np.percentile(reprojection_error, [5, 95])
+        t = np.clip((reprojection_error - vmin) / (vmax - vmin + 1e-8), 0.0, 1.0)
+
+        colors = (cm.hot(t)[:, :3] * 255).astype(np.uint8)  # (N, 3) RGB 0-255
+        labels = [f"{e:.2f}" for e in reprojection_error]
+
+        rr.log("camera/image/keypoints", rr.Points2D(keypoints, colors=colors, labels=labels))
+        rr.log("view/reprojection_error", rr.Scalars(reprojection_error.mean()))
 
     def log_point_cloud(self):
         points = self.point_cloud.get_points_as_array()
@@ -113,9 +130,7 @@ class ReRunLogger:
             )  # ty:ignore[no-matching-overload]
             rr.log("view/matches", rr.Image(img_matches, color_model="BGR"))
 
-            # Log the new/ref image index pair on y-axis of the TimeSeriesView
-            # x = new view index, y = reference view index.
-            # FIXME: ref & new have the same color; distinguish red=ref, green=new
+            # Log the new/ref view index pair on y-axis of the TimeSeriesView
             rr.log("view/pairs/ref", rr.Scalars(matcher_result.idx_from))
             rr.log("view/pairs/new", rr.Scalars(matcher_result.idx_to))
 
@@ -127,6 +142,16 @@ class ReRunLogger:
             # average the colors of all KPs in the track
             colors[track_id] = self.images.get_pixels(kp_keys).mean(axis=0)
         return colors
+
+    def _reprojection_error(self, view: ViewData):
+        kp_indices = list(map(lambda x: x[1], self.track_manager.get_triangulated_view_kp_keys(view.idx)))
+        visible_world_points = self.point_cloud.get_points_as_array(
+            self.track_manager.get_triangulated_view_tracks(view.idx)
+        )
+        keypoints_hat = view.project_to_image_plane(visible_world_points)
+        keypoints = view.kp[kp_indices]  # ty:ignore[not-subscriptable]
+        reprojection_error = np.linalg.norm(keypoints - keypoints_hat, axis=1)
+        return reprojection_error, keypoints, keypoints_hat
 
 
 def build_track_length_histogram(track_lengths: list[int]):
