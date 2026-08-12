@@ -7,6 +7,7 @@ import cv2 as cv
 import numpy as np
 import yaml
 from numpy.typing import NDArray
+from typing import Tuple
 
 NDArrayFloat = NDArray[np.floating[Any]]
 NDArrayInt = NDArray[np.integer[Any]]
@@ -52,7 +53,7 @@ class CameraModel:
             return self.max_size / max_hw if max_hw > self.max_size else 1.0
         return 1.0
 
-    def get_resolution(self, rescaled: bool = True):
+    def get_resolution(self, rescaled: bool = True) -> Tuple[int, int] | None:
         if self.height is not None and self.width is not None:
             if rescaled and self.scale < 1.0:
                 return int(self.height * self.scale), int(self.width * self.scale)

@@ -278,7 +278,7 @@ def process_graph_component(
     view_graph.mark_edge_registered(img_0.idx, img_1.idx)
 
     if rerun_logger is not None:
-        rerun_logger.log_all(matcher_result)  # logs current cloud, cameras, ref-new matches
+        rerun_logger.log_all(matcher_result, both_cameras=True)  # logs current cloud, cameras, ref-new matches
 
     log_table = wandb.Table(
         columns=[

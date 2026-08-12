@@ -28,13 +28,10 @@ class ReRunLogger:
         self.images = images
         self.track_manager = track_manager
 
+        self.step = 0
+
         rr.init("structure_from_motion")
         rr.save(log_filepath)  # For streaming to viewer directly: rr.connect_grpc()
-        rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
-
-        # TODO: define blueprint vertical(3D, 2D, horizontal(Series, Series))
-        #
-        blueprint = rrb.Blueprint(rr.blueprint.Spatial3DView(line_grid=False))
 
         blueprint = rrb.Vertical(
             rrb.Spatial3DView(
@@ -52,34 +49,47 @@ class ReRunLogger:
         )
         rr.send_blueprint(blueprint)
 
-    def log_all(self, matcher_result: MatcherResult):
-        self.log_cameras()
+        rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
+        rr.log("camera", rr.ViewCoordinates.RDF)  # [x, y, z]  <==> [Right, Down, Forward]
+        rr.log("view/pairs/ref", rr.SeriesPoints(colors=[255, 0, 0], names=["Ref View Index"]))
+        rr.log("view/pairs/new", rr.SeriesPoints(colors=[0, 255, 0], names=["New View Index"]))
+
+    def _set_step(self):
+        rr.set_time("step", sequence=self.step)
+        self.step += 1
+
+    def log_all(self, matcher_result: MatcherResult, both_cameras=False):
+        self._set_step()
+        if both_cameras:
+            self.log_camera(matcher_result.idx_from)
+        self.log_camera(matcher_result.idx_to)
         self.log_point_cloud()
         self.log_matches(matcher_result)
 
-    def log_cameras(self):
+    def log_camera(self, view_idx: int):
+        # for view in self.images.iter_images_with_pose():
+        view = self.images[view_idx]
+        rr.log(
+            "camera",
+            rr.Transform3D(
+                translation=view.t,
+                rotation=rr.Quaternion(xyzw=view.cam_T_world.rotation.as_quat(scalar_first=False)),
+                relation=rr.TransformRelation.ChildFromParent,  # child_T_parent <=> cam_T_world
+            ),
+        )
 
-        for view in self.images.iter_images_with_pose():
-            rr.log(
-                "camera",
-                rr.Transform3D(
-                    translation=view.t,
-                    rotation=rr.Quaternion(xyzw=view.cam_T_world.rotation.as_quat(scalar_first=False)),
-                    relation=rr.TransformRelation.ChildFromParent,  # child_T_parent <=> cam_T_world
-                ),
-            )
-            rr.log("camera", rr.ViewCoordinates.RDF)  # [x, y, z]  <==> [Right, Down, Forward]
-            rr.log(
-                "camera/image",
-                rr.Pinhole(
-                    image_from_camera=view.camera_model.get_camera_matrix(),
-                    resolution=(view.camera_model.width, view.camera_model.height),
-                ),
-            )
-            rr.log("camera/image", rr.Image(view.pixels, color_model="RGB"))
+        height, width = view.camera_model.get_resolution(rescaled=True)
+        rr.log(
+            "camera/image",
+            rr.Pinhole(
+                image_from_camera=view.camera_model.get_camera_matrix(),
+                resolution=(width, height),
+            ),
+        )
+        rr.log("camera/image", rr.Image(view.pixels, color_model="RGB"))
 
-            kp_indices = list(map(lambda x: x[1], self.track_manager.get_triangulated_view_kp_keys(view.idx)))
-            rr.log("camera/image/keypoints", rr.Points2D(view.kp[kp_indices]))  # ty:ignore[not-subscriptable]
+        kp_indices = list(map(lambda x: x[1], self.track_manager.get_triangulated_view_kp_keys(view.idx)))
+        rr.log("camera/image/keypoints", rr.Points2D(view.kp[kp_indices]))  # ty:ignore[not-subscriptable]
 
     def log_point_cloud(self):
         points = self.point_cloud.get_points_as_array()
@@ -87,7 +97,7 @@ class ReRunLogger:
         if points.size == 0:
             return
 
-        rr.log("/points", rr.Points3D(positions=points, colors=colors))
+        rr.log("points", rr.Points3D(positions=points, colors=colors))
 
     def log_matches(self, matcher_result: MatcherResult):
         if matcher_result:
@@ -103,17 +113,11 @@ class ReRunLogger:
             )  # ty:ignore[no-matching-overload]
             rr.log("view/matches", rr.Image(img_matches, color_model="BGR"))
 
-            # Log the new/ref image index pair as a 2D point so the TimeSeriesView can plot
+            # Log the new/ref image index pair on y-axis of the TimeSeriesView
             # x = new view index, y = reference view index.
-            pair_point = np.array([[matcher_result.idx_to, matcher_result.idx_from]], dtype=np.float32)
-            rr.log(
-                "view/pairs",
-                rr.Points2D(
-                    positions=pair_point,
-                    radii=np.array([4.0], dtype=np.float32),
-                    colors=np.array([[255, 0, 0]], dtype=np.uint8),
-                ),
-            )
+            # FIXME: ref & new have the same color; distinguish red=ref, green=new
+            rr.log("view/pairs/ref", rr.Scalars(matcher_result.idx_from))
+            rr.log("view/pairs/new", rr.Scalars(matcher_result.idx_to))
 
     def _get_point_colors(self):
         """Returns an array of RGB colors for each 3D point."""
