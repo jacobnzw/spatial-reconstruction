@@ -1,3 +1,6 @@
+# Datasets stored in LFS
+data/
+
 # Python-generated files
 __pycache__/
 *.py[oc]
@@ -6,9 +9,17 @@ dist/
 wheels/
 *.egg-info
 
+# Marimo
+__marimo__/
+
 # Virtual environments
 .venv
 
 # PyTorch
 *.pt
 *.pth
+
+# Logs and archives
+wandb/
+*.rrd
+*.zip
