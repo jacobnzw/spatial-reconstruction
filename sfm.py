@@ -399,6 +399,7 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     )
 
     # Load all images & extract features
+    # TODO: move the log calls to FeatureExtractor or respective funcs/classes
     logger.info(f"Extracting {cfg.features.type.upper()} features from {cfg.loader.img_dir}...")
     loader = FrameLoader(cfg.loader)
     feature_extractor = FeatureExtractor(cfg.features, loader)
@@ -412,8 +413,8 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     view_graph = ViewGraph(image_store, kp_matcher, k=5)  # TODO: Add k to config
 
     logger.info("Processing graph component...")
-    log_filepath = out_dir / f"{basename}.rrd"
-    rerun_logger = ReRunLogger(log_filepath, point_cloud, image_store, track_manager)
+    rerun_log_path = out_dir / f"{basename}.rrd"
+    rerun_logger = ReRunLogger(rerun_log_path, point_cloud, image_store, track_manager)
     log_view_table = process_graph_component(
         view_graph, track_manager, point_cloud, kp_matcher, cfg.depth_threshold, rerun_logger
     )
@@ -452,6 +453,7 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     log_wandb_artifacts(run, cfg, track_manager, log_view_table, ba_summary)
     run.finish()
 
+    logger.info(f"View ReRun log with command: rerun {rerun_log_path}")
     logger.success("✓ Done!")
 
 
