@@ -75,6 +75,9 @@ class SfMConfig(BaseConfig):  # TODO: Investigate marked delay when importing th
 
     matcher: MatcherConfig = field(default_factory=lambda: MatcherConfig(type="lg"))
 
+    k_nearest: int = 5
+    """Number of most similar images to consider as reference when adding new view."""
+
     # SfM-specific fields
     run_ba: bool = True
     """Run bundle adjustment optimization after initial reconstruction"""

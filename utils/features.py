@@ -38,7 +38,7 @@ class FeatureExtractor:
     # TODO: FeatureExtractor could accept any type that has .iter_frames() -> Iterable[ViewData] via typing Protocol
     def __init__(self, cfg: FeatureExtractorConfig, loader: FrameLoader, extract_embeddings=False):  # noqa: F821
         self.loader = loader
-        self.num_features = cfg.num
+        self.cfg = cfg
 
         if cfg.type == "sift":
             sift = cv.SIFT_create(nfeatures=cfg.num)  # ty:ignore[unresolved-attribute]
@@ -82,7 +82,7 @@ class FeatureExtractor:
         # Convert to tensor and add batch dimension (H, W, C) -> (1, C, H, W)
         img_tensor = K.image.image_to_tensor(img_float, keepdim=False).to(device=device)
         with torch.inference_mode():
-            features = disk_model(img_tensor, self.num_features, pad_if_not_divisible=True)[0]
+            features = disk_model(img_tensor, self.cfg.num, pad_if_not_divisible=True)[0]
 
         frame.kp = features.keypoints.cpu().numpy()  # (N, 2)
         frame.des = features.descriptors.cpu().numpy()  # (N, D)
@@ -94,6 +94,7 @@ class FeatureExtractor:
 
     def iter_frames_with_features(self) -> Iterable[ViewData]:
         """Yields ImageData objects with extracted features."""
+        logger.info(f"Extracting {self.cfg.type.upper()} features from {self.loader.cfg.img_dir}...")
         for frame in self.loader.iter_frames():
             yield self(frame)
 

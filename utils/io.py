@@ -90,6 +90,7 @@ class ReconIO:
 
     def dump_sfm_debug(self, filepath):
         joblib.dump((self.images, self.point_cloud, self.track_manager), filepath, compress=3)
+        logger.info(f"SFM Debug structs dumped to: {filepath}")
 
     def save_for_gsplat(self, filename: Path):
         """Save SfM reconstruction as tensors for gsplat training.
@@ -221,6 +222,14 @@ class ReconIO:
         frustum_colors = np.zeros((len(frustum_points), 3))
         frustum_colors[:, 0] = 1.0
 
+        # --- DEBUG --- sanity checks
+        norms = np.linalg.norm(df.values, axis=1)
+        logger.debug("Point cloud debug stats:")
+        logger.debug(f"\t# Filtered / Original points: {df_filtered.shape[0]} / {df.shape[0]}")
+        logger.debug(f"\tMIN / MAX pt norm: {norms.min():.4f} / {norms.max():.4f}")
+        logger.debug(f"\t# NaNs: {df.isna().sum().sum()}")
+        logger.debug(f"\t# Infs: {np.isinf(df.values).sum()}")
+
         xyz_all = np.vstack([df_filtered.to_numpy(), np.asarray(frustum_points)])
         colors_all = np.vstack(
             [
@@ -229,20 +238,12 @@ class ReconIO:
             ]
         )
 
-        # --- DEBUG --- sanity checks
-        logger.debug(f"{df.shape = }")
-        logger.debug(f"# nans: {df.isna().sum().sum()}")
-        logger.debug(f"# infs: {np.isinf(df.values).sum()}")
-        norms = np.linalg.norm(df.values, axis=1)
-        logger.debug(f"{norms.min() = :.4f}")
-        logger.debug(f"{norms.max() = :.4f}")
-        logger.debug(f"{df_filtered.shape = }")
-
-        filename.parent.mkdir(exist_ok=True, parents=True)
-
         pcd = o3d.t.geometry.PointCloud()
         pcd.point.positions = xyz_all  # o3d.utility.Vector3dVector(xyz_all)
         pcd.point.colors = colors_all  # o3d.utility.Vector3dVector(colors_all)
         # TODO: outlier removal using o3d? the median filter leaves outliers on statue_video every 15th frame cloud
+
+        filename.parent.mkdir(exist_ok=True, parents=True)
         o3d.io.write_point_cloud(filename, pcd.to_legacy(), write_ascii=True)
-        logger.info(f"Saved PLY point cloud to {filename}")
+
+        logger.success(f"Saved PLY with {len(pcd.point.positions)} points to: {filename}")

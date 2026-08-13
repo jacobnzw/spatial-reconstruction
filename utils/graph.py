@@ -1,14 +1,12 @@
-from typing import Callable, Iterable
+from typing import Iterable
 
-import cv2 as cv
 import faiss
 import networkx as nx
 import numpy as np
 from loguru import logger
 
-from .camera import NDArrayInt
 from .embedding import ViewEmbedder
-from .features import FeatureStore, KPMatches, KeypointMatcher, MatcherResult
+from .features import FeatureStore, KeypointMatcher, MatcherResult
 from .view import ViewData
 
 
@@ -34,16 +32,18 @@ class ViewGraph:
         # Create vector DB index for image embeddings using FAISS
         self._embedder = ViewEmbedder()  # Initialize the embedding model
         self._vector_index = faiss.IndexIDMap(faiss.IndexFlatL2(self._embedder.embedding_dim))
+
+        logger.info("Embedding views ...")
         for view in feature_store.iter_views():
             # TODO: store emdedding as view graph node data to map view.idx to embedding if faiss won't let me add_with_ids
             # TODO: batch add is faster, but too big a batch eats into RAM
-            logger.info(f"Embedding {view.idx = } ...")
             view.embedding = self._embedder(view).astype(np.float32)
             # self._vector_index.add(embedding.astype(np.float32))
             self._vector_index.add_with_ids(view.embedding, np.array([view.idx], dtype=np.int64))
 
         # Build up candidate map from vector DB index: view.idx -> list of top K view.idx with similar embeddings
         # Store it in nx.Graph() as node attributes: each view has topk distances, indices
+        logger.info("Constructing view graph...")
         self._graph = nx.Graph()
         for view in feature_store.iter_views():
             # Query the index for the top K nearest neighbors, k+1 because the first neighbor is the query view itself

@@ -54,6 +54,8 @@ def bundle_adjustment_gtsam(
 
     params.print()
 
+    logger.info("Running GTSAM bundle adjustment...")
+
     optimizer = gtsam.LevenbergMarquardtOptimizer(graph, initial_values, params)
     result = optimizer.optimize()
 

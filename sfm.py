@@ -258,6 +258,7 @@ def process_graph_component(
     depth_threshold: float,
     rerun_logger: ReRunLogger | None = None,
 ) -> wandb.Table:
+    logger.info("Processing graph component...")
 
     # Pick strongest baseline:
     # - The edge of the view graph with greatest weight (ie. # kp matches) determines the two images
@@ -399,8 +400,6 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     )
 
     # Load all images & extract features
-    # TODO: move the log calls to FeatureExtractor or respective funcs/classes
-    logger.info(f"Extracting {cfg.features.type.upper()} features from {cfg.loader.img_dir}...")
     loader = FrameLoader(cfg.loader)
     feature_extractor = FeatureExtractor(cfg.features, loader)
     image_store = FeatureStore(feature_extractor)
@@ -408,11 +407,9 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     point_cloud = PointCloud()
     exporter = ReconIO(point_cloud, image_store, track_manager)
 
-    logger.info("Constructing view graph...")
     kp_matcher = KeypointMatcher(cfg.matcher)
-    view_graph = ViewGraph(image_store, kp_matcher, k=5)  # TODO: Add k to config
+    view_graph = ViewGraph(image_store, kp_matcher, k=cfg.k_nearest)
 
-    logger.info("Processing graph component...")
     rerun_log_path = out_dir / f"{basename}.rrd"
     rerun_logger = ReRunLogger(rerun_log_path, point_cloud, image_store, track_manager)
     log_view_table = process_graph_component(
@@ -423,30 +420,24 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     # Each component will lead to a point cloud with its own reference frame and
     # thus appear disconnected from the others
 
-    logger.info(f"Saving initial reconstruction to {out_dir / f'{basename}.ply'}...")
     exporter.save_ply(filename=out_dir / f"{basename}.ply")
 
     if cfg.dump_sfm_debug:
         filepath = out_dir / f"{basename}_sfm_debug.joblib"
         exporter.dump_sfm_debug(filepath)
-        logger.info(f"Dumped SFM structs to {filepath}")
 
     ba_summary = None
     if cfg.run_ba:
         # IMU data for BA are optional: when None, BA ignores it.
         imu_data_file, imu_calibration = cfg.imu_data, cfg.imu_calibration
 
-        logger.info("Running bundle adjustment...")
         ba_summary = bundle_adjustment_gtsam(
             image_store, point_cloud, track_manager, cfg.fix_first_camera, imu_data_file, imu_calibration
         )
 
-        logger.info(f"Final point cloud size: {point_cloud.size}")
-        logger.info(f"Saving optimized reconstruction to {out_dir / f'{basename}_ba.ply'}...")
         exporter.save_ply(out_dir / f"{basename}_ba.ply")
 
     if cfg.save_gsplat:
-        logger.info("\nSaving tensors for gsplat...")
         gsplat_file = f"{basename}_ba.pt" if cfg.run_ba else f"{basename}.pt"
         exporter.save_for_gsplat(out_dir / gsplat_file)
 
