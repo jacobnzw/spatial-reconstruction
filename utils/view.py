@@ -244,39 +244,55 @@ class FrameLoader:
     def __init__(self, cfg: FrameLoaderConfig):
         self.cfg = cfg
 
-    def __call__(self, idx: int) -> ViewData:
-        """Load frame at given index in internally stored list of image paths."""
-        path = self.cfg.img_paths[idx]
+    def __call__(self, idx: int, path: Path) -> ViewData:
+        """Load frame at given index in internally stored list of image paths.
+
+        Debugging convenience function.
+        """
         # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order
         img = cv.imread(str(path), cv.IMREAD_COLOR_RGB)
         if img is None:
             raise FileNotFoundError(f"FrameLoader: Failed to load image: {path}")
+
+        # ASSUMES: all images taken with the same self.cfg.camera_model
         return ViewData(idx, path, img, self.cfg.camera_model)
 
-    def iter_from_image_paths(self) -> Iterable[ViewData]:
+    def iter_frames(self) -> Iterable[ViewData]:
+        """Yields images as ViewData objects.
+
+        iter_frames() is called by FeatureExtractor.
+
+        Returns:
+            ViewData object containing the image and its metadata.
+
+            ViewData.pixels contains the loaded image as a (H, W, 3) uint8 array in RGB format,
+            regardless of original format.
+        """
+        if self.cfg.video_path is not None:
+            return self._iter_frames_from_video()
+        else:
+            return self._iter_frames_from_images()
+
+    def _iter_frames_from_images(self) -> Iterable[ViewData]:
         """Yields ViewData object for each image in the input folder.
 
         Effectively loads images into ViewData for later feature extraction.
         """
-        camera_model = self.cfg.camera_model  # ASSUMES: all images taken with the same camera
         for idx, path in enumerate(self.cfg.img_paths[self.cfg.offset_frames :], start=self.cfg.offset_frames):
             if self.cfg.max_read_frames and idx >= self.cfg.max_read_frames:
                 logger.info(f"Reached max_frames={self.cfg.max_read_frames}, stopping further loading.")
                 break
 
             # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order
-            # TODO: similar code to __call__,
-            img = cv.imread(str(path), cv.IMREAD_COLOR_RGB)
-            if img is None:
-                raise FileNotFoundError(f"FrameLoader: Failed to load image: {path}")
+            view = self(idx, path)
 
             # Undistortion and resizing happen conditionally
-            img, camera_model = self._undistort(img, camera_model)
-            img, camera_model = self._resize(img, camera_model)
+            self._undistort(view)
+            self._resize(view)
 
-            yield ViewData(idx, path, img, camera_model=camera_model)
+            yield view
 
-    def iter_from_video(self) -> Iterable[ViewData]:
+    def _iter_frames_from_video(self) -> Iterable[ViewData]:
         """Yields ViewData objects for frames in a video file in the input folder."""
 
         if self.cfg.video_path is None:
@@ -312,60 +328,44 @@ class FrameLoader:
             # Undistortion and resizing happen conditionally
 
             frame = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
-            frame, camera_model = self._undistort(frame, camera_model)
-            frame, camera_model = self._resize(frame, camera_model)
-
             timestamp = frame_stamps[idx]
-            view_data = ViewData(idx, self.cfg.video_path, frame, camera_model, timestamp)
+            view = ViewData(idx, self.cfg.video_path, frame, camera_model, timestamp)
+
+            self._undistort(view)
+            self._resize(view)
 
             logger.debug(f"Yielding frame: {idx=} {timestamp=}")
 
             idx += 1
-            yield view_data
+            yield view
 
-    def iter_frames(self) -> Iterable[ViewData]:
-        """Yields images as ViewData objects.
-
-        iter_frames() is called by FeatureExtractor.
-
-        Returns:
-            ViewData object containing the image and its metadata.
-
-            ViewData.pixels contains the loaded image as a (H, W, 3) uint8 array in RGB format,
-            regardless of original format.
-        """
-        if self.cfg.video_path is not None:
-            return self.iter_from_video()
-        else:
-            return self.iter_from_image_paths()
-
-    def _resize(self, img: NDArray[Any], camera_model: CameraModel) -> tuple[NDArray[Any], CameraModel]:
+    def _resize(self, view: ViewData) -> ViewData:
         # Set camera resolution based on loaded image
-        h, w = img.shape[:2]
-        camera_model.set_resolution(h, w, self.cfg.max_size)
+        h, w = view.pixels.shape[:2]
+        view.camera_model.set_resolution(h, w, self.cfg.max_size)
 
         # Apply scaling if needed
-        if camera_model.scale < 1.0:
-            new_h, new_w = camera_model.get_resolution(rescaled=True)  # ty:ignore[not-iterable]
-            img = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
+        if view.camera_model.scale < 1.0:
+            new_h, new_w = view.camera_model.get_resolution(rescaled=True)  # ty:ignore[not-iterable]
+            view.pixels = cv.resize(view.pixels, (new_w, new_h), interpolation=cv.INTER_AREA)
             # NOTE: camera_model.get_camera_matrix() will handle rescaling K based on self.scale
 
-        return img, camera_model
+        return view
 
-    def _undistort(self, img: NDArray[Any], camera_model: CameraModel) -> tuple[NDArray[Any], CameraModel]:
+    def _undistort(self, view: ViewData) -> ViewData:
         if self.cfg.undistort:
-            if camera_model.type == CameraType.FISHEYE:
-                img, K_undistorted = self._undistort_fisheye(img)
-            elif camera_model.type == CameraType.PINHOLE:
-                img, K_undistorted = self._undistort_pinhole(img)
+            if view.camera_model.type == CameraType.FISHEYE:
+                view.pixels, K_undistorted = self._undistort_fisheye(view.pixels)
+            elif view.camera_model.type == CameraType.PINHOLE:
+                view.pixels, K_undistorted = self._undistort_pinhole(view.pixels)
             else:
-                raise ValueError(f"Uknown {camera_model=}! Only PINHOLE and FISHEYE supported.")
+                raise ValueError(f"Uknown {view.camera_model=}! Only PINHOLE and FISHEYE supported.")
 
             # After undistortion, it's pinhole camera with new intrinsics K_undistorted and no distortion
-            camera_model = CameraModel(
+            view.camera_model = CameraModel(
                 type=CameraType.PINHOLE, K=K_undistorted, dist=np.zeros(len(self.cfg.camera_model.dist))
             )
-        return img, camera_model
+        return view
 
     def _undistort_fisheye(self, img: NDArray[Any], balance=0.0, fov_scale=1.0) -> tuple[NDArray[Any], NDArrayFloat]:
         """Undistortion for equidistant fisheye.
@@ -378,6 +378,7 @@ class FrameLoader:
         h, w = img.shape[:2]
 
         # Create the undistortion + rectification map once (or cache it)
+        # TODO: watch out for self.cfg.camera_model as they
         new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(
             self.cfg.camera_model.K, self.cfg.camera_model.dist, (w, h), np.eye(3), balance=balance, fov_scale=fov_scale
         )

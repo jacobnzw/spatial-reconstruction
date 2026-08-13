@@ -76,6 +76,11 @@ def bootstrap_from_two_views(
     K = img_0.camera_model.get_camera_matrix()
     E, mask = cv.findEssentialMat(pts0, pts1, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
 
+    if E is None:
+        msg = f"Failed geometric match validation for views ({img_0.idx}, {img_1.idx})"
+        logger.critical(msg)
+        raise ValueError(msg)
+
     # Estimate camera extrinsics & triangulate 3D points; mask for inliers passing epipolar constraint
     # t known only up to scale -> unit length!
     retval, R, t, mask, points_4d = cv.recoverPose(
@@ -91,6 +96,11 @@ def bootstrap_from_two_views(
     inliers = mask.ravel() > 0
     points_3d = (points_4d[:3, inliers] / points_4d[3, inliers]).T
     matches = matches[inliers]  # ty:ignore[not-subscriptable]
+
+    if matches.size == 0:
+        msg = "Failed to recoverPose: no points triangulated."
+        logger.critical(msg)
+        raise ValueError(msg)
 
     # Create new tracks for the triangulated 3D object points
     # first create tracks for KPs in img_0, then add KPs in img_1 that match to KPs in img_0
