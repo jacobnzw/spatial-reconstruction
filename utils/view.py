@@ -32,7 +32,7 @@ class FrameLoaderConfig:
     def img_paths(self) -> list[Path]:
         """List of images in the data_path directory."""
         IMG_FORMATS = (".png", ".jpg", ".jpeg")
-        filepaths = [p for p in Path(self.data_path).glob("*") if p.suffix.lower() in IMG_FORMATS].sort()
+        filepaths = sorted(p for p in Path(self.data_path).glob("*") if p.suffix.lower() in IMG_FORMATS)
 
         if not filepaths:
             logger.critical(f"No images found in {self.img_dir}!")
@@ -59,8 +59,8 @@ class FrameLoaderConfig:
     max_read_frames: int | None = None
     """Maximum number of frames to process from the dataset"""
 
-    offset_frames: int | None = None
-    """Index of a frame to from which to progressively start loading the dataset."""
+    offset_frames: int = 0
+    """Index of a frame from which to progressively start loading the dataset."""
 
     undistort: bool = True
     """Whether to undistort images using the provided camera intrinsics and distortion coefficients"""
@@ -151,6 +151,12 @@ class ViewData:
         K = self.camera_model.get_camera_matrix(rescaled=True)
         return K @ self.pose_matrix
 
+    @property
+    def keypoints_as_opencv(self) -> Iterable[cv.KeyPoint] | None:
+        """Return keypoints in opencv format."""
+        if self.kp is not None:
+            return [cv.KeyPoint(float(x), float(y), 1.0) for x, y in self.kp]
+
     def set_extrinsics(self, R, t):
         """Set camera extrinsics, i.e. cam_T_world."""
         rotation = Rotation.from_matrix(R)
@@ -236,33 +242,26 @@ class FrameLoader:
     """
 
     def __init__(self, cfg: FrameLoaderConfig):
-        self.img_paths = cfg.img_paths
-        self.max_frames = cfg.max_read_frames
-        self.offset_frames = cfg.offset_frames if cfg.offset_frames is not None else 0
-        self.max_size = cfg.max_size
-        self.scale = 1.0
-        self.camera_model = cfg.camera_model
-        self.undistort = cfg.undistort
-        self.video_path = cfg.video_path
-        self.every_n_frame = cfg.every_n_frame
+        self.cfg = cfg
 
     def __call__(self, idx: int) -> ViewData:
         """Load frame at given index in internally stored list of image paths."""
-        path = self.img_paths[idx]
+        path = self.cfg.img_paths[idx]
         # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order
         img = cv.imread(str(path), cv.IMREAD_COLOR_RGB)
         if img is None:
             raise FileNotFoundError(f"FrameLoader: Failed to load image: {path}")
-        return ViewData(idx, path, img, self.camera_model)
+        return ViewData(idx, path, img, self.cfg.camera_model)
 
     def iter_from_image_paths(self) -> Iterable[ViewData]:
         """Yields ViewData object for each image in the input folder.
 
         Effectively loads images into ViewData for later feature extraction.
         """
-        for idx, path in enumerate(self.img_paths[self.offset_frames :], start=self.offset_frames):
-            if self.max_frames and idx >= self.max_frames:
-                logger.info(f"Reached max_frames={self.max_frames}, stopping further loading.")
+        camera_model = self.cfg.camera_model  # ASSUMES: all images taken with the same camera
+        for idx, path in enumerate(self.cfg.img_paths[self.cfg.offset_frames :], start=self.cfg.offset_frames):
+            if self.cfg.max_read_frames and idx >= self.cfg.max_read_frames:
+                logger.info(f"Reached max_frames={self.cfg.max_read_frames}, stopping further loading.")
                 break
 
             # Grayscale loaded as (H, W, 3) with identical channels, color loaded as (H, W, 3) in RGB order
@@ -271,53 +270,29 @@ class FrameLoader:
             if img is None:
                 raise FileNotFoundError(f"FrameLoader: Failed to load image: {path}")
 
-            camera_model = self.camera_model
-            if self.undistort:
-                if self.camera_model.type == CameraType.FISHEYE:
-                    img, K_undistorted = self._undistort_fisheye(img)
-                elif self.camera_model.type == CameraType.PINHOLE:
-                    img, K_undistorted = self._undistort_pinhole(img)
-                else:
-                    raise ValueError(f"Uknown {camera_model=}! Only PINHOLE and FISHEYE supported.")
-
-                # After undistortion, it's pinhole camera with new intrinsics K_undistorted and no distortion
-                camera_model = CameraModel(
-                    type=CameraType.PINHOLE, K=K_undistorted, dist=np.zeros(len(self.camera_model.dist))
-                )
-
-            # Compute scale based on first image
-            # Assumption: all images have the same resolution and thus the same scale factor applies to all
-            if idx == self.offset_frames and self.max_size is not None:
-                h, w = img.shape[:2]
-                self.scale = self.max_size / max(h, w) if max(h, w) > self.max_size else 1.0
-
-            # Apply scaling if needed
-            if self.scale < 1.0:
-                h, w = img.shape[:2]
-                new_w, new_h = int(w * self.scale), int(h * self.scale)
-                img = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
-                camera_model.scale = self.scale
-                # NOTE: camera_model.get_camera_matrix() will handle rescaling K based on self.scale
+            # Undistortion and resizing happen conditionally
+            img, camera_model = self._undistort(img, camera_model)
+            img, camera_model = self._resize(img, camera_model)
 
             yield ViewData(idx, path, img, camera_model=camera_model)
 
     def iter_from_video(self) -> Iterable[ViewData]:
         """Yields ViewData objects for frames in a video file in the input folder."""
 
-        if self.video_path is None:
-            raise ValueError(f"Specified {self.video_path=} doesn't exist!")
+        if self.cfg.video_path is None:
+            raise ValueError(f"Specified {self.cfg.video_path=} doesn't exist!")
 
         # ASSUMES: frame_timestamps.txt is present
-        stamps_file = self.video_path.parent / "frame_timestamps.txt"
+        stamps_file = self.cfg.video_path.parent / "frame_timestamps.txt"
         if not stamps_file.exists():
-            raise ValueError(f"No frame_timestamps.txt found in {self.video_path}!")
+            raise ValueError(f"No frame_timestamps.txt found in {self.cfg.video_path}!")
 
         frame_stamps = [int(t_str.strip()) for t_str in stamps_file.open() if t_str.strip().isdigit()]
 
         idx: int = 0
+        camera_model = self.cfg.camera_model
 
-        cap = cv.VideoCapture(self.video_path)
-
+        cap = cv.VideoCapture(self.cfg.video_path)
         while True:
             ret, frame = cap.read()
             if not ret:
@@ -325,7 +300,7 @@ class FrameLoader:
                 break
 
             # downsampling: take only every_n_frame
-            if idx % self.every_n_frame:
+            if idx % self.cfg.every_n_frame:
                 # logger.debug(f"Skiped frame {idx=}")
                 idx += 1
                 continue
@@ -334,10 +309,14 @@ class FrameLoader:
             if idx >= len(frame_stamps):
                 break
 
+            # Undistortion and resizing happen conditionally
+
             frame = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
-            frame, camera_model = self._undistort(frame)
+            frame, camera_model = self._undistort(frame, camera_model)
+            frame, camera_model = self._resize(frame, camera_model)
+
             timestamp = frame_stamps[idx]
-            view_data = ViewData(idx, self.video_path, frame, camera_model, timestamp)
+            view_data = ViewData(idx, self.cfg.video_path, frame, camera_model, timestamp)
 
             logger.debug(f"Yielding frame: {idx=} {timestamp=}")
 
@@ -355,24 +334,36 @@ class FrameLoader:
             ViewData.pixels contains the loaded image as a (H, W, 3) uint8 array in RGB format,
             regardless of original format.
         """
-        if self.video_path is not None:
+        if self.cfg.video_path is not None:
             return self.iter_from_video()
         else:
             return self.iter_from_image_paths()
 
-    def _undistort(self, img: NDArray[Any]) -> tuple[NDArray[Any], CameraModel]:
-        camera_model = self.camera_model
-        if self.undistort:
-            if self.camera_model.type == CameraType.FISHEYE:
+    def _resize(self, img: NDArray[Any], camera_model: CameraModel) -> tuple[NDArray[Any], CameraModel]:
+        # Set camera resolution based on loaded image
+        h, w = img.shape[:2]
+        camera_model.set_resolution(h, w, self.cfg.max_size)
+
+        # Apply scaling if needed
+        if camera_model.scale < 1.0:
+            new_h, new_w = camera_model.get_resolution(rescaled=True)  # ty:ignore[not-iterable]
+            img = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
+            # NOTE: camera_model.get_camera_matrix() will handle rescaling K based on self.scale
+
+        return img, camera_model
+
+    def _undistort(self, img: NDArray[Any], camera_model: CameraModel) -> tuple[NDArray[Any], CameraModel]:
+        if self.cfg.undistort:
+            if camera_model.type == CameraType.FISHEYE:
                 img, K_undistorted = self._undistort_fisheye(img)
-            elif self.camera_model.type == CameraType.PINHOLE:
+            elif camera_model.type == CameraType.PINHOLE:
                 img, K_undistorted = self._undistort_pinhole(img)
             else:
                 raise ValueError(f"Uknown {camera_model=}! Only PINHOLE and FISHEYE supported.")
 
             # After undistortion, it's pinhole camera with new intrinsics K_undistorted and no distortion
             camera_model = CameraModel(
-                type=CameraType.PINHOLE, K=K_undistorted, dist=np.zeros(len(self.camera_model.dist))
+                type=CameraType.PINHOLE, K=K_undistorted, dist=np.zeros(len(self.cfg.camera_model.dist))
             )
         return img, camera_model
 
@@ -388,9 +379,9 @@ class FrameLoader:
 
         # Create the undistortion + rectification map once (or cache it)
         new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(
-            self.camera_model.K, self.camera_model.dist, (w, h), np.eye(3), balance=balance, fov_scale=fov_scale
+            self.cfg.camera_model.K, self.cfg.camera_model.dist, (w, h), np.eye(3), balance=balance, fov_scale=fov_scale
         )
-        K, dist = self.camera_model.get_camera_matrix(), self.camera_model.dist
+        K, dist = self.cfg.camera_model.get_camera_matrix(), self.cfg.camera_model.dist
         img_undist = cv.fisheye.undistortImage(img, K, dist, Knew=new_K, new_size=(w, h))
         return img_undist, new_K  # ty:ignore[invalid-return-type]
 
@@ -403,7 +394,7 @@ class FrameLoader:
             black borders.
         """
         h, w = img.shape[:2]
-        K, dist = self.camera_model.get_camera_matrix(), self.camera_model.dist
+        K, dist = self.cfg.camera_model.get_camera_matrix(), self.cfg.camera_model.dist
         new_K, roi = cv.getOptimalNewCameraMatrix(K, dist, (w, h), alpha=alpha, newImgSize=(w, h))
         img_undist = cv.undistort(img, K, dist, newCameraMatrix=new_K)
 

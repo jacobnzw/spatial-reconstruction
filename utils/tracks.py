@@ -41,7 +41,7 @@ class TrackManager:
             kp_keys = [kp_key for kp_key in kp_keys if kp_key[0] == img_idx]
         return kp_keys
 
-    def get_triangulated_view_keypoints(self, image_idx: int) -> list[KPKey]:
+    def get_triangulated_view_kp_keys(self, image_idx: int) -> list[KPKey]:
         """Get keys of keypoints triangulated from a given view.
         image_idx: int Index of the camera view (image).
         """
@@ -51,7 +51,7 @@ class TrackManager:
     def get_triangulated_view_tracks(self, image_idx: int) -> list[int]:
         """Get track_ids of tracks triangulated from a given view."""
         # FIXME: not quite true; some of these were triangulated from other views: more like "tracks_in_view"
-        kp_keys = self.get_triangulated_view_keypoints(image_idx)
+        kp_keys = self.get_triangulated_view_kp_keys(image_idx)
         return [tid for kp_key in kp_keys if (tid := self.get_track(kp_key)) is not None]
 
     def add_new_tracks(self, kp_pairs: list[tuple[KPKey, KPKey]]):

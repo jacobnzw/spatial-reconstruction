@@ -183,6 +183,12 @@ class MatcherConfig:
 
 @dataclass
 class MatcherResult:  # TODO: harmonize naming with KeypointMatcher, MatcherConfig
+    idx_from: int
+    """Query view index."""
+
+    idx_to: int
+    """Train view index."""
+
     scores: NDArrayFloat | None = None
     """Scores for each match. Either confidences or distances based on the chosen matcher type."""
 
@@ -196,7 +202,9 @@ class MatcherResult:  # TODO: harmonize naming with KeypointMatcher, MatcherConf
         return self.matches is not None and self.scores is not None
 
     def __len__(self) -> int:
-        return len(self.matches)
+        if self.matches is not None:
+            return len(self.matches)
+        return 0
 
     @property
     def success(self) -> bool:
@@ -213,6 +221,11 @@ class MatcherResult:  # TODO: harmonize naming with KeypointMatcher, MatcherConf
         if self.matches is None or self.inlier_mask is None:
             return None
         return self.matches[self.inlier_mask.ravel() > 0]
+
+    @property
+    def matches_as_opencv(self):
+        if self.matches is not None and self.scores is not None:
+            return [cv.DMatch(query, train, distance) for (query, train), distance in zip(self.matches, self.scores)]
 
 
 class KeypointMatcher:
@@ -271,7 +284,7 @@ class KeypointMatcher:
                 confs, idxs = confs[mask], idxs[mask]
 
             # min_conf=0.0 is valid (retain all matches)
-            return confs.detach().cpu().numpy(), idxs.detach().cpu().numpy()
+            return confs.detach().cpu().numpy().ravel(), idxs.detach().cpu().numpy()
 
     def _match_brute_force(
         self,
@@ -326,11 +339,13 @@ class KeypointMatcher:
         """
 
         scores, matches = self._matcher_fn(img_from, img_to)
+
+        result = MatcherResult(img_from.idx, img_to.idx)
         if len(matches) < self.cfg.min_inliers:
             logger.debug(
                 f"Not enough matches for views ({img_from.idx}, {img_to.idx}) {len(matches)} < {self.cfg.min_inliers}"
             )
-            return MatcherResult()
+            return result
 
         # Geometric validation: rejects matches that cannot arise from a rigid 3D scene
         # [:, 0] = queryIdx; [:, 1] = trainIdx
@@ -343,9 +358,13 @@ class KeypointMatcher:
 
         if E is None:
             logger.debug(f"Failed geometric match validation for views ({img_from.idx}, {img_to.idx})")
-            return MatcherResult()
+            return result
 
         if int((mask.ravel() > 0).sum()) < self.cfg.min_inliers:
-            return MatcherResult()
+            return result
 
-        return MatcherResult(scores, matches, mask)
+        result.scores = scores
+        result.matches = matches
+        result.inlier_mask = mask.astype(np.int64)
+
+        return result

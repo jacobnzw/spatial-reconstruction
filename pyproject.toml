@@ -19,6 +19,7 @@ dependencies = [
     "plotly>=6.5.1",
     "pyceres>=2.6",
     "pycolmap==3.13.0",
+    "rerun-sdk[dataloader,dataplatform]>=0.35.0",
     "rich>=14.3.1",
     "torch>=2.11.0",
     "torchvision>=0.27.1",

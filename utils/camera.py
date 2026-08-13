@@ -7,6 +7,7 @@ import cv2 as cv
 import numpy as np
 import yaml
 from numpy.typing import NDArray
+from typing import Tuple
 
 NDArrayFloat = NDArray[np.floating[Any]]
 NDArrayInt = NDArray[np.integer[Any]]
@@ -35,7 +36,29 @@ class CameraModel:
 
     dist: NDArrayFloat = field(default_factory=lambda: np.zeros(5))
 
-    scale: float = 1.0  # Scaling factor applied to the image (1.0 means no scaling)
+    height: int | None = None
+    width: int | None = None
+    max_size: int | None = None
+
+    def set_resolution(self, height, width, max_size):
+        self.height = height
+        self.width = width
+        self.max_size = max_size
+
+    @property
+    def scale(self) -> float:
+        # Scaling factor applied to the image (1.0 means no scaling)
+        if self.max_size is not None and self.height is not None and self.width is not None:
+            max_hw = max(self.height, self.width)
+            return self.max_size / max_hw if max_hw > self.max_size else 1.0
+        return 1.0
+
+    def get_resolution(self, rescaled: bool = True) -> Tuple[int, int] | None:
+        if self.height is not None and self.width is not None:
+            if rescaled and self.scale < 1.0:
+                return int(self.height * self.scale), int(self.width * self.scale)
+            else:
+                return self.height, self.width
 
     def get_camera_matrix(self, rescaled: bool = True) -> NDArrayFloat:
         """Get camera matrix K, rescaled if necessary.

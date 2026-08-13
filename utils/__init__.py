@@ -20,7 +20,7 @@ from .graph import ViewGraph
 from .io import ReconIO
 
 # Logging module
-from .logging import build_track_length_histogram, log_wandb_artifacts
+from .logging import ReRunLogger, build_track_length_histogram, log_wandb_artifacts
 
 # Point cloud module
 from .pointcloud import Point3D, PointCloud
@@ -62,4 +62,5 @@ __all__ = [
     # Logging
     "build_track_length_histogram",
     "log_wandb_artifacts",
+    "ReRunLogger",
 ]

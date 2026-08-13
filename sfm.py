@@ -19,6 +19,7 @@ from utils import (
     NDArrayInt,
     PointCloud,
     ReconIO,
+    ReRunLogger,
     TrackManager,
     ViewData,
     ViewGraph,
@@ -255,6 +256,7 @@ def process_graph_component(
     point_cloud: PointCloud,
     kp_matcher: KeypointMatcher,
     depth_threshold: float,
+    rerun_logger: ReRunLogger | None = None,
 ) -> wandb.Table:
 
     # Pick strongest baseline:
@@ -274,6 +276,9 @@ def process_graph_component(
     # matches -> E -> pose -> triangulation
     bootstrap_from_two_views(img_0, img_1, track_manager, point_cloud, matcher_result)
     view_graph.mark_edge_registered(img_0.idx, img_1.idx)
+
+    if rerun_logger is not None:
+        rerun_logger.log_all(matcher_result, both_cameras=True)  # logs current cloud, cameras, ref-new matches
 
     log_table = wandb.Table(
         columns=[
@@ -319,6 +324,10 @@ def process_graph_component(
             )
             add_success = True
             view_graph.mark_edge_registered(img_new.idx, img_ref.idx)
+
+            if rerun_logger:
+                rerun_logger.log_all(matcher_result)
+
         except ValueError as e:
             # failed to add new view: indicate the (img_ref, img_new) pair as bad and move on
             # best_edge was the best chance to add img_new (don't consider next best edge w/ img_new)
@@ -390,6 +399,7 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     )
 
     # Load all images & extract features
+    # TODO: move the log calls to FeatureExtractor or respective funcs/classes
     logger.info(f"Extracting {cfg.features.type.upper()} features from {cfg.loader.img_dir}...")
     loader = FrameLoader(cfg.loader)
     feature_extractor = FeatureExtractor(cfg.features, loader)
@@ -403,7 +413,11 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     view_graph = ViewGraph(image_store, kp_matcher, k=5)  # TODO: Add k to config
 
     logger.info("Processing graph component...")
-    log_view_table = process_graph_component(view_graph, track_manager, point_cloud, kp_matcher, cfg.depth_threshold)
+    rerun_log_path = out_dir / f"{basename}.rrd"
+    rerun_logger = ReRunLogger(rerun_log_path, point_cloud, image_store, track_manager)
+    log_view_table = process_graph_component(
+        view_graph, track_manager, point_cloud, kp_matcher, cfg.depth_threshold, rerun_logger
+    )
 
     # TODO: Process all connected components of the view graph. nx.connected_components
     # Each component will lead to a point cloud with its own reference frame and
@@ -439,6 +453,7 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     log_wandb_artifacts(run, cfg, track_manager, log_view_table, ba_summary)
     run.finish()
 
+    logger.info(f"View ReRun log with command: rerun {rerun_log_path}")
     logger.success("✓ Done!")
 
 
