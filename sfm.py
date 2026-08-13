@@ -389,7 +389,7 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     logger.add(out_dir / f"{basename}.log")
     config_dict = write_config_to_json(cfg, out_dir / f"{basename}_config.json")
 
-    wandb_mode = "online" if cfg.log_to_wandb else "disabled"
+    wandb_mode = "online" if cfg.log_wandb else "disabled"
     run = wandb.init(
         entity="jacobnzw-n-a",
         project="spatial-reconstruction",
@@ -411,7 +411,7 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     view_graph = ViewGraph(image_store, kp_matcher, k=cfg.k_nearest)
 
     rerun_log_path = out_dir / f"{basename}.rrd"
-    rerun_logger = ReRunLogger(rerun_log_path, point_cloud, image_store, track_manager)
+    rerun_logger = ReRunLogger(rerun_log_path, point_cloud, image_store, track_manager) if cfg.log_rerun else None
     log_view_table = process_graph_component(
         view_graph, track_manager, point_cloud, kp_matcher, cfg.depth_threshold, rerun_logger
     )
@@ -444,7 +444,8 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     log_wandb_artifacts(run, cfg, track_manager, log_view_table, ba_summary)
     run.finish()
 
-    logger.info(f"View ReRun log with command: rerun {rerun_log_path}")
+    if rerun_logger is not None:
+        logger.info(f"View ReRun log with command: rerun {rerun_log_path}")
     logger.success("✓ Done!")
 
 

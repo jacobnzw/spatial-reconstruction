@@ -49,8 +49,11 @@ class BaseConfig:
     out_name: str | None = None
     """Override basename for the pipeline output files (e.g. point cloud saved to 'out_basename.ply')."""
 
-    log_to_wandb: bool = False
+    log_wandb: bool = False
     """Whether to log results to W&B project."""
+
+    log_rerun: bool = False
+    """Whether to log debug record using ReRun."""
 
     @property
     def out_basename(self):
