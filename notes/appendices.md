@@ -76,7 +76,7 @@ $$
 \theta = \arccos\left(\frac{\text{Tr}(R)}{2}\right)
 $$. 
 
-3D Rotation Matrices
+#### 3D Rotation Matrices
 For a 3×3 rotation matrix representing a rotation by angle $\theta$ around any axis, the trace is: 
 
 $$
