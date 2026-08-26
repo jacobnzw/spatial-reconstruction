@@ -149,12 +149,59 @@ During analysis, first we choose desired confidence level $\alpha$, then get the
 
 In both cases, we can expect that an inconsistent state estimator will not reach the smallest possible estimation error (CRLB).
 
-### 🚧 Error-State EKF
+### Error-State EKF (ESKF)
+Key trick in ESKF is expression of the state as composition of nominal state and error term
+$$
+    x = \hat{x} \,\oplus\, \delta x \quad\Longrightarrow\quad \delta x = x \,\ominus\, \hat{x} \qquad \delta x \sim N(0, P)
+$$
+where the operators $\,\oplus\,$ and $\,\ominus\,$ are classical addition/subtraction for vectors and the right plus/minus for Lie group elements (e.g. quaternions, rotation mats).
+
+Prediction
+$$
+\begin{align*}
+    \hat{x}_{k∣k−1} &= f(\hat{x}_{k−1|k-1}​, u_{k-1}) \\
+    % \delta x_k &​= F_k ​\delta x_{k−1}​ + G_k​w_k​ \\
+    P^{\delta x}_{k∣k−1}​ &= F_{k-1} ​P^{\delta x}_{k−1∣k−1}​ F_{k-1}^T ​+ Q
+\end{align*}
+$$
+
+Update
+$$
+\begin{align*}
+    \hat{z}_{k|k-1} &= h(\hat{x}_{k|k-1}) \\
+    y_k &= z_k - \hat{z}_{k|k-1} \\
+    K_k &= P^{\delta x}_{k|k-1}H_k^T(H_kP^{\delta x}_{k|k-1}H_k^T + R)^{-1} \\
+    \delta \hat{x}_{k|k} &= K_ky_k \\
+    P^{\delta x}_{k|k} &= (I - K_kH_k)P^{\delta x}_{k|k-1}
+\end{align*}
+$$
+State injection and reset
+$$
+\begin{align*}
+    \hat{x}_{k|k} &= \hat{x}_{k|k-1} \,\oplus\, \delta\hat{x}_{k|k} \\
+    P_{k|k} &= G_k P_{k|k} G_k^T \\
+    \delta\hat{x}_{k|k} &\leftarrow 0
+\end{align*}
+$$
+If $\oplus$ is standard addition, the covariance adjustment effectively doesn't occur because then $G_k = I$. 
+For manifold components (rotations), Lie group composition is non-commutative. $\mathbf{G}_k$ acts as a parallel transport / frame transformation operator that maps the error covariance to the updated tangent space centered at the new nominal state $\hat{x}_{k|k}$.
 
 
-### [IMU Preintegration](https://docs.openvins.com/propagation.html)
+### Inertial Navigation System (INS)
+INS is a great motivation for sensor fusion and integrating complementary information from multiple sensors.
+
+An inertial navigation system (INS) is a self-contained navigation device that uses motion sensors, specifically accelerometers and gyroscopes, to continuously calculate an object's position, orientation, and velocity through dead reckoning without needing external references. 
+
+Once initialized with a known starting point, the system integrates sensor data to track movement relative to that origin, making it immune to jamming and effective in environments where GPS or GNSS signals are unavailable or unreliable, such as underwater, in tunnels, or in contested military zones. 
+
+Modern INS solutions often integrate with GNSS receivers to correct the inevitable drift errors that accumulate over time, combining the absolute accuracy of satellite navigation with the continuous, high-refresh-rate tracking of inertial sensors.  These systems are critical for aviation, defense, submarines, and autonomous vehicles, providing precise, real-time positioning data even when external infrastructure is disrupted or denied. 
+
+
+
+### IMU Preintegration
 
 See also:
+- [OpenVINS Docs: IMU Propagation Derivations](https://docs.openvins.com/propagation.html)
 - [[PDF] Trawny, Roumeliotis, Indirect Kalman Filter for 3D Attitude Estimation](https://mars.cs.umn.edu/tr/reports/Trawny05b.pdf): derivations of attitude propagation equations involving quaternions, with all the necessary definitions of quaternion operations and calculus (derivative and integral).
 - [OpenIMU docs](https://openimu.readthedocs.io/en/latest/algorithms/STM_Quaternion.html): based on Trawny but more condensed.
 
@@ -189,6 +236,8 @@ $$
 \end{align*}
 $$
 
+> TODO: Quat vs Rot mat formulation: Which should I use?
+
 Between keyframes the IMU biases are assumed constant, and the IMU measurements are integrated to compute the relative pose, velocity, and biases between the two keyframes.
 
 Solution to the IMU kinematics is given by the following equations:
@@ -199,6 +248,8 @@ $$
   \Delta \mathbf{p}_{i+1} &= \Delta \mathbf{p}_i + \Delta \mathbf{v}_i \Delta t + \frac12 \Delta \mathbf{R}_i \cdot \tilde{\mathbf{a}}_i \Delta t^2 
 \end{align*}
 $$
+
+The first equation is right $\oplus$ on $SO(3)$ defined as $R \oplus \delta\theta = R(\theta + \delta\theta) = R(\theta)\exp(\delta\theta^\wedge)$, where the hat operator $^\wedge$ for $SO(3)$ is the skew-symmetric operator $[\;\cdot\;]_{\times}$. We could then write $\Delta R_{i+1} = \Delta R_i \oplus \delta\theta$, where $\delta\theta = \omega_i\Delta t$ is the angle increment.
 
 These need to be fed with estimates of the true angular velocity and linear acceleration, which are obtained from bias estimates:
 $$
