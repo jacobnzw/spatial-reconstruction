@@ -1,5 +1,8 @@
 
 ### Coordinate Frames
+See also:
+- [Coordinate Systems (ECEF, ENU, NED, UTM)](https://dirsig.cis.rit.edu/docs/new/coordinates.html)
+
 #### [WGS-84](https://gnssdecoded.com/wgs-84-world-geodetic-system/#how-to-convert-wgs-84-coordinates)
 World Geodetic System 1984 is a realization of Geodetic Coordinate System. It uses an Earth-Centered, Earth-Fixed (ECEF) Cartesian coordinate system where
  - the X-axis points to the Greenwich Meridian, 
@@ -77,6 +80,20 @@ Estimator $\hat{x}(z)$ is said to be:
 - _minimum variance unbiased (MVU)_: unbiased + variance minimizing
 - _best linear unbiased (BLUE)_: $\hat{x}(z) = Lz$ (linear) + unbiased + MSE minimizing
 
+### Covariance Intersection (CI) 
+is a fusion algorithm designed to combine estimates from multiple sensors *when the cross-correlation between their errors is unknown or unavailable*.  Unlike standard Kalman fusion, which requires precise knowledge of correlations to avoid overconfidence, CI guarantees a consistent (non-overconfident) fused estimate by minimizing the determinant or trace of the fused covariance matrix. 
+
+The core mathematical formulation for fusing two estimates, $\hat{x}_A$ ​ and $\hat{x}_B$, with covariances $P_A$ ​ and $P_B$, involves a convex combination of their information matrices (inverse covariances). The fused estimate $\hat{x}_{CI}$ ​ and covariance $P_{CI}$ ​ are computed as: 
+
+$$
+\begin{align*}
+    P_{CI}^{−1} ​ &= \omega P_A^{−1} ​ + (1−\omega) P_B^{−1}​  \\
+    \hat{x}_{CI} &= P_{CI} ​ (\omega P_A^{−1} ​ \hat{x}_A ​ + (1−\omega) P_B^{−1}\hat{x}_B ​ )
+\end{align*}
+$$
+
+Here, $\omega$ is a weight parameter ( $0\leq \omega \leq 1$ ) typically chosen to minimize the trace or determinant of $P_{CI}$. This approach ensures that the resulting covariance ellipsoid encloses the intersection of the individual uncertainty ellipsoids, providing a robust upper bound on the true error.
+
 
 
 ## Kalman Filter Tunning
@@ -94,7 +111,9 @@ In the measurement model, the sensor noise variances can be read off the sensor 
 
 
 ### NIS: Normalized Innovation Squared
-Useful for checking if measurement noise covariance $R$ is well-calibrated.
+See: Gustafsson, Statistical Sensor Fusion, Ch. 15 Model Validation
+
+In Udacity's SDC, used for checking process noise covariance $Q$.
 
 Assume measurement model
 $$
@@ -105,10 +124,13 @@ $$
     \nu = (z - \hat{z})^T S^{-1} (z - \hat{z})
 $$
 
-Any deviation from [$\chi^2$ distributedness](https://en.wikipedia.org/wiki/Chi-squared_distribution) of $\nu$ indicates something wrong with either:
+Any deviation from [$\chi^2(\nu; n_x)$ distributedness](https://en.wikipedia.org/wiki/Chi-squared_distribution) of $\nu$ indicates something wrong with either:
+- process noise covariance $Q$ is not set properly
 - measurement covariance $R$ is not set properly
 - measurement model $h(x)$: could be inappropriate, especially relevant in 
 - the moment transform for computing the predicted measurement could have high error
+
+Gustafsson says this is more like a last "checksum" type of test to see if all checks out.
 
 ### NEES: Normalized Estimation Error Squared
 Measures estimator consistency by testing if the filtered error covariance $P$ accurately reflects the actual estimation error $(x - \hat{x})$, i.e. whether it is well-calibrated.
@@ -201,9 +223,11 @@ Modern INS solutions often integrate with GNSS receivers to correct the inevitab
 ### IMU Preintegration
 
 See also:
+- [[PDF] Visual-Inertial Navigation Short Tutorial](https://udel.edu/~ghuang/iros19-vins-workshop/stergios-roumeliotis.pdf)
+- [[PDF] Forster et al., On-Manifold Preintegration for Real-Time Visual Inertial Odometry](https://arxiv.org/pdf/1512.02363)
+- [[PDF] Trawny, Roumeliotis, Indirect Kalman Filter for 3D Attitude Estimation](https://mars.cs.umn.edu/tr/reports/Trawny05b.pdf): detailed derivations of attitude propagation equations involving quaternions
 - [OpenVINS Docs: IMU Propagation Derivations](https://docs.openvins.com/propagation.html)
-- [[PDF] Trawny, Roumeliotis, Indirect Kalman Filter for 3D Attitude Estimation](https://mars.cs.umn.edu/tr/reports/Trawny05b.pdf): derivations of attitude propagation equations involving quaternions, with all the necessary definitions of quaternion operations and calculus (derivative and integral).
-- [OpenIMU docs](https://openimu.readthedocs.io/en/latest/algorithms/STM_Quaternion.html): based on Trawny but more condensed.
+- [OpenIMU Docs](https://openimu.readthedocs.io/en/latest/algorithms/STM_Quaternion.html): based on Trawny but more condensed.
 
 IMU delivers measurements at a orders of magnitude higher rate (100-1000 Hz) than the camera images (10-30 Hz).
 
@@ -263,6 +287,11 @@ However, the IMU bias estimates are actively updated using EKF (or other filter)
 
 
 ### 🚧 MSCKF: Multi-State Constraint Kalman Filter
+
+See also: 
+- [Mourikis, Roumeliotis, A Multi-State Constraint Kalman Filter for Vision-Aided Inertial Navigation](https://www-users.cse.umn.edu/~stergios/papers/ICRA07-MSCKF.pdf)
+- [MSCKF Code Tutorial](https://github.com/Edwinem/msckf_tutorial)
+- [ACK-MSCKF: Ackerman MSCKF for AV Localization](https://www.mdpi.com/1424-8220/19/21/4816)
 
 Mainly for fusing camera and IMU (VIO), but one can replace camera with other exteroceptive sensors instead.
 
@@ -356,16 +385,23 @@ ZUPT is particularly **effective in GNSS-denied environments** or for pedestrian
 
 
 
-TODO: 
-- wheel slip detection: 
-  - check NIS
+### 👉 TODO: 
+- SOTA in UGV localization
+- IMU: Magnetometer for localization?
+- ROS: Code a node? what to do? Gives CPP refresh. 
+- HOW?: ZUPT to enforce non-holonomy, when do it?
+- Wheel slip detection 
   - compare v, omega from both sources, if diff too big => wheel slip
-- time sync of updates: interpolation, retrodiction / prediction to same time stamp
-- delayed measurements: OOSM update
+  - HOW?: via NIS check?
+- time sync of updates: interpolation, 
+- delayed measurements: 
+  - rollback, insert, replay: ring buffer stores past filtered estimates with measurements $x_k, P_k, z_k$, filter state rolled back before the delayed measurement timestamp, prediction to delayed timestamp, update with delayed measurement, re-apply all subsequent $z_k$'s in buffer.
+  - OOSM update, retrodiction / prediction to same time stamp
+- HOW?: to deal with jitter'ed measurements, same as delayed?
 
 
 
-Once slip is detected you typically:
+Once wheel slip is detected you typically:
 
 inflate the wheel measurement covariance $  R  $ (so the filter trusts the IMU more),
 temporarily ignore the wheel update,
