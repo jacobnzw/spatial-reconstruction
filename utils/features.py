@@ -353,7 +353,7 @@ class KeypointMatcher:
         # TODO: repeated in bootstrap_from_two_views: save E, mask in ViewEdge?;
         pts1, pts2 = img_from.kp[matches[:, 0]], img_to.kp[matches[:, 1]]  # ty:ignore[not-subscriptable]
 
-        K = img_from.camera_model.get_camera_matrix()
+        K = img_from.camera_model.camera_matrix
         # NOTE: RANSAC sensitive to point shuffling, due to its randomness => slightly different inliers
         E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.RANSAC, threshold=1.0)
 

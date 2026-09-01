@@ -73,7 +73,7 @@ def bootstrap_from_two_views(
     # pts0, pts1 = pts0[matches[:, 0]], pts1[matches[:, 1]]  # ty:ignore[not-subscriptable]
 
     # compute Essential matrix using camera intrinsics; mask indicates inliers
-    K = img_0.camera_model.get_camera_matrix()
+    K = img_0.camera_model.camera_matrix
     E, mask = cv.findEssentialMat(pts0, pts1, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
 
     if E is None:
@@ -128,7 +128,7 @@ def _estimate_pose_pnp(world_points: NDArrayFloat, image_points: NDArrayFloat, i
     assert np.isfinite(world_points).all(), "Object points must be finite"
     assert np.isfinite(image_points).all(), "Image points must be finite"
 
-    K, dist = img.camera_model.get_camera_matrix(), img.camera_model.dist
+    K, dist = img.camera_model.camera_matrix, img.camera_model.distortion
     pnp_ok, rvec, tvec, inliers = cv.solvePnPRansac(
         world_points,
         image_points,
@@ -174,7 +174,7 @@ def _triangulate_new_points(
     pts_ref, pts_new = img_ref.kp[untracked_matches[:, 0]], img_new.kp[untracked_matches[:, 1]]  # ty:ignore[not-subscriptable]
 
     # If undistortion applied during image loading, K is the corrected camera matrix for the undistorted image
-    K = img_ref.camera_model.get_camera_matrix()  # assume same intrinsics for both images
+    K = img_ref.camera_model.camera_matrix  # assume same intrinsics for both images
     # TODO: get this from MatcherResult; don't recompute there; ACTUALLY this is geom. val. on untracked_matches
     _, mask = cv.findEssentialMat(pts_ref, pts_new, K, method=cv.RANSAC, prob=0.999, threshold=1.0)
     inliers = mask.ravel() > 0

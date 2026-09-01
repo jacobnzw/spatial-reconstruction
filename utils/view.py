@@ -148,7 +148,7 @@ class ViewData:
           - transformation of points from world coordinates to camera image plane coordinates
         https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.transform.RigidTransform.html
         """
-        K = self.camera_model.get_camera_matrix(rescaled=True)
+        K = self.camera_model.camera_matrix
         return K @ self.pose_matrix
 
     @property
@@ -186,7 +186,7 @@ class ViewData:
         Returns:
             (N, 2) array of undistorted keypoint coordinates in pixel space.
         """
-        K, dist = self.camera_model.get_camera_matrix(), self.camera_model.dist
+        K, dist = self.camera_model.camera_matrix, self.camera_model.distortion
 
         if self.camera_model.type == CameraType.FISHEYE:
             # undistortPoints returns normalized coords, need to reproject to pixels
@@ -223,7 +223,7 @@ class ViewData:
             (N, 2) array of projected points in pixel coordinates.
         """
         self._check_pose()
-        K, dist = self.camera_model.get_camera_matrix(), self.camera_model.dist
+        K, dist = self.camera_model.camera_matrix, self.camera_model.distortion
         points_2d, _ = cv.projectPoints(world_pts, self.rvec, self.t, K, dist)
         return points_2d.squeeze()  # (N, 1, 2) -> (N, 2)  # ty:ignore[invalid-return-type]
 
@@ -346,9 +346,9 @@ class FrameLoader:
 
         # Apply scaling if needed
         if view.camera_model.scale < 1.0:
-            new_h, new_w = view.camera_model.get_resolution(rescaled=True)  # ty:ignore[not-iterable]
+            new_h, new_w = view.camera_model.resolution
             view.pixels = cv.resize(view.pixels, (new_w, new_h), interpolation=cv.INTER_AREA)
-            # NOTE: camera_model.get_camera_matrix() will handle rescaling K based on self.scale
+            # NOTE: camera_model.camera_matrix will handle rescaling K based on self.scale
 
         return view
 
@@ -362,8 +362,11 @@ class FrameLoader:
                 raise ValueError(f"Uknown {view.camera_model=}! Only PINHOLE and FISHEYE supported.")
 
             # After undistortion, it's pinhole camera with new intrinsics K_undistorted and no distortion
+            fx, fy, cx, cy = K_undistorted[0, 0], K_undistorted[1, 1], K_undistorted[0, 2], K_undistorted[1, 2]
             view.camera_model = CameraModel(
-                type=CameraType.PINHOLE, K=K_undistorted, dist=np.zeros(len(self.cfg.camera_model.dist))
+                type=CameraType.PINHOLE,
+                intrinsics=np.array([fx, fy, cx, cy]),
+                distortion=np.zeros(len(self.cfg.camera_model.distortion)),
             )
         return view
 
@@ -378,11 +381,10 @@ class FrameLoader:
         h, w = img.shape[:2]
 
         # Create the undistortion + rectification map once (or cache it)
-        # TODO: watch out for self.cfg.camera_model as they
+        K, dist = self.cfg.camera_model.camera_matrix, self.cfg.camera_model.distortion
         new_K = cv.fisheye.estimateNewCameraMatrixForUndistortRectify(
-            self.cfg.camera_model.K, self.cfg.camera_model.dist, (w, h), np.eye(3), balance=balance, fov_scale=fov_scale
+            K, dist, (w, h), np.eye(3), balance=balance, fov_scale=fov_scale
         )
-        K, dist = self.cfg.camera_model.get_camera_matrix(), self.cfg.camera_model.dist
         img_undist = cv.fisheye.undistortImage(img, K, dist, Knew=new_K, new_size=(w, h))
         return img_undist, new_K  # ty:ignore[invalid-return-type]
 
@@ -395,7 +397,7 @@ class FrameLoader:
             black borders.
         """
         h, w = img.shape[:2]
-        K, dist = self.cfg.camera_model.get_camera_matrix(), self.cfg.camera_model.dist
+        K, dist = self.cfg.camera_model.camera_matrix, self.cfg.camera_model.distortion
         new_K, roi = cv.getOptimalNewCameraMatrix(K, dist, (w, h), alpha=alpha, newImgSize=(w, h))
         img_undist = cv.undistort(img, K, dist, newCameraMatrix=new_K)
 

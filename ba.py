@@ -92,8 +92,7 @@ def bundle_adjustment_gtsam(
 
 def add_camera_factors(graph, initial_values, images, point_cloud, track_manager, fix_first_camera=True):
     first_img = images[0]
-    K = first_img.camera_model.get_camera_matrix(rescaled=True)
-    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+    fx, fy, cx, cy = first_img.camera_model.intrinsics_vector
     calibration = gtsam.Cal3_S2(fx, fy, 0.0, cx, cy)
 
     pose_keys: dict[int, int] = {}
@@ -335,12 +334,8 @@ def bundle_adjustment(
 
     # Get camera intrinsics from first image
     first_img = images[0]
-    K, dist = first_img.camera_model.get_camera_matrix(), first_img.camera_model.dist
+    (fx, fy, cx, cy), dist = first_img.camera_model.intrinsics_vector, first_img.camera_model.distortion
     # Create pycolmap camera model (OPENCV: fx, fy, cx, cy, k1, k2, p1, p2)
-    fx = K[0, 0]
-    fy = K[1, 1]
-    cx = K[0, 2]
-    cy = K[1, 2]
     k1, k2, p1, p2 = dist[:4]
     cam_params = np.array([fx, fy, cx, cy, k1, k2, p1, p2], dtype=np.float64)
     camera_model = pycolmap.CameraModelId.OPENCV
@@ -459,10 +454,8 @@ def bundle_adjustment_pycolmap(
     # Map your OpenCV calibration to COLMAP parameters
     # OpenCV order: [fx, fy, cx, cy, k1, k2, p1, p2]
     first_img: ViewData = feature_store[0]
-    K, dist = first_img.camera_model.get_camera_matrix(), first_img.camera_model.dist
-    fx, fy = K[0, 0], K[1, 1]
-    cx, cy = K[0, 2], K[1, 2]
-    k1, k2, p1, p2 = dist[0][:4]  # Assuming standard 4-5 params
+    (fx, fy, cx, cy), dist = first_img.camera_model.intrinsics_vector, first_img.camera_model.distortion
+    k1, k2, p1, p2 = dist[:4]  # Assuming standard 4-5 params
 
     params = [fx, fy, cx, cy, k1, k2, p1, p2]
     camera = pycolmap.Camera(

@@ -130,7 +130,7 @@ class ReconIO:
         colors_tensor = torch.from_numpy(colors).float() / 255.0  # (M, 3), normalized to [0, 1]
 
         # Get camera intrinsics (rescaled) from first image with pose
-        K = self.images[0].camera_model.get_camera_matrix()
+        K = self.images[0].camera_model.camera_matrix
         intrinsics_tensor = torch.from_numpy(K).float()  # (3, 3)
 
         # Save as .pt file

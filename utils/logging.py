@@ -83,11 +83,11 @@ class ReRunLogger:
             ),
         )
 
-        height, width = view.camera_model.get_resolution(rescaled=True)
+        height, width = view.camera_model.resolution
         rr.log(
             "camera/image",
             rr.Pinhole(
-                image_from_camera=view.camera_model.get_camera_matrix(),
+                image_from_camera=view.camera_model.camera_matrix,
                 resolution=(width, height),
             ),
         )
@@ -197,8 +197,8 @@ def log_wandb_artifacts(run, cfg, track_manager: TrackManager, view_table: wandb
         {
             "camera": {
                 "model": camera_model.type,
-                "intrinsics": camera_model.get_intrinsics(rescaled=True),
-                "distortion_coeffs": camera_model.dist,
+                "intrinsics": camera_model.intrinsics_vector,
+                "distortion_coeffs": camera_model.distortion,
                 "scale": camera_model.scale,
             }
         }

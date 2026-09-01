@@ -1,13 +1,13 @@
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import cached_property
 from pathlib import Path
-from typing import Any
+from typing import Any, Tuple
 
 import cv2 as cv
 import numpy as np
 import yaml
 from numpy.typing import NDArray
-from typing import Tuple
 
 NDArrayFloat = NDArray[np.floating[Any]]
 NDArrayInt = NDArray[np.integer[Any]]
@@ -24,60 +24,64 @@ class CameraType(StrEnum):
 class CameraModel:
     """Camera intrinsic parameters and distortion model.
 
-    Attributes:
-        type: Type of camera model (pinhole or fisheye).
-        K: Camera intrinsic matrix (3x3).
-        dist: Distortion coefficients.
+    Args:
+        type: CameraType, the camera model type (pinhole or fisheye).
+        intrinsics: NDArrayFloat, the camera intrinsics vector.
+        distortion: NDArrayFloat, the distortion coefficients.
     """
 
     type: CameraType = CameraType.PINHOLE
 
-    K: NDArrayFloat = field(default_factory=lambda: np.eye(3))
+    # Normalized camera as default (fx=1, fy=1, s=0, cx=0, cy=0)
+    intrinsics: NDArrayFloat = field(default_factory=lambda: np.array([1, 1, 0, 0, 0], dtype=np.float64))
+    """Camera intrinsics."""
 
-    dist: NDArrayFloat = field(default_factory=lambda: np.zeros(5))
+    distortion: NDArrayFloat = field(default_factory=lambda: np.zeros(5))
+    """Distortion coefficients."""
 
     height: int | None = None
     width: int | None = None
+    """Heigh and width of the camera image."""
+
     max_size: int | None = None
+    """Maximum size of the longest edge of the image (for image scaling)."""
 
     def set_resolution(self, height, width, max_size):
         self.height = height
         self.width = width
         self.max_size = max_size
 
-    @property
+    @cached_property
     def scale(self) -> float:
+        """Scale relative to self.max_size."""
         # Scaling factor applied to the image (1.0 means no scaling)
         if self.max_size is not None and self.height is not None and self.width is not None:
             max_hw = max(self.height, self.width)
             return self.max_size / max_hw if max_hw > self.max_size else 1.0
         return 1.0
 
-    def get_resolution(self, rescaled: bool = True) -> Tuple[int, int] | None:
+    @cached_property
+    def resolution(self) -> Tuple[int, int] | None:
+        """Scaled resolution."""
         if self.height is not None and self.width is not None:
-            if rescaled and self.scale < 1.0:
-                return int(self.height * self.scale), int(self.width * self.scale)
-            else:
-                return self.height, self.width
+            return int(self.height * self.scale), int(self.width * self.scale)
 
-    def get_camera_matrix(self, rescaled: bool = True) -> NDArrayFloat:
-        """Get camera matrix K, rescaled if necessary.
+    @cached_property
+    def camera_matrix(self) -> NDArrayFloat:
+        """Scaled camera matrix."""
+        fx, fy, cx, cy = self.intrinsics_vector
+        return np.array(
+            [
+                [fx, 0, cx],
+                [0, fy, cy],
+                [0, 0, 1],
+            ]
+        )
 
-        Args:
-            rescaled: If True, return the rescaled K based on the current scale factor. If False, return the original K.
-        """
-
-        if rescaled and self.scale < 1.0:
-            K_rescaled = self.K.copy()
-            K_rescaled[0, :] *= self.scale
-            K_rescaled[1, :] *= self.scale
-            return K_rescaled
-        return self.K
-
-    def get_intrinsics(self, rescaled: bool = True) -> NDArrayFloat:
-        K = self.get_camera_matrix(rescaled)
-        fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
-        return np.array([fx, fy, cx, cy])
+    @cached_property
+    def intrinsics_vector(self) -> NDArrayFloat:
+        """Scaled camera intrinsics."""
+        return self.scale * self.intrinsics
 
     @staticmethod
     def from_calibration(calib_file: str):
@@ -85,17 +89,10 @@ class CameraModel:
 
         calibration = yaml.safe_load(Path(calib_file).open())
 
-        fx, fy, cx, cy = calibration["cam0"]["intrinsics"]
         return CameraModel(
             type=CameraType(calibration["cam0"]["camera_model"]),
-            K=np.array(
-                [
-                    [fx, 0, cx],
-                    [0, fy, cy],
-                    [0, 0, 1],
-                ]
-            ),
-            dist=np.array(calibration["cam0"]["distortion_coeffs"]),
+            intrinsics=np.array(calibration["cam0"]["intrinsics"]),
+            distortion=np.array(calibration["cam0"]["distortion_coeffs"]),
         )
 
 
