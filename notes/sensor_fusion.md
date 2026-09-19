@@ -36,6 +36,25 @@ In ENU, the "Up" axis aligns with the normal of the WGS-84 ellipsoid pointing ou
 
 Since airplanes and ships move above ground they wanna know "how hight am I", so the NED convention, where positive direction for Z-axis is down is more natural. The ENU is more natural for ground vehicles and robots. 
 
+[**NED to ECEF Transformation**](https://en.wikipedia.org/wiki/Local_tangent_plane_coordinates):
+$$
+\mathbf{p}_{\mathrm{NED}} = R(\mathbf {p} _{\mathrm {ECEF} }-\mathbf {p} _{\mathrm{Ref}})
+$$
+where $\mathbf {p} _{\mathrm {NED} }$ is a 3D position in a NED system, 
+$\mathbf {p} _{\mathrm {ECEF} }$ is the corresponding ECEF position, 
+$\mathbf {p} _{\mathrm {Ref} }$ is the reference ECEF position (where the local tangent plane originates), and $R$ is a rotation matrix whose rows are the north, east, and down axes. 
+
+Given current position in geodetic coordinates, latitude $\phi$ and longitude $\lambda$
+
+$$
+R = 
+\begin{bmatrix}
+    -\sin\phi\cos\lambda & -\sin\lambda & -\cos\phi\cos\lambda \\
+    -\sin\phi\sin\lambda & \cos\lambda & -\cos\phi\sin\lambda \\
+    \cos\phi & 0 & -\sin\phi \\
+\end{bmatrix}
+$$
+
 ##### Transformation from WGS-84
 The relationship is defined by a translation and rotation process centered on a specific *reference point* (latitude $\phi$, longitude $\lambda$, altitude $h$ ):
 
@@ -48,6 +67,14 @@ Even though it may seem that whenever the reference point is chosen as your curr
 
 For example, in NED, velocity components represent Northward speed, Eastward speed, and Downward sink/climb rate. This is critical for flight control systems. Expressing velocity in ECEF is unintuitive (mixing X, Y, Z changes), whereas ENU/NED directly gives "forward," "sideways," and "up/down" speeds relative to the ground.
 
+#### UTM (Universal Transverse Mercator)
+
+is a system for specifying locations on the Earth, based on transverse Mercator projections. 
+It covers the part of the Earth between 84° N and 80° S, dividing it into 60 zones and applying a separate projection to each zone. 
+Specifying a location consists of specifying the zone, the hemisphere (north or south), and the x, y plane coordinates within the zone.
+
+Example output from `navsat` ros package:
+> Datum UTM coordinate is (49 north, 754443.85, 2533520.63)
 
 ### Rotation differentials
 
@@ -207,6 +234,56 @@ $$
 $$
 If $\oplus$ is standard addition, the covariance adjustment effectively doesn't occur because then $G_k = I$. 
 For manifold components (rotations), Lie group composition is non-commutative. $\mathbf{G}_k$ acts as a parallel transport / frame transformation operator that maps the error covariance to the updated tangent space centered at the new nominal state $\hat{x}_{k|k}$.
+
+
+## Sensors
+
+### GNSS
+
+- measures: (absolute) position, velocity, heading (if double antenna)
+- 4 satelites visible = GPS available
+  - 4th satellite corrects clock error
+  - w/o the 4th satellite only 2D fix (lat, lon), no altitude
+
+#### Measurement models
+Assuming planar motion in 2D space the state vector contains
+$$
+x^T_k = 
+\begin{bmatrix}
+    p &
+    v &
+    \psi &
+    b_a &
+    b_{\omega}
+\end{bmatrix}
+$$
+Linear if measuring velocity vector directly
+$$
+z_k = 
+\begin{bmatrix}
+    p_x   \\
+    p_y   \\
+    v_x \\
+    v_y \\
+\end{bmatrix}
+$$
+Nonlinear if measuring speed
+$$
+z_k = 
+\begin{bmatrix}
+    x   \\
+    y   \\
+    s   \\
+\end{bmatrix}
+$$ 
+where speed $s$ is magnitude of velocity $s = \sqrt{v_x^2 + v_y^2}$.
+Heading $\psi$ included if double antenna.
+$$
+R = \mathrm{diag}\begin{bmatrix}\sigma_{px}^2 & \sigma_{py}^2 & \sigma_{vx}^2 & \sigma_{vy}^2\end{bmatrix}
+$$
+
+#### Tightly Coupled GPS Measurement Model
+- uses the range and Doppler measurements from individual satellites so it can work even with 1 (!) visible satellite
 
 
 ### Inertial Navigation System (INS)

@@ -104,10 +104,12 @@ Note, camera extrinsics are `cam_T_world`, because they transform the points in 
 just reflected through the optical center, on the back of the camera. For example, routines for solving a PnP problem
 have to account for solutions "behind the camera" which are valid geometrically but not physically realizable. 
 
-#### Distortion models
+#### [Distortion models](https://www.tangramvision.com/blog/camera-modeling-part-2-introducing-lens-distortion)
 Camera lenses introduce radial and tangential distortion that deviate projections from being linear. 
 **Brown-Conrady model** is a widely used polynomial distortion model in computer vision for correcting lens distortions, including barrel, pincushion, and mustache distortions. 
 While it is commonly applied to standard and wide-angle lenses, it is less accurate for fisheye lenses with very large fields of view (FOV > 180°), where models like **Kannala-Brandt** or fisheye-specific models are preferred.
+
+[Kalibr supported camera models](https://github.com/ethz-asl/kalibr/wiki/supported-models)
 
 
 ### [Homography](https://docs.opencv.org/4.x/d9/dab/tutorial_homography.html)
