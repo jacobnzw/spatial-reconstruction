@@ -1,12 +1,12 @@
 # Spatial Reconstruction Pipeline
-## 🏆Goal:
+## 🏆Goal
 
-Learn basic principles of 3D computer vision by building a Structure-from-Motion (SfM) pipeline for spatial reconstruction from a set of images.
-The pipeline ingests a bunch of photos of one static object from different angles and outputs a (sparse) 3D point cloud model of the object and the estimated camera poses (for each photo).
+- Learn principles of 3D computer vision and photogrammetry
+- Build a Structure-from-Motion (SfM) pipeline for spatial reconstruction from a set of images.
 
-<!-- Employ classical techniques to learn basic principles from 3D computer vision. Advance to deep learning techniques and Gaussian splatting representation for more accuracy and efficiency. -->
+The pipeline should ingest an unordered set of photos of one static object from different angles and outputs a (sparse) 3D point cloud model of the object and the estimated camera poses (for each photo).
 
-## ❌ Non-Goals:
+## ❌ Non-Goals
 - Do better than existing SfM pipelines (e.g. [GTSfM](https://github.com/borglab/gtsfm) or [COLMAP](https://colmap.github.io/install.html)) in terms of accuracy or efficiency.
 - Implement a full photogrammetry pipeline (SfM + MVS) for dense reconstruction.
 - Implement a full SLAM pipeline for spatial reconstruction from video sequences.
@@ -17,7 +17,7 @@ The pipeline ingests a bunch of photos of one static object from different angle
 uv run sfm.py --dataset statue_orbit
 
 # To specifiy feature extraction and keypoint matching methods
-uv run sfm.py --dataset statue_orbit --cfg.features.type sift --cfg.matcher.type bf
+uv run sfm.py --dataset statue_orbit --cfg.features.type disk --cfg.matcher.type lg
 
 # Read CLI help for more details
 uv run sfm.py --help
