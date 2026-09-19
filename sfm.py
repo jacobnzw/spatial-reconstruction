@@ -1,7 +1,9 @@
+import random
 from typing import Literal
 
 import cv2 as cv
 import numpy as np
+import torch
 import tyro
 from loguru import logger
 from rich.pretty import pprint
@@ -378,6 +380,20 @@ def process_graph_component(
 Dataset = Literal["corridor", "statue_orbit"]
 
 
+def seed_everything(seed: int | None) -> None:
+    if seed is None:
+        return
+
+    random.seed(seed)
+    np.random.seed(seed)
+    cv.setRNGSeed(seed)  # OpenCV RANSAC / solvePnPRansac
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
+
+
 def main(cfg: SfMConfig, dataset: Dataset | None = None):
     """Structure from Motion pipeline with configurable feature extraction and matching.
 
@@ -385,6 +401,8 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
         cfg: Configuration object. Override defaults with --cfg.param_name value
         dataset: Dataset preset for convenience: 'corridor' or 'statue_orbit'.
     """
+
+    seed_everything(cfg.seed)
 
     if dataset is not None:
         cfg.loader = FrameLoaderConfig(**frame_loader_preset(dataset))

@@ -55,13 +55,16 @@ class BaseConfig:
     log_rerun: bool = False
     """Whether to log debug record using ReRun."""
 
+    seed: int | None = 42
+    """Seed to ensure reproducibility. If None, run won't be reproducible."""
+
     @property
     def out_basename(self):
         """Default output basename for all output files, if override not specified via 'out_name'."""
         return (
             self.out_name
             if self.out_name is not None
-            else f"{self.loader.dataset}_{self.features.type}_{self.matcher.type}"
+            else f"{self.loader.dataset}_{self.features.type}_{self.matcher.type}_{self.seed}"
         )
 
     @property
