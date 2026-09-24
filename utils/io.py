@@ -1,249 +1,108 @@
 from pathlib import Path
 
-import joblib
 import numpy as np
-import open3d as o3d
-import torch
+import pycolmap
 from loguru import logger
-from numpy.typing import NDArray
 
 from .features import FeatureStore
 from .pointcloud import PointCloud
 from .tracks import TrackManager
 
 
-# TODO: use the new ViewData convenience funcs to express the calculations
-class ReconIO:
-    """Handles saving and loading of reconstruction data (PLY files and gsplat tensors)."""
+# TODO(0): rename ColmapReconstructionAdapter
+# TODO(1): consider adding bundle_adjustment calling pycolmap.bundle_adjustment() with options
+# TODO: Given (1), this file io.py won't be necessary perhaps? rename colmap_adapter.py? move somewhere else?
+class PycolmapReconIO:
+    """Builds and exports a pycolmap reconstruction from project data."""
 
-    Vertex = tuple[float, float, float]  # (x, y, z)
-    Edge = tuple[int, int]  # (v1, v2)
-
-    def __init__(self, point_cloud: PointCloud, images: FeatureStore, track_manager: TrackManager):  # noqa: F821
+    def __init__(self, point_cloud: PointCloud, images: FeatureStore, track_manager: TrackManager):
         self.point_cloud = point_cloud
         self.images = images
         self.track_manager = track_manager
 
-    @staticmethod
-    def _camera_frustum_points(R: NDArray[np.float32], t: NDArray[np.float32], scale: float = 0.1) -> list:
-        """
-        Returns 5 world-space points for a tiny camera frustum
-        """
-        # World --> Camera:   Xc = R Xw + t
-        # Camera --> World:   Xw = Rᵀ (Xc − t)
-        # Camera center in world coordinates: Xc=0 --> Xw = Rᵀ (0 − t) = -Rᵀ t
-        C = -R.T @ t.squeeze()  # R.T @ (-t)
+    def _build_reconstruction(self) -> pycolmap.Reconstruction:
+        reconstruction = pycolmap.Reconstruction()
+        first_image = next(iter(self.images.iter_images_with_pose()), None)
+        if first_image is None:
+            raise ValueError("At least one posed image is required to build a pycolmap reconstruction")
 
-        # Camera axes in world frame
-        right = R.T @ np.array([1, 0, 0])
-        up = R.T @ np.array([0, 1, 0])
-        forward = R.T @ np.array([0, 0, 1])
+        camera_model = first_image.camera_model
+        height, width = camera_model.resolution or first_image.pixels.shape[:2]
+        fx, fy, cx, cy = camera_model.intrinsics_vector
+        distortion = camera_model.distortion
+        if len(distortion) < 4:
+            distortion = np.pad(distortion, (0, 4 - len(distortion)))
 
-        # Image plane center
-        P = C + scale * forward
-
-        # Image plane corners
-        s = scale * 0.5
-        corners = [
-            P + s * (right + up),
-            P + s * (right - up),
-            P + s * (-right - up),
-            P + s * (-right + up),
-        ]
-
-        return np.array([C] + corners)
-
-    def _add_camera_frustum(
-        self,
-        vertices: list[Vertex],
-        edges: list[Edge],
-        R: NDArray[np.float32],
-        t: NDArray[np.float32],
-        scale: float = 0.1,
-    ):
-        base_idx = len(vertices)
-
-        pts = self._camera_frustum_points(R, t, scale)
-        for p in pts:
-            vertices.append((p[0], p[1], p[2]))
-
-        # center → corners
-        for i in range(1, 5):
-            edges.append((base_idx, base_idx + i))
-
-        # square around image plane
-        edges += [
-            (base_idx + 1, base_idx + 2),
-            (base_idx + 2, base_idx + 3),
-            (base_idx + 3, base_idx + 4),
-            (base_idx + 4, base_idx + 1),
-        ]
-
-    def _get_point_colors(self) -> NDArray[np.uint8]:
-        """Returns an array of RGB colors for each 3D point."""
-        colors = np.zeros((self.point_cloud.size, 3), dtype=np.uint8)
-        for track_id, pt in self.point_cloud.items():
-            kp_keys = self.track_manager.track_to_kps[track_id]
-            # average the colors of all KPs in the track
-            colors[track_id] = self.images.get_pixels(kp_keys).mean(axis=0)
-        return colors
-
-    def dump_sfm_debug(self, filepath):
-        joblib.dump((self.images, self.point_cloud, self.track_manager), filepath, compress=3)
-        logger.info(f"SFM Debug structs dumped to: {filepath}")
-
-    def save_for_gsplat(self, filename: Path):
-        """Save SfM reconstruction as tensors for gsplat training.
-
-        Saves:
-            - poses: (N, 4, 4) camera-to-world transformation matrices
-            - images: (N, H, W, 3) RGB images (float32, range [0, 1])
-            - points: (M, 3) 3D point positions
-            - colors: (M, 3) RGB colors for 3D points (float32, range [0, 1])
-            - intrinsics: (3, 3) camera intrinsic matrix
-        """
-        filename.parent.mkdir(exist_ok=True, parents=True)
-
-        # Collect camera poses as 4x4 matrices
-        poses_list = []
-        images_list = []
-
-        for img_data in self.images.iter_images_with_pose():
-            # Create 4x4 pose matrix [R | t; 0 0 0 1]
-            pose_4x4 = np.eye(4, dtype=np.float32)
-            pose_4x4[:3, :3] = img_data.R
-            pose_4x4[:3, 3:4] = img_data.t[..., None]
-            poses_list.append(pose_4x4)
-            images_list.append(img_data.pixels)
-
-        # Stack into tensors
-        poses_tensor = torch.from_numpy(np.stack(poses_list, axis=0))  # (N, 4, 4)
-        images_tensor = (
-            torch.from_numpy(np.stack(images_list, axis=0)).float() / 255.0
-        )  # (N, H, W, 3), normalized to [0, 1]
-
-        # Get 3D points and colors (reuse existing method)
-        points_3d = self.point_cloud.get_points_as_array()  # (M, 3)
-        colors = self._get_point_colors()  # (M, 3) uint8
-
-        points_tensor = torch.from_numpy(points_3d).float()  # (M, 3)
-        colors_tensor = torch.from_numpy(colors).float() / 255.0  # (M, 3), normalized to [0, 1]
-
-        # Get camera intrinsics (rescaled) from first image with pose
-        K = self.images[0].camera_model.camera_matrix
-        intrinsics_tensor = torch.from_numpy(K).float()  # (3, 3)
-
-        # Save as .pt file
-        torch.save(
-            {
-                "poses": poses_tensor,
-                "images": images_tensor,
-                "points": points_tensor,
-                "colors": colors_tensor,
-                "intrinsics": intrinsics_tensor,
-            },
-            filename,
+        # ASSUMES: one camera for all photos, for now!
+        camera = pycolmap.Camera(
+            model="OPENCV",
+            width=width,
+            height=height,
+            params=[fx, fy, cx, cy, *distortion[:4]],
+            camera_id=1,
         )
+        reconstruction.add_camera(camera)
 
-        logger.info("Saved reconstruction for gsplat:")
-        logger.info(f"  - {len(poses_list)} camera poses: {poses_tensor.shape}")
-        logger.info(f"  - {len(images_list)} images: {images_tensor.shape}")
-        logger.info(f"  - {self.point_cloud.size} 3D points: {points_tensor.shape}")
-        logger.info(f"  - Colors: {colors_tensor.shape}")
-        logger.info(f"  - Intrinsics: {intrinsics_tensor.shape}")
-        logger.info(f"  -> {filename}")
+        rig_id = 1
+        rig = pycolmap.Rig(rig_id=rig_id)
+        rig.add_ref_sensor(pycolmap.sensor_t(id=camera.camera_id, type=pycolmap.SensorType.CAMERA))
+        reconstruction.add_rig(rig)
 
-    @staticmethod
-    def load_for_gsplat(
-        filename: Path, device: torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int, int]:
-        """Load SfM reconstruction tensors saved for gsplat training.
+        for image_data in self.images.iter_images_with_pose():
+            # ViewData.R and ViewData.t are already the world-to-camera transform.
+            rotation_matrix = np.asarray(image_data.R, dtype=np.float64).reshape(3, 3)
+            rotation = pycolmap.Rotation3d(rotation_matrix)
+            translation = np.asarray(image_data.t, dtype=np.float64).reshape(3, 1)
+            pose = pycolmap.Rigid3d(rotation, translation)
 
-        Returns:
-            Tuple of (poses, images, points, colors, intrinsics, width, height):
-                - poses: (N, 4, 4) camera-to-world transformation matrices
-                - images: (N, H, W, 3) RGB images (float32, range [0, 1])
-                - points: (M, 3) 3D point positions
-                - colors: (M, 3) RGB colors for 3D points (float32, range [0, 1])
-                - intrinsics: (N, 3, 3) camera intrinsic matrices (tiled for each camera)
-                - width: image width (int)
-                - height: image height (int)
-        """
-        data = torch.load(filename)
+            frame = pycolmap.Frame(rig_id=rig_id, frame_id=image_data.idx, rig_from_world=pose)
+            keypoints = image_data.kp
+            if keypoints is None:
+                raise ValueError(f"Image {image_data.idx} has no extracted keypoints")
 
-        poses = data["poses"]  # (N, 4, 4)
-        images = data["images"]  # (N, H, W, 3)
-        points = data["points"]  # (M, 3)
-        colors = data["colors"]  # (M, 3)
-        intrinsics_single = data["intrinsics"]  # (3, 3)
+            image = pycolmap.Image(
+                name=image_data.path.name,
+                image_id=image_data.idx,
+                camera_id=camera.camera_id,
+                frame_id=frame.frame_id,
+            )
+            # pycolmap.INVALID_POINT3D_ID as temp placeholder until overriden in the next loop
+            # All keypoints w/ track_id are deemed triangulated after BA
+            image.points2D = pycolmap.Point2DList(
+                [pycolmap.Point2D(keypoint, pycolmap.INVALID_POINT3D_ID) for keypoint in keypoints]
+            )
+            frame.add_data_id(image.data_id)
+            reconstruction.add_frame(frame)
+            reconstruction.add_image(image)
 
-        # Get image dimensions from the images tensor
-        N, H, W, _ = images.shape
-
-        # Tile intrinsics to match number of cameras (N, 3, 3)
-        intrinsics = intrinsics_single.unsqueeze(0).expand(N, 3, 3)
-
-        logger.info(f"Loaded reconstruction from {filename}:")
-        logger.info(f"  - {N} camera poses: {poses.shape}")
-        logger.info(f"  - {N} images: {images.shape}")
-        logger.info(f"  - {points.shape[0]} 3D points: {points.shape}")
-        logger.info(f"  - Colors: {colors.shape}")
-        logger.info(f"  - Intrinsics (tiled): {intrinsics.shape}")
-        logger.info(f"  - Image size: {W} x {H}")
-
-        return poses.to(device), images.to(device), points.to(device), colors.to(device), intrinsics.to(device), W, H
-
-    def save_ply(self, filename: Path):
-        import pandas as pd
-
-        xyz = self.point_cloud.get_points_as_array()
-        if xyz.size == 0:
-            logger.warning("No 3D points available; skipping PLY export.")
-            return
-
-        df = pd.DataFrame(xyz, columns=["x", "y", "z"])
-
-        # --- OUTLIER REMOVAL ---
-        # Calculate the distance from the median to find the "main cluster"
-        median = df.median()
-        distance = np.sqrt(((df - median) ** 2).sum(axis=1))
-
-        # Keep only points within the 95th percentile of distance
-        # This removes the "points at infinity" that squash your visualization
-        distance_mask = distance < distance.quantile(0.95)
-        df_filtered = df[distance_mask]
-        colors_filtered = self._get_point_colors()[distance_mask]
-
-        # Add camera frustums as red points (Open3D writer cannot emit edges from this routine)
-        frustum_points = []
-        for img in self.images.iter_images_with_pose():
-            for p in self._camera_frustum_points(img.R, img.t):
-                frustum_points.append(p)
-        frustum_colors = np.zeros((len(frustum_points), 3))
-        frustum_colors[:, 0] = 1.0
-
-        # --- DEBUG --- sanity checks
-        norms = np.linalg.norm(df.values, axis=1)
-        logger.debug("Point cloud debug stats:")
-        logger.debug(f"\t# Filtered / Original points: {df_filtered.shape[0]} / {df.shape[0]}")
-        logger.debug(f"\tMIN / MAX pt norm: {norms.min():.4f} / {norms.max():.4f}")
-        logger.debug(f"\t# NaNs: {df.isna().sum().sum()}")
-        logger.debug(f"\t# Infs: {np.isinf(df.values).sum()}")
-
-        xyz_all = np.vstack([df_filtered.to_numpy(), np.asarray(frustum_points)])
-        colors_all = np.vstack(
-            [
-                colors_filtered.astype(np.float32) / 255.0,
-                frustum_colors,
+        for track_id, xyz in self.point_cloud.items():
+            track = pycolmap.Track()
+            kp_keys = [
+                (image_id, keypoint_idx)
+                for image_id, keypoint_idx in self.track_manager.get_keypoints(track_id)
+                if image_id in reconstruction.images
             ]
-        )
+            for image_id, keypoint_idx in kp_keys:
+                if image_id in reconstruction.images:
+                    track.add_element(image_id, keypoint_idx)
 
-        pcd = o3d.t.geometry.PointCloud()
-        pcd.point.positions = xyz_all  # o3d.utility.Vector3dVector(xyz_all)
-        pcd.point.colors = colors_all  # o3d.utility.Vector3dVector(colors_all)
-        # TODO: outlier removal using o3d? the median filter leaves outliers on statue_video every 15th frame cloud
+            # Average into float, then convert & clip
+            average_pixel_color = np.rint(self.images.get_pixels(kp_keys).mean(axis=0)).clip(0, 255).astype(np.uint8)
+            reconstruction.add_point3D(np.asarray(xyz, dtype=np.float64).reshape(3, 1), track, average_pixel_color)
 
-        filename.parent.mkdir(exist_ok=True, parents=True)
-        o3d.io.write_point_cloud(filename, pcd.to_legacy(), write_ascii=True)
+        return reconstruction
 
-        logger.success(f"Saved PLY with {len(pcd.point.positions)} points to: {filename}")
+    def save(self, directory: Path) -> None:
+        """Save cameras, images, and 3D points as human-readable text files."""
+
+        logger.info("Building reconstruction...")
+        self.reconstruction = self._build_reconstruction()
+
+        directory.mkdir(exist_ok=True, parents=True)
+
+        self.reconstruction.write_text(str(directory))
+        self.reconstruction.write_binary(str(directory))
+        self.reconstruction.export_PLY(str(directory / f"{directory.name}.ply"))
+
+        logger.success(f"Exported reconstruction: {directory}")
+        logger.info("View using: https://colmap.github.io/viewer.html")
