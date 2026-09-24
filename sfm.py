@@ -21,7 +21,6 @@ from utils import (
     NDArrayInt,
     PointCloud,
     PycolmapReconIO,
-    ReconIO,
     ReRunLogger,
     TrackManager,
     ViewData,
@@ -435,7 +434,6 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     image_store = FeatureStore(feature_extractor)
     track_manager = TrackManager()
     point_cloud = PointCloud()
-    exporter = ReconIO(point_cloud, image_store, track_manager)
 
     kp_matcher = KeypointMatcher(cfg.matcher)
     view_graph = ViewGraph(image_store, kp_matcher, k=cfg.k_nearest)
@@ -450,9 +448,9 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     # Each component will lead to a point cloud with its own reference frame and
     # thus appear disconnected from the others
 
+    # Exports in COLMAP format in: binary, text and PLY
     exporter = PycolmapReconIO(point_cloud, image_store, track_manager)
-    exporter.save_text(out_dir / f"{basename}")
-    exporter.save_ply(out_dir / f"{basename}" / f"{basename}.ply")
+    exporter.save(out_dir / f"{basename}")
 
     if cfg.dump_sfm_debug:
         filepath = out_dir / f"{basename}_sfm_debug.joblib"
@@ -463,11 +461,12 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
         # IMU data for BA are optional: when None, BA ignores it.
         imu_data_file, imu_calibration = cfg.imu_data, cfg.imu_calibration
 
+        # TODO: switch to pycolmap BA to populate Reconstruction w/ reprojection errors
         ba_summary = bundle_adjustment_gtsam(
             image_store, point_cloud, track_manager, cfg.fix_first_camera, imu_data_file, imu_calibration
         )
 
-        exporter.save_ply(out_dir / f"{basename}_ba.ply")
+        exporter.save(out_dir / f"{basename}_ba")
 
     # if cfg.save_gsplat:
     #     gsplat_file = f"{basename}_ba.pt" if cfg.run_ba else f"{basename}.pt"

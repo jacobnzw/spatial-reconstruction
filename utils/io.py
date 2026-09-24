@@ -13,6 +13,9 @@ from .pointcloud import PointCloud
 from .tracks import TrackManager
 
 
+# TODO(0): rename ColmapReconstructionAdapter
+# TODO(1): consider adding bundle_adjustment calling pycolmap.bundle_adjustment() with options
+# TODO: Given (1), this file io.py won't be necessary perhaps? rename colmap_adapter.py? move somewhere else?
 class PycolmapReconIO:
     """Builds and exports a pycolmap reconstruction from project data."""
 
@@ -20,7 +23,6 @@ class PycolmapReconIO:
         self.point_cloud = point_cloud
         self.images = images
         self.track_manager = track_manager
-        self.reconstruction = self._build_reconstruction()
 
     def _build_reconstruction(self) -> pycolmap.Reconstruction:
         reconstruction = pycolmap.Reconstruction()
@@ -94,15 +96,20 @@ class PycolmapReconIO:
 
         return reconstruction
 
-    def save_text(self, directory: Path) -> None:
+    def save(self, directory: Path) -> None:
         """Save cameras, images, and 3D points as human-readable text files."""
-        directory.mkdir(exist_ok=True, parents=True)
-        self.reconstruction.write_text(str(directory))
-        logger.success(f"Save reconstruction as COLMAP text files to: {directory}")
 
-    def save_ply(self, out_path: Path) -> None:
-        self.reconstruction.export_PLY(str(out_path))
-        logger.success(f"Saved reconstruction as PLY to: {out_path}")
+        logger.info("Building reconstruction...")
+        self.reconstruction = self._build_reconstruction()
+
+        directory.mkdir(exist_ok=True, parents=True)
+
+        self.reconstruction.write_text(str(directory))
+        self.reconstruction.write_binary(str(directory))
+        self.reconstruction.export_PLY(str(directory / directory.name))
+
+        logger.success(f"Exported reconstruction: {directory}")
+        logger.info("View using: https://colmap.github.io/viewer.html")
 
 
 # TODO: use the new ViewData convenience funcs to express the calculations
