@@ -469,10 +469,6 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
 
         exporter.save(out_dir / f"{basename}_ba")
 
-    # if cfg.save_gsplat:
-    #     gsplat_file = f"{basename}_ba.pt" if cfg.run_ba else f"{basename}.pt"
-    #     exporter.save_for_gsplat(out_dir / gsplat_file)
-
     log_wandb_artifacts(run, cfg, track_manager, log_view_table, ba_summary)
     run.finish()
 
