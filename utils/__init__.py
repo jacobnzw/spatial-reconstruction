@@ -17,10 +17,10 @@ from .features import FeatureExtractor, FeatureStore, KeypointMatcher, KPKey, Ma
 from .graph import ViewGraph
 
 # I/O module
-from .io import PycolmapReconIO, ReconIO
+from .io import PycolmapReconIO
 
 # Logging module
-from .logging import ReRunLogger, build_track_length_histogram, log_wandb_artifacts
+from .logging import ReRunLogger, build_track_length_histogram, log_wandb_artifacts, dump_sfm_debug
 
 # Point cloud module
 from .pointcloud import Point3D, PointCloud
@@ -59,9 +59,9 @@ __all__ = [
     "construct_view_graph",
     # I/O
     "PycolmapReconIO",
-    "ReconIO",
     # Logging
     "build_track_length_histogram",
     "log_wandb_artifacts",
+    "dump_sfm_debug",
     "ReRunLogger",
 ]

@@ -25,6 +25,7 @@ from utils import (
     TrackManager,
     ViewData,
     ViewGraph,
+    dump_sfm_debug,
     log_wandb_artifacts,
 )
 
@@ -454,7 +455,7 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
 
     if cfg.dump_sfm_debug:
         filepath = out_dir / f"{basename}_sfm_debug.joblib"
-        exporter.dump_sfm_debug(filepath)
+        dump_sfm_debug(filepath)
 
     ba_summary = None
     if cfg.run_ba:

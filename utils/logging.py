@@ -1,10 +1,12 @@
 from pathlib import Path
 
 import cv2 as cv
+import joblib
 import numpy as np
 import plotly.graph_objects as go
 import rerun as rr
 import rerun.blueprint as rrb
+from loguru import logger
 
 import wandb
 
@@ -217,3 +219,9 @@ def log_wandb_artifacts(run, cfg, track_manager: TrackManager, view_table: wandb
     if ba_summary is not None:
         summary.update(ba_summary)
     run.summary.update(summary)
+
+
+def dump_sfm_debug(self, filepath, images, point_cloud, track_manager):
+    """Dumps images, point_cloud and track_manager to given filepath."""
+    joblib.dump((images, point_cloud, track_manager), filepath, compress=3)
+    logger.info(f"SFM Debug structs dumped to: {filepath}")
