@@ -20,6 +20,7 @@ from utils import (
     NDArrayFloat,
     NDArrayInt,
     PointCloud,
+    PycolmapReconIO,
     ReconIO,
     ReRunLogger,
     TrackManager,
@@ -243,6 +244,7 @@ def add_view(
     kp_idx_seen, track_ids_seen = kp_idx_seen[inliers], track_ids_seen[inliers]
 
     # Register the inlier kps to inlier tracks in track manager
+    # These KPs extend tracks beyond the initial triangulated pair and serve as additional constraints in the final BA
     kp_keys_seen = [(img_new.idx, kp_idx) for kp_idx in kp_idx_seen]
     track_manager.add_keypoints_to_tracks(kp_keys_seen, track_ids_seen)
 
@@ -448,7 +450,9 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     # Each component will lead to a point cloud with its own reference frame and
     # thus appear disconnected from the others
 
-    exporter.save_ply(filename=out_dir / f"{basename}.ply")
+    exporter = PycolmapReconIO(point_cloud, image_store, track_manager)
+    exporter.save_text(out_dir / f"{basename}")
+    exporter.save_ply(out_dir / f"{basename}" / f"{basename}.ply")
 
     if cfg.dump_sfm_debug:
         filepath = out_dir / f"{basename}_sfm_debug.joblib"
@@ -465,9 +469,9 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
 
         exporter.save_ply(out_dir / f"{basename}_ba.ply")
 
-    if cfg.save_gsplat:
-        gsplat_file = f"{basename}_ba.pt" if cfg.run_ba else f"{basename}.pt"
-        exporter.save_for_gsplat(out_dir / gsplat_file)
+    # if cfg.save_gsplat:
+    #     gsplat_file = f"{basename}_ba.pt" if cfg.run_ba else f"{basename}.pt"
+    #     exporter.save_for_gsplat(out_dir / gsplat_file)
 
     log_wandb_artifacts(run, cfg, track_manager, log_view_table, ba_summary)
     run.finish()

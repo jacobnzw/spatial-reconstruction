@@ -35,9 +35,10 @@ class TrackManager:
     def get_track(self, kp_key: KPKey) -> int | None:
         return self.kp_to_track.get(kp_key, None)
 
+    # TODO: list[KPKey] is a "Track" actually; type alias; rename func?
     def get_keypoints(self, track_id: int, img_idx: int | None = None) -> list[KPKey]:
         kp_keys = self.track_to_kps.get(track_id, [])
-        if img_idx is not None:
+        if img_idx is not None:  # restric to given img_idx
             kp_keys = [kp_key for kp_key in kp_keys if kp_key[0] == img_idx]
         return kp_keys
 

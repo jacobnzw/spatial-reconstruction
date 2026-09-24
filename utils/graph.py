@@ -98,9 +98,9 @@ class ViewGraph:
         )
 
     def _is_connecting_edge(self, u, v) -> bool:
-        # ==1 : Either one is True
-        return (self._graph.nodes[u]["registered"] + self._graph.nodes[v]["registered"]) == 1
+        return self._graph.nodes[u]["registered"] != self._graph.nodes[v]["registered"]
 
+    # TODO: rename _order_views_as_new_ref
     def _new_ref_order_views(self, u: int, v: int) -> tuple[ViewData, ViewData]:
         assert self._is_connecting_edge(u, v), f"Edge ({u}, {v}) is not a connecting edge!"
         if self._graph.nodes[u]["registered"]:

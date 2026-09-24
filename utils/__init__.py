@@ -17,7 +17,7 @@ from .features import FeatureExtractor, FeatureStore, KeypointMatcher, KPKey, Ma
 from .graph import ViewGraph
 
 # I/O module
-from .io import ReconIO
+from .io import PycolmapReconIO, ReconIO
 
 # Logging module
 from .logging import ReRunLogger, build_track_length_histogram, log_wandb_artifacts
@@ -58,6 +58,7 @@ __all__ = [
     "has_overlap",
     "construct_view_graph",
     # I/O
+    "PycolmapReconIO",
     "ReconIO",
     # Logging
     "build_track_length_histogram",

@@ -117,7 +117,7 @@ class FeatureStore:
         logger.info(f"Loaded {len(self._store)} frames.")
 
     def get_pixels(self, kp_keys: list[KPKey]) -> NDArray[np.uint8]:
-        """Get pixel color for a given keypoint in an image."""
+        """Get pixel color for a list of keypoints across images (i.e. track)."""
         pixels = np.zeros((len(kp_keys), 3), dtype=np.uint8)
         for i, (img_idx, kp_idx) in enumerate(kp_keys):
             kp_uv = self._store[img_idx].kp[kp_idx].astype(np.uint16)  # ty:ignore[not-subscriptable]
