@@ -9,9 +9,9 @@ from loguru import logger
 from rich.pretty import pprint
 
 import wandb
-from ba import bundle_adjustment_gtsam
 from config import FrameLoaderConfig, SfMConfig, frame_loader_preset, write_config_to_json
 from utils import (
+    ColmapAdapter,
     FeatureExtractor,
     FeatureStore,
     FrameLoader,
@@ -20,7 +20,6 @@ from utils import (
     NDArrayFloat,
     NDArrayInt,
     PointCloud,
-    PycolmapReconIO,
     ReRunLogger,
     TrackManager,
     ViewData,
@@ -450,8 +449,8 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
     # thus appear disconnected from the others
 
     # Exports in COLMAP format in: binary, text and PLY
-    exporter = PycolmapReconIO(point_cloud, image_store, track_manager)
-    exporter.save(out_dir / f"{basename}")
+    adapter = ColmapAdapter(point_cloud, image_store, track_manager)
+    adapter.save(out_dir / f"{basename}")
 
     if cfg.dump_sfm_debug:
         filepath = out_dir / f"{basename}_sfm_debug.joblib"
@@ -459,15 +458,14 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
 
     ba_summary = None
     if cfg.run_ba:
+        adapter.bundle_adjustment()
+        adapter.save(out_dir / f"{basename}_ba")
+
         # IMU data for BA are optional: when None, BA ignores it.
-        imu_data_file, imu_calibration = cfg.imu_data, cfg.imu_calibration
-
-        # TODO: switch to pycolmap BA to populate Reconstruction w/ reprojection errors
-        ba_summary = bundle_adjustment_gtsam(
-            image_store, point_cloud, track_manager, cfg.fix_first_camera, imu_data_file, imu_calibration
-        )
-
-        exporter.save(out_dir / f"{basename}_ba")
+        # imu_data_file, imu_calibration = cfg.imu_data, cfg.imu_calibration
+        # ba_summary = bundle_adjustment_gtsam(
+        #     image_store, point_cloud, track_manager, cfg.fix_first_camera, imu_data_file, imu_calibration
+        # )
 
     log_wandb_artifacts(run, cfg, track_manager, log_view_table, ba_summary)
     run.finish()

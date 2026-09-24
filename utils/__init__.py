@@ -10,17 +10,17 @@ All public APIs are re-exported at the package level for backward compatibility.
 # Type aliases and common types
 from .camera import CameraModel, CameraType, NDArrayFloat, NDArrayInt, calibrate_camera
 
+# I/O module
+from .colmap import ColmapAdapter
+
 # Features module
 from .features import FeatureExtractor, FeatureStore, KeypointMatcher, KPKey, MatcherResult
 
 # View graph module
 from .graph import ViewGraph
 
-# I/O module
-from .io import PycolmapReconIO
-
 # Logging module
-from .logging import ReRunLogger, build_track_length_histogram, log_wandb_artifacts, dump_sfm_debug
+from .logging import ReRunLogger, build_track_length_histogram, dump_sfm_debug, log_wandb_artifacts
 
 # Point cloud module
 from .pointcloud import Point3D, PointCloud
@@ -57,8 +57,8 @@ __all__ = [
     "ViewEdge",
     "has_overlap",
     "construct_view_graph",
-    # I/O
-    "PycolmapReconIO",
+    # Colmap adapter
+    "ColmapReconstructionAdapter",
     # Logging
     "build_track_length_histogram",
     "log_wandb_artifacts",
