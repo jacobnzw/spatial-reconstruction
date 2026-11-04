@@ -4,20 +4,23 @@ See also:
 - [Coordinate Systems (ECEF, ENU, NED, UTM)](https://dirsig.cis.rit.edu/docs/new/coordinates.html)
 
 #### [WGS-84](https://gnssdecoded.com/wgs-84-world-geodetic-system/#how-to-convert-wgs-84-coordinates)
-World Geodetic System 1984 is a realization of Geodetic Coordinate System. It uses an Earth-Centered, Earth-Fixed (ECEF) Cartesian coordinate system where
- - the X-axis points to the Greenwich Meridian, 
- - the Z-axis aligns with the Conventional Terrestrial Pole (CTP), and 
+World Geodetic System 1984 is a realization of Geodetic Coordinate System. It uses an Earth-Centered, Earth-Fixed (ECEF)
+Cartesian coordinate system where
+ - the X-axis points to the Greenwich Meridian,
+ - the Z-axis aligns with the Conventional Terrestrial Pole (CTP), and
  - the Y-axis completes the right-handed system.
 
-The ECEF realization of WGS-84 serves as the global parent frame, while ENU (East-North-Up) and NED (North-East-Down) are local tangent plane frames derived from it for regional navigation and control.
+The ECEF realization of WGS-84 serves as the global parent frame, while ENU (East-North-Up) and NED (North-East-Down)
+are local tangent plane frames derived from it for regional navigation and control.
 
 
 #### Geodetic Coordinates: Latitude, Longitude, Altitude
-A curvilinear representation of the ECEF frame. The coordinates are converted from $(X, Y, Z)$ meters to $(\phi, \lambda, h)$ degrees/meters for intuitive terrestrial positioning.
+A curvilinear representation of the ECEF frame. The coordinates are converted from $(X, Y, Z)$ meters to $(\phi,
+\lambda, h)$ degrees/meters for intuitive terrestrial positioning.
 
-- Latitude ( $\phi$ ): The angle between the equatorial plane and the normal to the ellipsoid at the point of interest. 
-- Longitude ( $\lambda$ ): The angle in the equatorial plane from the prime meridian to the point's meridian plane. 
-- Height ( $h$ ): The distance along the ellipsoidal normal from the ellipsoid surface to the point. 
+- Latitude ( $\phi$ ): The angle between the equatorial plane and the normal to the ellipsoid at the point of interest.
+- Longitude ( $\lambda$ ): The angle in the equatorial plane from the prime meridian to the point's meridian plane.
+- Height ( $h$ ): The distance along the ellipsoidal normal from the ellipsoid surface to the point.
 
 
 #### ENU and NED
@@ -32,9 +35,13 @@ Designed to express relative motion, velocity, and orientation, not absolute pos
 | **Gravity Vector** | Negative Z ($[0, 0, -g]$) | Positive Z ($[0, 0, g]$) |
 | **Primary Use** | Robotics, GIS, Ground Vehicles | Aerospace, Aviation, Marine |
 
-In ENU, the "Up" axis aligns with the normal of the WGS-84 ellipsoid pointing outward, making it intuitive for ground-based mapping. In NED, the "Down" axis points inward toward the Earth's center, which simplifies aviation dynamics where altitude is often treated as a positive distance below the vehicle and gravity acts in the positive Z direction.
+In ENU, the "Up" axis aligns with the normal of the WGS-84 ellipsoid pointing outward, making it intuitive for
+ground-based mapping. In NED, the "Down" axis points inward toward the Earth's center, which simplifies aviation
+dynamics where altitude is often treated as a positive distance below the vehicle and gravity acts in the positive Z
+direction.
 
-Since airplanes and ships move above ground they wanna know "how hight am I", so the NED convention, where positive direction for Z-axis is down is more natural. The ENU is more natural for ground vehicles and robots. 
+Since airplanes and ships move above ground they wanna know "how hight am I", so the NED convention, where positive
+direction for Z-axis is down is more natural. The ENU is more natural for ground vehicles and robots.
 
 [**NED to ECEF Transformation**](https://en.wikipedia.org/wiki/Local_tangent_plane_coordinates):
 $$
@@ -56,25 +63,37 @@ R =
 $$
 
 ##### Transformation from WGS-84
-The relationship is defined by a translation and rotation process centered on a specific *reference point* (latitude $\phi$, longitude $\lambda$, altitude $h$ ):
+The relationship is defined by a translation and rotation process centered on a specific *reference point* (latitude
+$\phi$, longitude $\lambda$, altitude $h$ ):
 
-- Translation: The origin is shifted from the Earth's center of mass (ECEF) to a specific point on the Earth's surface (the local observer or vehicle position). 
-- Rotation: The global axes are rotated using a rotation matrix based on the reference latitude and longitude to align with the local cardinal directions. 
+- Translation: The origin is shifted from the Earth's center of mass (ECEF) to a specific point on the Earth's surface
+  (the local observer or vehicle position).
+- Rotation: The global axes are rotated using a rotation matrix based on the reference latitude and longitude to align
+  with the local cardinal directions.
 
 Mathematically, a position vector in ECEF ($r_{ecef}$) is converted to a local frame ($r_{local}$) by subtracting the reference point's ECEF position ($r_{ref}$) and applying a rotation matrix ($R$): $r_{local} = R⋅(r_{ecef} − r_{ref})$
 
-Even though it may seem that whenever the reference point is chosen as your current position, the position in that ENU/NED is always zero, the frame is useful for expressing velocity, acceleration, attitude (RPY relative to local horizon). 
+Even though it may seem that whenever the reference point is chosen as your current position, the position in that
+ENU/NED is always zero, the frame is useful for expressing velocity, acceleration, attitude (RPY relative to local
+horizon).
 
-For example, in NED, velocity components represent Northward speed, Eastward speed, and Downward sink/climb rate. This is critical for flight control systems. Expressing velocity in ECEF is unintuitive (mixing X, Y, Z changes), whereas ENU/NED directly gives "forward," "sideways," and "up/down" speeds relative to the ground.
+For example, in NED, velocity components represent Northward speed, Eastward speed, and Downward sink/climb rate. This
+is critical for flight control systems. Expressing velocity in ECEF is unintuitive (mixing X, Y, Z changes), whereas
+ENU/NED directly gives "forward," "sideways," and "up/down" speeds relative to the ground.
 
 #### UTM (Universal Transverse Mercator)
 
-is a system for specifying locations on the Earth, based on transverse Mercator projections. 
-It covers the part of the Earth between 84° N and 80° S, dividing it into 60 zones and applying a separate projection to each zone. 
-Specifying a location consists of specifying the zone, the hemisphere (north or south), and the x, y plane coordinates within the zone.
+is a system for specifying locations on the Earth, based on transverse Mercator projections. It covers the part of the
+Earth between 84° N and 80° S, dividing it into 60 zones and applying a separate projection to each zone. Specifying a
+location consists of specifying the zone, the hemisphere (north or south), and the x, y plane coordinates within the
+zone.
 
-Example output from `navsat` ros package:
-> Datum UTM coordinate is (49 north, 754443.85, 2533520.63)
+Example output from `navsat` ros package: > Datum UTM coordinate is (49 north, 754443.85, 2533520.63)
+
+### Odometry
+Odometry (hodos + metron; path measure) is closely related to state estimation / sensor fusion. All the computer vision
+(camera), point geometric (lidar), mapping techniques serve one goal - estimate the pose. Odometry doesn’t care about
+the map as much as SLAM.
 
 ### Rotation differentials
 
@@ -108,9 +127,14 @@ Estimator $\hat{x}(z)$ is said to be:
 - _best linear unbiased (BLUE)_: $\hat{x}(z) = Lz$ (linear) + unbiased + MSE minimizing
 
 ### Covariance Intersection (CI) 
-is a fusion algorithm designed to combine estimates from multiple sensors *when the cross-correlation between their errors is unknown or unavailable*.  Unlike standard Kalman fusion, which requires precise knowledge of correlations to avoid overconfidence, CI guarantees a consistent (non-overconfident) fused estimate by minimizing the determinant or trace of the fused covariance matrix. 
+is a fusion algorithm designed to combine estimates from multiple sensors *when the cross-correlation between their
+errors is unknown or unavailable*. Unlike standard Kalman fusion, which requires precise knowledge of correlations to
+avoid overconfidence, CI guarantees a consistent (non-overconfident) fused estimate by minimizing the determinant or
+trace of the fused covariance matrix.
 
-The core mathematical formulation for fusing two estimates, $\hat{x}_A$ ​ and $\hat{x}_B$, with covariances $P_A$ ​ and $P_B$, involves a convex combination of their information matrices (inverse covariances). The fused estimate $\hat{x}_{CI}$ ​ and covariance $P_{CI}$ ​ are computed as: 
+The core mathematical formulation for fusing two estimates, $\hat{x}_A$ ​ and $\hat{x}_B$, with covariances $P_A$ and 
+$P_B$, involves a convex combination of their information matrices (inverse covariances). The fused estimate 
+$\hat{x}_{CI}$ ​ and covariance $P_{CI}$ ​ are computed as: 
 
 $$
 \begin{align*}
@@ -130,7 +154,8 @@ _Tricks to monitor, tune, set and fit covariances in KFs._
 See: _Gustafsson, Statistical Sensor Fusion_
 
 ### Intuition
-In object tracking scenarios, for kinematic states (position, velocity, acceleration) the process noise standard deviations can be set by intuition about the type of the tracked moving object.
+In object tracking scenarios, for kinematic states (position, velocity, acceleration) the process noise standard
+deviations can be set by intuition about the type of the tracked moving object.
 
 For example, if I know the tunned process noise covariance is used to track cars, I can set the standard devition of acceleration $\sigma_a = 9 \tfrac{m^2}{s^2}$, by which I'm saying: "I expect the true acceleration to somewhere in $[-\sigma_a, \sigma_a]$ interval with $95\%$ probability (assuming that acceleration noise follows standard normal distribution).
 
@@ -151,10 +176,11 @@ $$
     \nu = (z - \hat{z})^T S^{-1} (z - \hat{z})
 $$
 
-Any deviation from [$\chi^2(\nu; n_x)$ distributedness](https://en.wikipedia.org/wiki/Chi-squared_distribution) of $\nu$ indicates something wrong with either:
+Any deviation from [$\chi^2(\nu; n_x)$ distributedness](https://en.wikipedia.org/wiki/Chi-squared_distribution) of $\nu$
+indicates something wrong with either:
 - process noise covariance $Q$ is not set properly
 - measurement covariance $R$ is not set properly
-- measurement model $h(x)$: could be inappropriate, especially relevant in 
+- measurement model $h(x)$: could be inappropriate, especially relevant in
 - the moment transform for computing the predicted measurement could have high error
 
 Gustafsson says this is more like a last "checksum" type of test to see if all checks out.
@@ -177,10 +203,7 @@ The hypothesis
 
 > $H_0$: The estimation error $(x - \hat{x})$ is consistent with the filters error covariance $P$
 
-is accepted if NEES $\epsilon$ falls within bounds of confidence (acceptance) interval
-$$
-    \epsilon \in [r_0, r_1]
-$$
+is accepted if NEES $\epsilon$ falls within bounds of confidence (acceptance) interval $$ \epsilon \in [r_0, r_1] $$
 
 which is chosen such that the probability that $H_0$ is accepted is $(1 - \alpha)$, thus
 $$
@@ -191,12 +214,17 @@ $$
     [r_0,\ r_1] = [F(\frac{\alpha}{2}; n_x),\ F(1 - \frac{\alpha}{2}; n_x)].
 $$
 
-During analysis, first we choose desired confidence level $\alpha$, then get the confidence interval $[r_0, r_1]$, plot the NEES over time together with the interval. The number of times $\epsilon$ falss within the confidence interval should be below $(1 - \alpha)$.
+During analysis, first we choose desired confidence level $\alpha$, then get the confidence interval $[r_0, r_1]$, plot
+the NEES over time together with the interval. The number of times $\epsilon$ falss within the confidence interval
+should be below $(1 - \alpha)$.
 
-- $\epsilon > r_1$: _overconfidence_: filter estimates the error to be lower than it is in reality, process noise covariance too low (provided measurement covariance correct)
-- $\epsilon < r_0$: _inefficiency_: filter estimates the error to be larger than it is in reality, process noise covariance too large (provided measurement covariance correct)
+- $\epsilon > r_1$: _overconfidence_: filter estimates the error to be lower than it is in reality, process noise
+  covariance too low (provided measurement covariance correct)
+- $\epsilon < r_0$: _inefficiency_: filter estimates the error to be larger than it is in reality, process noise
+  covariance too large (provided measurement covariance correct)
 
-In both cases, we can expect that an inconsistent state estimator will not reach the smallest possible estimation error (CRLB).
+In both cases, we can expect that an inconsistent state estimator will not reach the smallest possible estimation error
+(CRLB).
 
 ### Error-State EKF (ESKF)
 Key trick in ESKF is expression of the state as composition of nominal state and error term
@@ -289,26 +317,39 @@ $$
 ### Inertial Navigation System (INS)
 INS is a great motivation for sensor fusion and integrating complementary information from multiple sensors.
 
-An inertial navigation system (INS) is a self-contained navigation device that uses motion sensors, specifically accelerometers and gyroscopes, to continuously calculate an object's position, orientation, and velocity through dead reckoning without needing external references. 
+An inertial navigation system (INS) is a self-contained navigation device that uses motion sensors, specifically
+accelerometers and gyroscopes, to continuously calculate an object's position, orientation, and velocity through dead
+reckoning without needing external references.
 
-Once initialized with a known starting point, the system integrates sensor data to track movement relative to that origin, making it immune to jamming and effective in environments where GPS or GNSS signals are unavailable or unreliable, such as underwater, in tunnels, or in contested military zones. 
+Once initialized with a known starting point, the system integrates sensor data to track movement relative to that
+origin, making it immune to jamming and effective in environments where GPS or GNSS signals are unavailable or
+unreliable, such as underwater, in tunnels, or in contested military zones.
 
-Modern INS solutions often integrate with GNSS receivers to correct the inevitable drift errors that accumulate over time, combining the absolute accuracy of satellite navigation with the continuous, high-refresh-rate tracking of inertial sensors.  These systems are critical for aviation, defense, submarines, and autonomous vehicles, providing precise, real-time positioning data even when external infrastructure is disrupted or denied. 
+Modern INS solutions often integrate with GNSS receivers to correct the inevitable drift errors that accumulate over
+time, combining the absolute accuracy of satellite navigation with the continuous, high-refresh-rate tracking of
+inertial sensors. These systems are critical for aviation, defense, submarines, and autonomous vehicles, providing
+precise, real-time positioning data even when external infrastructure is disrupted or denied.
 
 
 
 ### IMU Preintegration
 
 See also:
-- [[PDF] Visual-Inertial Navigation Short Tutorial](https://udel.edu/~ghuang/iros19-vins-workshop/stergios-roumeliotis.pdf)
-- [[PDF] Forster et al., On-Manifold Preintegration for Real-Time Visual Inertial Odometry](https://arxiv.org/pdf/1512.02363)
-- [[PDF] Trawny, Roumeliotis, Indirect Kalman Filter for 3D Attitude Estimation](https://mars.cs.umn.edu/tr/reports/Trawny05b.pdf): detailed derivations of attitude propagation equations involving quaternions
+- [[PDF] Visual-Inertial Navigation Short
+  Tutorial](https://udel.edu/~ghuang/iros19-vins-workshop/stergios-roumeliotis.pdf)
+- [[PDF] Forster et al., On-Manifold Preintegration for Real-Time Visual Inertial
+  Odometry](https://arxiv.org/pdf/1512.02363)
+- [[PDF] Trawny, Roumeliotis, Indirect Kalman Filter for 3D Attitude
+  Estimation](https://mars.cs.umn.edu/tr/reports/Trawny05b.pdf): detailed derivations of attitude propagation equations
+  involving quaternions
 - [OpenVINS Docs: IMU Propagation Derivations](https://docs.openvins.com/propagation.html)
-- [OpenIMU Docs](https://openimu.readthedocs.io/en/latest/algorithms/STM_Quaternion.html): based on Trawny but more condensed.
+- [OpenIMU Docs](https://openimu.readthedocs.io/en/latest/algorithms/STM_Quaternion.html): based on Trawny but more
+  condensed.
 
 IMU delivers measurements at a orders of magnitude higher rate (100-1000 Hz) than the camera images (10-30 Hz).
 
-IMU does not observe the pose directly, but rather the angular velocity $ \boldsymbol{\omega} $ and linear acceleration $\mathbf{a}$ which need to be integrated over time to obtain the pose $\mathbf{p}$.
+IMU does not observe the pose directly, but rather the angular velocity $ \boldsymbol{\omega} $ and linear acceleration 
+$\mathbf{a}$ which need to be integrated over time to obtain the pose $\mathbf{p}$.
 
 <!-- TODO: needs fleshing out: formulate model, describe everything, then continue with the estimation algorithm on that model -->
 
@@ -323,8 +364,8 @@ $$
 <!-- Analytically intractable due to noise and nonlinearity, and computationally expensive if done naively at such high rate. -->
 
 
-IMU preintegration is a technique to compute the IMU measurements in the local frame of the IMU. 
-It is used to compute the relative pose between two keyframes $i$ and $j$
+IMU preintegration is a technique to compute the IMU measurements in the local frame of the IMU. It is used to compute
+the relative pose between two keyframes $i$ and $j$
 
 
 $$
@@ -339,7 +380,8 @@ $$
 
 > TODO: Quat vs Rot mat formulation: Which should I use?
 
-Between keyframes the IMU biases are assumed constant, and the IMU measurements are integrated to compute the relative pose, velocity, and biases between the two keyframes.
+Between keyframes the IMU biases are assumed constant, and the IMU measurements are integrated to compute the relative
+pose, velocity, and biases between the two keyframes.
 
 Solution to the IMU kinematics is given by the following equations:
 $$
@@ -365,7 +407,7 @@ However, the IMU bias estimates are actively updated using EKF (or other filter)
 
 ### 🚧 MSCKF: Multi-State Constraint Kalman Filter
 
-See also: 
+See also:
 - [Mourikis, Roumeliotis, A Multi-State Constraint Kalman Filter for Vision-Aided Inertial Navigation](https://www-users.cse.umn.edu/~stergios/papers/ICRA07-MSCKF.pdf)
 - [MSCKF Code Tutorial](https://github.com/Edwinem/msckf_tutorial)
 - [ACK-MSCKF: Ackerman MSCKF for AV Localization](https://www.mdpi.com/1424-8220/19/21/4816)
@@ -374,7 +416,8 @@ Mainly for fusing camera and IMU (VIO), but one can replace camera with other ex
 
 Basically an error-state EKF whose state vector contains the current pose and a sliding window of past poses
 
-- 🚧 : Null-space projection trick: stack measurements and pre-multiply with suitable matrix that projects the "image features" into its null-space, effectively marginalizing them away
+- 🚧 : Null-space projection trick: stack measurements and pre-multiply with suitable matrix that projects the "image
+  features" into its null-space, effectively marginalizing them away
 - 🚧 Q?: Is the image feature information lost? What good is it then to project them away?
 
 
@@ -407,11 +450,14 @@ IMU rate $\geq$ wheel encoder rate
 
 #### State evolution
 
-Since biases drift slowly over time, it's therefore difficult to fully eliminate through static calibration alone, we estimate them as part of the state.
+Since biases drift slowly over time, it's therefore difficult to fully eliminate through static calibration alone, we
+estimate them as part of the state.
 
 You'd think that every measurement gets fused via the update step, but not with IMU.
 
-IMU is "fused" by feeding the bias-corrected measurements into the dynamics (motion model) as a control input; in other words, it drives the prediction dynamics. The predictive state estimate advances to the next time step on every IMU measurement.
+IMU is "fused" by feeding the bias-corrected measurements into the dynamics (motion model) as a control input; in other
+words, it drives the prediction dynamics. The predictive state estimate advances to the next time step on every IMU
+measurement.
 
 Update is performed when the wheel encoder measurement arrives.
 
@@ -447,32 +493,47 @@ for each new sensor message:
 
 ### Zero Velocity Update (ZUPT)
 
-Zero Velocity Update (ZUPT) is applied in Kalman filters by using the known stationary state of a platform (velocity = 0) as a measurement update to correct accumulated inertial navigation errors.  When a zero-velocity detector identifies that the sensor platform is stopped, the filter treats the measured velocity as zero, allowing it to estimate and compensate for sensor biases, attitude errors, and position drift that have occurred since the last stationary period. 
+Zero Velocity Update (ZUPT) is applied in Kalman filters by using the known stationary state of a platform (velocity =
+0) as a measurement update to correct accumulated inertial navigation errors. When a zero-velocity detector identifies
+that the sensor platform is stopped, the filter treats the measured velocity as zero, allowing it to estimate and
+compensate for sensor biases, attitude errors, and position drift that have occurred since the last stationary period.
 
 This process involves two main stages:
 
-- **Detection**: Algorithms (such as neural networks, SVMs, or threshold-based detectors) analyze accelerometer and gyroscope data to identify specific intervals where the platform is stationary. 
-- **Correction**: During these detected intervals, the Kalman filter performs a measurement update. You construct a synthetic measurement vector where the observed velocity is explicitly set to zero ($\mathbf{z}_k = \mathbf{0}$ and define a small measurement noise covariance ($\mathbf{R}$) representing your confidence that the platform is truly still. 
+- **Detection**: Algorithms (such as neural networks, SVMs, or threshold-based detectors) analyze accelerometer and
+  gyroscope data to identify specific intervals where the platform is stationary.
+- **Correction**: During these detected intervals, the Kalman filter performs a measurement update. You construct a 
+  synthetic measurement vector where the observed velocity is explicitly set to zero ($\mathbf{z}_k = \mathbf{0}$ and 
+  define a small measurement noise covariance ($\mathbf{R}$) representing your confidence that the platform is truly 
+  still. 
 
-By forcing the velocity error to zero, the filter not only resets the velocity estimate but also retroactively corrects position and attitude errors, effectively bounding the error growth of the inertial navigation system.
+By forcing the velocity error to zero, the filter not only resets the velocity estimate but also retroactively corrects
+position and attitude errors, effectively bounding the error growth of the inertial navigation system.
 
-The IMU data continues to drive the prediction, while the "doctored" zero-velocity measurement drives the correction. The raw accelerometer and gyroscope readings are always integrated to propagate the state estimate (position, velocity, attitude) and the error covariance matrix forward in time. This is the "dead reckoning" phase.
+The IMU data continues to drive the prediction, while the "doctored" zero-velocity measurement drives the correction.
+The raw accelerometer and gyroscope readings are always integrated to propagate the state estimate (position, velocity,
+attitude) and the error covariance matrix forward in time. This is the "dead reckoning" phase.
 
-ZUPT is particularly **effective in GNSS-denied environments** or for pedestrian and vehicle navigation, where it limits the double-integration error of low-cost MEMS sensors. The filter uses this zero-velocity constraint to calibrate IMU biases and improve overall localization accuracy, often outperforming methods that rely solely on curve fitting or maximum likelihood estimation.
+ZUPT is particularly **effective in GNSS-denied environments** or for pedestrian and vehicle navigation, where it limits
+the double-integration error of low-cost MEMS sensors. The filter uses this zero-velocity constraint to calibrate IMU
+biases and improve overall localization accuracy, often outperforming methods that rely solely on curve fitting or
+maximum likelihood estimation.
 
 
 
 ### 👉 TODO: 
 - SOTA in UGV localization
 - IMU: Magnetometer for localization?
-- ROS: Code a node? what to do? Gives CPP refresh. 
+- ROS: Code a node? what to do? Gives CPP refresh.
 - HOW?: ZUPT to enforce non-holonomy, when do it?
-- Wheel slip detection 
+- Wheel slip detection
   - compare v, omega from both sources, if diff too big => wheel slip
   - HOW?: via NIS check?
-- time sync of updates: interpolation, 
-- delayed measurements: 
-  - rollback, insert, replay: ring buffer stores past filtered estimates with measurements $x_k, P_k, z_k$, filter state rolled back before the delayed measurement timestamp, prediction to delayed timestamp, update with delayed measurement, re-apply all subsequent $z_k$'s in buffer.
+- time sync of updates: interpolation,
+- delayed measurements:
+  - rollback, insert, replay: ring buffer stores past filtered estimates with measurements $x_k, P_k, z_k$, filter state
+    rolled back before the delayed measurement timestamp, prediction to delayed timestamp, update with delayed
+    measurement, re-apply all subsequent $z_k$'s in buffer.
   - OOSM update, retrodiction / prediction to same time stamp
 - HOW?: to deal with jitter'ed measurements, same as delayed?
 
@@ -480,6 +541,5 @@ ZUPT is particularly **effective in GNSS-denied environments** or for pedestrian
 
 Once wheel slip is detected you typically:
 
-inflate the wheel measurement covariance $  R  $ (so the filter trusts the IMU more),
-temporarily ignore the wheel update,
+inflate the wheel measurement covariance $ R $ (so the filter trusts the IMU more), temporarily ignore the wheel update,
 or estimate an explicit slip velocity state.
