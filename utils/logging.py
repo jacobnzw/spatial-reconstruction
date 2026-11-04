@@ -221,7 +221,7 @@ def log_wandb_artifacts(run, cfg, track_manager: TrackManager, view_table: wandb
     run.summary.update(summary)
 
 
-def dump_sfm_debug(self, filepath, images, point_cloud, track_manager):
+def dump_sfm_debug(filepath, images, point_cloud, track_manager):
     """Dumps images, point_cloud and track_manager to given filepath."""
     joblib.dump((images, point_cloud, track_manager), filepath, compress=3)
     logger.info(f"SFM Debug structs dumped to: {filepath}")

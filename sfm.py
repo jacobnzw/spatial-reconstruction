@@ -454,7 +454,7 @@ def main(cfg: SfMConfig, dataset: Dataset | None = None):
 
     if cfg.dump_sfm_debug:
         filepath = out_dir / f"{basename}_sfm_debug.joblib"
-        dump_sfm_debug(filepath)
+        dump_sfm_debug(filepath, image_store, point_cloud, track_manager)
 
     ba_summary = None
     if cfg.run_ba:
